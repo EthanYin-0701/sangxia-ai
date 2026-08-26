@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 本地配置（含密钥，勿提交）
+zhente.config.json
+
+# 日志
+*.log
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+
+# 本地个人配置
+.claude/settings.local.json
+
+# 系统文件
+.DS_Store

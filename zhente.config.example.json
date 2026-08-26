@@ -1,0 +1,25 @@
+{
+  "provider": {
+    "type": "openai",
+    "baseURL": "https://api.openai.com/v1",
+    "apiKey": "${OPENAI_API_KEY}",
+    "model": "gpt-4o",
+    "temperature": 0,
+    "maxTokens": 8192,
+    "requestTimeoutMs": 120000,
+    "extraHeaders": {}
+  },
+  "agent": {
+    "maxIterations": 40,
+    "autoApprove": false,
+    "systemPrompt": null
+  },
+  "mcp": {
+    "enabled": true,
+    "connectTimeoutMs": 15000
+  },
+  "skills": {
+    "enabled": true,
+    "dirs": []
+  }
+}

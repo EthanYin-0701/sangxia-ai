@@ -1,0 +1,34 @@
+{
+  "name": "eye-zhen-te",
+  "version": "0.1.0",
+  "description": "ZhenTe — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
+  "type": "module",
+  "bin": {
+    "zhente": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke": "npm run build && node scripts/smoke.mjs",
+    "smoke:openai": "npm run build && node scripts/smoke-openai.mjs",
+    "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@zed-industries/agent-client-protocol": "^0.4.5",
+    "openai": "^6.0.0",
+    "tinyglobby": "^0.2.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
