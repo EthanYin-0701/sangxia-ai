@@ -22,6 +22,16 @@ const providerSchema = z
     baseURL: z.string().url().optional(),
     apiKey: z.string().optional(),
     model: z.string().min(1).default("gpt-4o"),
+    models: z
+      .array(
+        z.object({
+          modelId: z.string().min(1),
+          name: z.string().min(1),
+          description: z.string().optional(),
+        }),
+      )
+      .min(1)
+      .optional(),
     temperature: z.number().min(0).max(2).default(0),
     maxTokens: z.number().int().positive().default(8192),
     requestTimeoutMs: z.number().int().positive().default(120_000),
@@ -34,6 +44,15 @@ const providerSchema = z
       }
       if (!cfg.apiKey) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "openai provider 需要 apiKey（可用 \"${OPENAI_API_KEY}\" 从环境变量注入）" });
+      }
+    }
+    if (cfg.models) {
+      const ids = cfg.models.map((model) => model.modelId);
+      if (new Set(ids).size !== ids.length) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["models"], message: "模型 ID 不可重复" });
+      }
+      if (!ids.includes(cfg.model)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["model"], message: "默认 model 必须出现在 models 列表中" });
       }
     }
   });

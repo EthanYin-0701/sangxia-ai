@@ -34,6 +34,9 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
     "baseURL": "https://api.openai.com/v1",
     "apiKey": "${OPENAI_API_KEY}",
     "model": "gpt-4o",
+    "models": [                           // 可选：在支持 ACP model selector 的 IDE 中显示
+      { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型" }
+    ],
     "temperature": 0,
     "maxTokens": 8192,
     "requestTimeoutMs": 120000,           // 模型请求超时（毫秒）
@@ -56,6 +59,8 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
 ```
 
 > **权限模式覆盖**：`permissionMode` 也可用 CLI 参数 `--permission-mode auto|confirm` 或环境变量 `ZHENTE_PERMISSION_MODE=auto|confirm` 覆盖（优先级：CLI > 环境变量 > 配置文件），方便在 IDE 的 ACP agent 配置（args/env）里按 agent 各自选择。旧字段 `autoApprove: true` 等价于 `permissionMode: "auto"`。
+
+> **会话模型选择**：配置 `provider.models` 后，ZhenTe 会在 `session/new` / `session/load` 返回 ACP model 列表，并处理 `session/set_model`。`provider.model` 是新会话默认值，且必须出现在 `models` 中；未配置 `models` 时只暴露默认模型。
 
 支持 ACP Session Modes 的客户端会在会话输入框下方显示权限下拉菜单：`Standard Access` 对应 `confirm`，`Full Access` 对应 `auto`。配置文件、CLI 或环境变量决定新会话的默认选项；在下拉菜单中的切换仅作用于当前会话，并随会话持久化。
 

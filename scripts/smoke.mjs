@@ -22,7 +22,17 @@ const workdir = mkdtempSync(join(tmpdir(), "zhente-smoke-"));
 const cfgPath = join(workdir, "zhente.config.json");
 writeFileSync(
   cfgPath,
-  JSON.stringify({ provider: { type: "mock", model: "mock" }, agent: { permissionMode: "confirm" } }),
+  JSON.stringify({
+    provider: {
+      type: "mock",
+      model: "mock-fast",
+      models: [
+        { modelId: "mock-fast", name: "Mock Fast" },
+        { modelId: "mock-pro", name: "Mock Pro" },
+      ],
+    },
+    agent: { permissionMode: "confirm" },
+  }),
 );
 
 const child = spawn("node", [join(root, "dist/index.js"), "--config", cfgPath], {
@@ -75,6 +85,12 @@ try {
     session.modes?.availableModes.map((mode) => mode.id),
     ["confirm", "auto"],
     "应暴露 confirm/auto 两种 ACP session mode",
+  );
+  assert.equal(session.models?.currentModelId, "mock-fast", "应返回默认 ACP session model");
+  assert.deepEqual(
+    session.models?.availableModels.map((model) => model.modelId),
+    ["mock-fast", "mock-pro"],
+    "应暴露配置的 ACP session models",
   );
   await conn.setSessionMode({ sessionId: session.sessionId, modeId: "auto" });
   await conn.setSessionMode({ sessionId: session.sessionId, modeId: "confirm" });

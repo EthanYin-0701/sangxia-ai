@@ -12,6 +12,8 @@ export interface PersistedSession {
   messages: ChatMessage[];
   /** Optional for backward compatibility with sessions saved before ACP modes. */
   permissionMode?: PermissionMode;
+  /** Optional for backward compatibility with sessions saved before model selection. */
+  modelId?: string;
   updatedAt: string;
 }
 

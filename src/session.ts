@@ -26,6 +26,9 @@ export class Session {
   /** ACP session mode controlling whether mutating tools require confirmation. */
   permissionMode: PermissionMode;
 
+  /** ACP-selectable LLM model for this conversation. */
+  modelId: string;
+
   /** Full LLM conversation history (system + user + assistant + tool). */
   messages: ChatMessage[] = [];
 
@@ -53,12 +56,14 @@ export class Session {
     mcpServers: McpServer[],
     clientCaps: ClientCapabilities,
     permissionMode: PermissionMode,
+    modelId: string,
   ) {
     this.id = id;
     this.cwd = cwd;
     this.mcpServers = mcpServers;
     this.clientCaps = clientCaps;
     this.permissionMode = permissionMode;
+    this.modelId = modelId;
   }
 
   /** Close all MCP connections held by this session (best-effort). */

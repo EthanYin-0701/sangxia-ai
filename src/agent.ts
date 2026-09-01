@@ -17,6 +17,8 @@ import {
   RequestError,
   type SessionModeState,
   type SetSessionModeRequest,
+  type SessionModelState,
+  type SetSessionModelRequest,
 } from "@zed-industries/agent-client-protocol";
 import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
@@ -39,7 +41,7 @@ import { buildTools } from "./tools/index.js";
 export class ZhenTeAgent implements Agent {
   readonly #conn: AgentSideConnection;
   readonly #config: Config;
-  readonly #provider: LLMProvider;
+  readonly #providers = new Map<string, LLMProvider>();
   readonly #builtinTools: Tool[];
   readonly #sessions = new Map<string, Session>();
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
@@ -47,7 +49,6 @@ export class ZhenTeAgent implements Agent {
   constructor(conn: AgentSideConnection, config: Config) {
     this.#conn = conn;
     this.#config = config;
-    this.#provider = createProvider(config.provider);
     this.#builtinTools = buildTools();
   }
 
@@ -78,13 +79,14 @@ export class ZhenTeAgent implements Agent {
       params.mcpServers ?? [],
       this.#clientCaps,
       this.#config.agent.permissionMode,
+      this.#config.provider.model,
     );
     await this.prepareSession(session);
     session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
     this.#sessions.set(id, session);
     await this.persist(session);
     logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
-    return { sessionId: id, modes: permissionModes(session.permissionMode) };
+    return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -96,12 +98,13 @@ export class ZhenTeAgent implements Agent {
       params.mcpServers ?? [],
       this.#clientCaps,
       saved.permissionMode ?? this.#config.agent.permissionMode,
+      this.isAvailableModel(saved.modelId) ? saved.modelId : this.#config.provider.model,
     );
     await this.prepareSession(session);
     session.messages = saved.messages;
     this.#sessions.set(session.id, session);
     logger.info(`loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length}`);
-    return { modes: permissionModes(session.permissionMode) };
+    return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<void> {
@@ -113,6 +116,40 @@ export class ZhenTeAgent implements Agent {
     session.permissionMode = params.modeId;
     await this.persist(session);
     logger.info(`session ${session.id} permissionMode=${session.permissionMode}`);
+  }
+
+  async setSessionModel(params: SetSessionModelRequest): Promise<void> {
+    const session = this.#sessions.get(params.sessionId);
+    if (!session) throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
+    if (!this.isAvailableModel(params.modelId)) {
+      throw RequestError.invalidParams({ modelId: `未知模型: ${params.modelId}` });
+    }
+    session.modelId = params.modelId;
+    await this.persist(session);
+    logger.info(`session ${session.id} model=${session.modelId}`);
+  }
+
+  private availableModels() {
+    return this.#config.provider.models ?? [
+      { modelId: this.#config.provider.model, name: this.#config.provider.model },
+    ];
+  }
+
+  private isAvailableModel(modelId: string | undefined): modelId is string {
+    return modelId !== undefined && this.availableModels().some((model) => model.modelId === modelId);
+  }
+
+  private modelState(currentModelId: string): SessionModelState {
+    return { currentModelId, availableModels: this.availableModels() };
+  }
+
+  private providerFor(modelId: string): LLMProvider {
+    let provider = this.#providers.get(modelId);
+    if (!provider) {
+      provider = createProvider({ ...this.#config.provider, model: modelId });
+      this.#providers.set(modelId, provider);
+    }
+    return provider;
   }
 
   private async prepareSession(session: Session): Promise<void> {
@@ -168,6 +205,7 @@ export class ZhenTeAgent implements Agent {
         cwd: session.cwd,
         messages: session.messages,
         permissionMode: session.permissionMode,
+        modelId: session.modelId,
         updatedAt: new Date().toISOString(),
       });
     } catch (e) {
@@ -192,7 +230,7 @@ export class ZhenTeAgent implements Agent {
       const stopReason = await runTurn({
         conn: this.#conn,
         session,
-        provider: this.#provider,
+        provider: this.providerFor(session.modelId),
         tools: session.tools,
         config: this.#config.agent,
         signal: abort.signal,
@@ -271,7 +309,7 @@ export class ZhenTeAgent implements Agent {
       await runTurn({
         conn: this.#conn,
         session,
-        provider: this.#provider,
+        provider: this.providerFor(session.modelId),
         tools: new ToolRegistry(this.#builtinTools.filter((tool) => ["read_file", "list_dir", "glob", "grep", "write_file"].includes(tool.name))),
         config: { ...this.#config.agent, maxIterations: Math.min(this.#config.agent.maxIterations, 12) },
         signal: new AbortController().signal,

@@ -4,6 +4,13 @@
     "baseURL": "https://api.openai.com/v1",
     "apiKey": "${OPENAI_API_KEY}",
     "model": "gpt-4o",
+    "models": [
+      {
+        "modelId": "gpt-4o",
+        "name": "GPT-4o",
+        "description": "默认模型"
+      }
+    ],
     "temperature": 0,
     "maxTokens": 8192,
     "requestTimeoutMs": 120000,
