@@ -81,7 +81,7 @@ writeFileSync(
   cfgPath,
   JSON.stringify({
     provider: { type: "openai", baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "test-key", model: "test-model", maxTokens: 256 },
-    agent: { autoApprove: true },
+    agent: { permissionMode: "auto" },
   }),
 );
 

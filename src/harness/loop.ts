@@ -264,7 +264,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   });
 
   // Permission gate for mutating tools.
-  if (tool.needsPermission && !config.autoApprove) {
+  if (tool.needsPermission && session.permissionMode !== "auto") {
     let decision: PermissionDecision = "reject";
     try {
       decision = await ensurePermission(conn, session, tool, toolCallId, title, args);
@@ -317,7 +317,14 @@ async function pushToolResult(session: Session, toolCallId: string, content: str
 
 async function persistTurn(session: Session): Promise<void> {
   try {
-    await saveSession({ version: 1, sessionId: session.id, cwd: session.cwd, messages: session.messages, updatedAt: new Date().toISOString() });
+    await saveSession({
+      version: 1,
+      sessionId: session.id,
+      cwd: session.cwd,
+      messages: session.messages,
+      permissionMode: session.permissionMode,
+      updatedAt: new Date().toISOString(),
+    });
   } catch (e) {
     logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
   }

@@ -15,6 +15,8 @@ import {
   type PromptRequest,
   type PromptResponse,
   RequestError,
+  type SessionModeState,
+  type SetSessionModeRequest,
 } from "@zed-industries/agent-client-protocol";
 import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
@@ -70,24 +72,47 @@ export class ZhenTeAgent implements Agent {
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
     const id = randomUUID();
-    const session = new Session(id, params.cwd, params.mcpServers ?? [], this.#clientCaps);
+    const session = new Session(
+      id,
+      params.cwd,
+      params.mcpServers ?? [],
+      this.#clientCaps,
+      this.#config.agent.permissionMode,
+    );
     await this.prepareSession(session);
     session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
     this.#sessions.set(id, session);
     await this.persist(session);
     logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
-    return { sessionId: id };
+    return { sessionId: id, modes: permissionModes(session.permissionMode) };
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     const saved = await loadPersistedSession(params.sessionId);
     if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
-    const session = new Session(params.sessionId, params.cwd || saved.cwd, params.mcpServers ?? [], this.#clientCaps);
+    const session = new Session(
+      params.sessionId,
+      params.cwd || saved.cwd,
+      params.mcpServers ?? [],
+      this.#clientCaps,
+      saved.permissionMode ?? this.#config.agent.permissionMode,
+    );
     await this.prepareSession(session);
     session.messages = saved.messages;
     this.#sessions.set(session.id, session);
     logger.info(`loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length}`);
-    return {};
+    return { modes: permissionModes(session.permissionMode) };
+  }
+
+  async setSessionMode(params: SetSessionModeRequest): Promise<void> {
+    const session = this.#sessions.get(params.sessionId);
+    if (!session) throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
+    if (params.modeId !== "confirm" && params.modeId !== "auto") {
+      throw RequestError.invalidParams({ modeId: `未知权限模式: ${params.modeId}` });
+    }
+    session.permissionMode = params.modeId;
+    await this.persist(session);
+    logger.info(`session ${session.id} permissionMode=${session.permissionMode}`);
   }
 
   private async prepareSession(session: Session): Promise<void> {
@@ -137,7 +162,14 @@ export class ZhenTeAgent implements Agent {
 
   private async persist(session: Session): Promise<void> {
     try {
-      await saveSession({ version: 1, sessionId: session.id, cwd: session.cwd, messages: session.messages, updatedAt: new Date().toISOString() });
+      await saveSession({
+        version: 1,
+        sessionId: session.id,
+        cwd: session.cwd,
+        messages: session.messages,
+        permissionMode: session.permissionMode,
+        updatedAt: new Date().toISOString(),
+      });
     } catch (e) {
       logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -273,6 +305,16 @@ export class ZhenTeAgent implements Agent {
   async shutdown(): Promise<void> {
     await Promise.all([...this.#sessions.values()].map((s) => s.dispose()));
   }
+}
+
+function permissionModes(currentModeId: Session["permissionMode"]): SessionModeState {
+  return {
+    currentModeId,
+    availableModes: [
+      { id: "confirm", name: "Standard Access", description: "变更操作执行前请求确认" },
+      { id: "auto", name: "Full Access", description: "自动批准变更操作（危险）" },
+    ],
+  };
 }
 
 /** Find one explicit directory reference in the user's prompt, if it exists. */

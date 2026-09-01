@@ -38,11 +38,26 @@ const providerSchema = z
     }
   });
 
-const agentSchema = z.object({
-  maxIterations: z.number().int().positive().default(40),
-  autoApprove: z.boolean().default(false),
-  systemPrompt: z.string().nullable().default(null),
-});
+/**
+ * 权限确认模式：
+ * - "confirm"：变更类工具（write/edit/bash/MCP 等）执行前每次请求人类确认（默认）。
+ * - "auto"：bypass 所有权限确认，直接执行（适合信任的 IDE / 自动化场景，注意风险）。
+ *
+ * 兼容旧字段：`agent.autoApprove: true` 等价于 `permissionMode: "auto"`。
+ */
+const agentSchema = z
+  .object({
+    maxIterations: z.number().int().positive().default(40),
+    permissionMode: z.enum(["confirm", "auto"]).optional(),
+    /** @deprecated 用 `permissionMode: "auto"` 替代；`true` 等价于 auto。 */
+    autoApprove: z.boolean().optional(),
+    systemPrompt: z.string().nullable().default(null),
+  })
+  .transform((cfg) => ({
+    maxIterations: cfg.maxIterations,
+    permissionMode: cfg.permissionMode ?? (cfg.autoApprove === true ? "auto" : "confirm"),
+    systemPrompt: cfg.systemPrompt,
+  }));
 
 /** MCP client behavior. Servers themselves arrive per-session via ACP `session/new`. */
 const mcpSchema = z
@@ -110,6 +125,22 @@ export function resolveConfigPath(argv: string[]): string | null {
   return null;
 }
 
+/** 权限模式的 CLI/env 覆盖：--permission-mode auto|confirm 或 ZHENTE_PERMISSION_MODE。 */
+function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
+  const flagIdx = argv.indexOf("--permission-mode");
+  if (flagIdx >= 0) {
+    const v = argv[flagIdx + 1];
+    if (v === "auto" || v === "confirm") return v;
+    throw new Error(`--permission-mode 取值无效: ${v}（应为 auto 或 confirm）`);
+  }
+  const envValue = process.env.ZHENTE_PERMISSION_MODE;
+  if (envValue !== undefined) {
+    if (envValue === "auto" || envValue === "confirm") return envValue;
+    throw new Error(`ZHENTE_PERMISSION_MODE 取值无效: ${envValue}（应为 auto 或 confirm）`);
+  }
+  return null;
+}
+
 export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
   const path = resolveConfigPath(argv);
   if (!path) {
@@ -133,5 +164,10 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
       .join("\n");
     throw new Error(`配置无效 (${path}):\n${details}`);
   }
-  return parsed.data;
+
+  const config = parsed.data;
+  // CLI 参数 / 环境变量可以覆盖配置文件里的权限模式（便于 IDE 侧按 agent 配置切换）。
+  const override = permissionModeOverride(argv);
+  if (override) config.agent.permissionMode = override;
+  return config;
 }

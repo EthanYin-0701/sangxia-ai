@@ -41,7 +41,7 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
   },
   "agent": {
     "maxIterations": 40,                   // 单轮最多迭代次数
-    "autoApprove": false,                  // true 则跳过权限确认（危险）
+    "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）
     "systemPrompt": null                   // null 使用内置默认提示词
   },
   "mcp": {
@@ -54,6 +54,10 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
   }
 }
 ```
+
+> **权限模式覆盖**：`permissionMode` 也可用 CLI 参数 `--permission-mode auto|confirm` 或环境变量 `ZHENTE_PERMISSION_MODE=auto|confirm` 覆盖（优先级：CLI > 环境变量 > 配置文件），方便在 IDE 的 ACP agent 配置（args/env）里按 agent 各自选择。旧字段 `autoApprove: true` 等价于 `permissionMode: "auto"`。
+
+支持 ACP Session Modes 的客户端会在会话输入框下方显示权限下拉菜单：`Standard Access` 对应 `confirm`，`Full Access` 对应 `auto`。配置文件、CLI 或环境变量决定新会话的默认选项；在下拉菜单中的切换仅作用于当前会话，并随会话持久化。
 
 ### 兼容的端点
 

@@ -3,12 +3,15 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage } from "./llm/types.js";
+import type { PermissionMode } from "./session.js";
 
 export interface PersistedSession {
   version: 1;
   sessionId: string;
   cwd: string;
   messages: ChatMessage[];
+  /** Optional for backward compatibility with sessions saved before ACP modes. */
+  permissionMode?: PermissionMode;
   updatedAt: string;
 }
 

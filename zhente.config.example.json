@@ -11,7 +11,7 @@
   },
   "agent": {
     "maxIterations": 40,
-    "autoApprove": false,
+    "permissionMode": "confirm",
     "systemPrompt": null
   },
   "mcp": {

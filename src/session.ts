@@ -3,6 +3,7 @@ import { ToolRegistry } from "./harness/tool.js";
 import type { ChatMessage } from "./llm/types.js";
 import type { McpConnection } from "./mcp/client.js";
 import type { Skill } from "./skills/index.js";
+import type { AgentConfig } from "./config.js";
 
 /** Which file/terminal operations the connected client supports. */
 export interface ClientCapabilities {
@@ -13,6 +14,7 @@ export interface ClientCapabilities {
 
 /** A remembered permission decision for a tool (from "always" choices). */
 export type PermissionDecision = "allow" | "reject";
+export type PermissionMode = AgentConfig["permissionMode"];
 
 /** Per-conversation state held by the agent. */
 export class Session {
@@ -20,6 +22,9 @@ export class Session {
   readonly cwd: string;
   readonly mcpServers: McpServer[];
   readonly clientCaps: ClientCapabilities;
+
+  /** ACP session mode controlling whether mutating tools require confirmation. */
+  permissionMode: PermissionMode;
 
   /** Full LLM conversation history (system + user + assistant + tool). */
   messages: ChatMessage[] = [];
@@ -42,11 +47,18 @@ export class Session {
   /** Prevent repeatedly asking about project initialization in one session. */
   initializationChecked = false;
 
-  constructor(id: string, cwd: string, mcpServers: McpServer[], clientCaps: ClientCapabilities) {
+  constructor(
+    id: string,
+    cwd: string,
+    mcpServers: McpServer[],
+    clientCaps: ClientCapabilities,
+    permissionMode: PermissionMode,
+  ) {
     this.id = id;
     this.cwd = cwd;
     this.mcpServers = mcpServers;
     this.clientCaps = clientCaps;
+    this.permissionMode = permissionMode;
   }
 
   /** Close all MCP connections held by this session (best-effort). */
