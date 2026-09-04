@@ -12,12 +12,22 @@ import { logger } from "./logger.js";
  * goes to stderr (see logger.ts).
  */
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+
+  // `zhente tui` — interactive terminal UI. It fully owns stdio/lifecycle, so
+  // the ACP-mode signal handling below must NOT be registered (B6).
+  if (argv[0] === "tui") {
+    const { runTui } = await import("./tui/index.js");
+    process.exitCode = await runTui(argv.slice(1));
+    return;
+  }
+
   // TODO(acpreg): CLI 参数分发 —— 新增 `setup` / `--non-interactive` / `--api-key-env`
   //   / `--version` / `--help` 入口（见 plan/acpreg.md §3 阶段 1）；当前所有 argv 都被
   //   当作 ACP 正常启动忽略。
   // TODO(acpreg): loadConfig() 失败时应降级为 unconfigured 模式（仍完成 ACP 握手、
   //   声明 authMethods，但 prompt 返回 AUTH_REQUIRED），而不是直接崩溃（见 plan/acpreg.md §2.1）。
-  const config = loadConfig();
+  const config = loadConfig(argv);
 
   const input = Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>;
   const output = Writable.toWeb(process.stdout) as unknown as WritableStream<Uint8Array>;

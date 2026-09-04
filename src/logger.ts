@@ -31,8 +31,8 @@ import { inspect } from "node:util";
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 } as const;
 type Level = keyof typeof LEVELS;
 
-const logFile = process.env.ZHENTE_LOG_FILE;
-const logDir = process.env.ZHENTE_LOG_DIR;
+let logFile = process.env.ZHENTE_LOG_FILE;
+let logDir = process.env.ZHENTE_LOG_DIR;
 if (logDir) {
   try {
     mkdirSync(logDir, { recursive: true });
@@ -41,8 +41,9 @@ if (logDir) {
   }
 }
 
-const configuredLevel = (process.env.ZHENTE_LOG_LEVEL ?? "info").toLowerCase() as Level;
-const threshold = LEVELS[configuredLevel] ?? LEVELS.info;
+let threshold = LEVELS[(process.env.ZHENTE_LOG_LEVEL ?? "info").toLowerCase() as Level] ?? LEVELS.info;
+/** TUI mode sets this false so log lines never land in the alternate screen. */
+let stderrEnabled = true;
 // Use the host's local timezone by default. Set this explicitly when the ACP
 // host (for example an editor) runs with a different TZ environment.
 const logTimeZone = process.env.ZHENTE_LOG_TIMEZONE ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -101,7 +102,7 @@ function emit(level: Level, args: unknown[]): void {
   const sessionId = sessionStore.getStore();
   const sessionTag = sessionId ? ` [session=${sessionId}]` : "";
   const line = `${timestamp(new Date())} [${level.toUpperCase()}]${sessionTag} ${format(args)}\n`;
-  process.stderr.write(line);
+  if (stderrEnabled) process.stderr.write(line);
   const file = currentLogPath();
   if (file) {
     try {
@@ -112,11 +113,47 @@ function emit(level: Level, args: unknown[]): void {
   }
 }
 
+export interface LoggerOptions {
+  /** Route log lines to stderr (default true). TUI sets false. */
+  stderr?: boolean;
+  /** error | warn | info | debug (default info). */
+  level?: Level;
+  /** Per-session directory mode (overrides file mode). */
+  dir?: string;
+  /** Single-file mode. */
+  file?: string;
+}
+
 export const logger = {
   error: (...args: unknown[]) => emit("error", args),
   warn: (...args: unknown[]) => emit("warn", args),
   info: (...args: unknown[]) => emit("info", args),
   debug: (...args: unknown[]) => emit("debug", args),
+  /**
+   * Runtime reconfiguration (used by the TUI: logs to a file only, never to
+   * the terminal it renders into). Safe to call after module load — settings
+   * are module state, not frozen at import time.
+   */
+  configure(opts: LoggerOptions): void {
+    if (opts.stderr !== undefined) stderrEnabled = opts.stderr;
+    if (opts.level !== undefined) threshold = LEVELS[opts.level] ?? LEVELS.info;
+    if (opts.dir !== undefined) {
+      logDir = opts.dir;
+      logFile = undefined;
+      try {
+        mkdirSync(logDir, { recursive: true });
+      } catch {
+        /* logging must never crash the agent */
+      }
+    } else if (opts.file !== undefined) {
+      logFile = opts.file;
+      logDir = undefined;
+    }
+  },
+  /** 当前是否会把日志写到 stderr（TUI 冒烟/测试可查）。 */
+  get stderrEnabled(): boolean {
+    return stderrEnabled;
+  },
   /**
    * 把 fn（及其所有异步后代）的日志绑定到指定 session，写入 ZHENTE_LOG_DIR 下的
    * <sessionId>.log。传 undefined 或非法 sessionId 时回退为全局日志（global.log）。
