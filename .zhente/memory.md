@@ -83,6 +83,18 @@
 - **顺手修复**：agent.ts prepareSession 补工具计数诊断日志（`skills=N mcpTools=N`），恢复 main 上已损坏的 `smoke:mcp` 断言（旧日志格式在 db13a84 重构中被移除，测试自初始提交未改）。
 - 待办（TUI v2，设计已预留）：`/resume`（session/load）、权限弹窗内实时 bash 输出（createTerminal，terminal:true）、多行输入；交互冒烟仍是手工（无 node-pty，零依赖）。
 
+## TUI 代码 review 修复（P0/P1，已合入 feature-tui）
+
+- Review 文档：`plan/tui_code-review.md`。P0+P1 六项全部修复 + 冒烟断言补齐（smoke:tui 47→50 断言，另补 pty 回归）。
+- **P0-1 行尾残留**：`writeDiffed` 每行重写追加 `\x1b[K`（chat/tool/dialog 行不补白，行变短/变空会残留旧字形）。
+- **P0-2 resize 失效 diff 缓存**：`ui.ts` 导出 `invalidateFrame()`（清 `prevRows` + 可清屏），resize handler 与 "terminal too small" 分支都先调用再重画——否则旧宽度帧的内容相同行被 diff 跳过，放大回来大片空白。
+- **P1-3 正文/工具行顺序**：`model.ts` 新增 `finalizeBeforeTool()`，收到 `tool_call` 或 `plan` 通知时先固化当前 streaming 文本段（只有文本才固化，纯 thinking 中间态如"（模型处理中…）"丢弃），转录按"解说→工具行→解说"时间序排列。
+- **P1-4 bracketed paste**：进备用屏发 `\x1b[?2004h`、restore 发 `\x1b[?2004l`；`keys.ts` 在字符串层识别 `ESC[200~…ESC[201~` 整体作为一个 `paste` key（多行含 \r\n 不触发 Enter）；index.ts 将粘贴内换行归一为空格插入单行输入框。
+- **P1-5 `/model` 待生效标记**：仅 turn 进行中（`state.busy`）切换才挂 `pendingModelSwitch`（状态栏"旧模型*"，prompt 返回后应用）；空闲切换立即更新 `currentModelId`、不加星、无"下一轮生效"文案——不再出现"用新模型跑的一整轮状态栏还显示旧模型"。
+- **P1-6 fire-and-forget Promise**：新增 `fireAndLog(p, what)`（.catch → logger.error + 红行 notice），替换 `submit`/`quit`/`cancelTurn`/`awaitCmd` 的裸 `void`；`unhandledRejection` 从 fatal 降级为"记日志 + 红行提示"（`uncaughtException` 仍 fatal exit）——连接异常不再整 UI 退出。
+- 顺手 P2-9：`bridge.respondPermission`/`dismissPermission` resolve 前先清 `#pendingPermission`/`#permissionRequest`（getter 不再返回已回答请求）。
+- 新增冒烟断言：行缩短/变空含 `\x1b[K`；`invalidateFrame` 后相同内容全量重画（定位序列数≥行数）；"文本→tool_call→文本"后 assistant 在 tool 之前、且 tool_call 不产生空 assistant 行；paste 单 key 且保留内嵌换行、其后按键正常。pty 新增粘贴（多行粘贴成单行不触发发送）与空闲 `/model` 即时切换无星两个场景。
+
 ## DPAIA Benchmark（dpaia-benchmark/）
 
 - 用途：用真实 Java 开源 issue 评测 agent 的 bug 修复能力；每个用例目录含 TASK.md / solution.patch / repo/（base_commit 快照）。

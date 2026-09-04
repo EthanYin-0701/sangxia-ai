@@ -106,12 +106,19 @@ export class TuiBridge {
 
   /** The UI answered a permission request with a specific option. */
   respondPermission(optionId: string): void {
-    this.#pendingPermission?.({ outcome: { outcome: "selected", optionId } });
+    const resolve = this.#pendingPermission;
+    // Clear state first so a stale getter can never return an answered request.
+    this.#pendingPermission = null;
+    this.#permissionRequest = null;
+    resolve?.({ outcome: { outcome: "selected", optionId } });
   }
 
   /** The user cancelled the permission dialog without choosing. */
   dismissPermission(): void {
-    this.#pendingPermission?.({ outcome: { outcome: "cancelled" } });
+    const resolve = this.#pendingPermission;
+    this.#pendingPermission = null;
+    this.#permissionRequest = null;
+    resolve?.({ outcome: { outcome: "cancelled" } });
   }
 
   /** Resolve any pending permission request as cancelled (turn cancelled). */

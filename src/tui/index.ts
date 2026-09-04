@@ -17,7 +17,7 @@ import { completeLine, parseCommand, type CommandAction } from "./commands.js";
 import { InputLine } from "./input.js";
 import { KeyReader, type Key } from "./keys.js";
 import { makeTheme } from "./theme.js";
-import { renderFrame, type DialogFrame, type Frame } from "./ui.js";
+import { renderFrame, invalidateFrame, type DialogFrame, type Frame } from "./ui.js";
 import { stringWidth } from "./wcwidth.js";
 import type {
   ModelInfo,
@@ -76,13 +76,15 @@ export async function runTui(argv: string[]): Promise<number> {
   const noColor = process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== "";
   const theme = makeTheme({ crt: opts.crt, noColor });
   const stdout = process.stdout;
-  stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
+  // Bracketed paste: terminals wrap pasted text in ESC[200~…ESC[201~ so we can
+  // distinguish it from typed keys (otherwise every pasted newline is an Enter).
+  stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?2004h");
 
   let restored = false;
   const restoreTerminal = (): void => {
     if (restored) return;
     restored = true;
-    stdout.write("\x1b[?25h\x1b[?1049l");
+    stdout.write("\x1b[?2004l\x1b[?25h\x1b[?1049l");
   };
   process.on("exit", restoreTerminal);
 
@@ -234,7 +236,16 @@ export async function runTui(argv: string[]): Promise<number> {
     process.exit(1);
   };
   process.on("uncaughtException", fatal);
-  process.on("unhandledRejection", fatal);
+  // Rejected promises are handled at their source (see fireAndLog / submit's
+  // try-catch); anything that still slips through must NOT kill the UI — log
+  // it and surface a red row instead.
+  process.on("unhandledRejection", (reason) => {
+    logger.error("未处理的 Promise 拒绝（已降级为提示）:", reason);
+    if (!state.quitting) {
+      model.addNotice(`内部错误：${reason instanceof Error ? reason.message : String(reason)}`, true);
+      render();
+    }
+  });
   const onSignal = (sig: NodeJS.Signals): void => {
     restoreTerminal();
     logger.info(`signal ${sig}, exiting`);
@@ -242,7 +253,13 @@ export async function runTui(argv: string[]): Promise<number> {
   };
   process.on("SIGTERM", onSignal);
   process.on("SIGHUP", onSignal);
-  stdout.on("resize", () => render());
+  // Resize: the terminal has reflowed, so the dirty-row diff cache is stale —
+  // clear it and force a full repaint (design review P0-2).
+  const onResize = (): void => {
+    invalidateFrame(stdout);
+    render();
+  };
+  stdout.on("resize", onResize);
 
   // ── 9. keys ──
   const keys = new KeyReader((k) => handleKey(k));
@@ -353,10 +370,19 @@ export async function runTui(argv: string[]): Promise<number> {
         }
         try {
           await bridge.setModel(state.sessionId!, target.modelId);
-          // B5: the switch applies on the NEXT turn; keep the current id in
-          // the status bar until then but show the pending "*" marker.
-          state.pendingModelSwitch = target.modelId;
-          model.addNotice(`model -> ${target.modelId}（下一轮生效）`);
+          if (state.busy) {
+            // B5 (turn in progress): the running turn already picked its
+            // provider, so the switch applies next turn. Keep the old id in
+            // the status bar with the pending "*" marker until that turn ends.
+            state.pendingModelSwitch = target.modelId;
+            model.addNotice(`model -> ${target.modelId}（下一轮生效）`);
+          } else {
+            // Idle: no turn is using the old provider, so reflect the switch
+            // immediately — no star, no stale "old model running" ambiguity.
+            state.currentModelId = target.modelId;
+            state.pendingModelSwitch = null;
+            model.addNotice(`model -> ${target.modelId}`);
+          }
         } catch (e) {
           model.addNotice(`切换失败：${e instanceof Error ? e.message : String(e)}`, true);
         }
@@ -431,10 +457,24 @@ export async function runTui(argv: string[]): Promise<number> {
 
   function cancelTurn(): void {
     if (!state.sessionId) return;
-    void bridge.cancel(state.sessionId);
+    fireAndLog(bridge.cancel(state.sessionId), "取消");
     // ACP: after cancel the client must settle pending permission requests,
     // otherwise the agent's ensurePermission waits forever (design §7 A7).
     bridge.cancelPendingPermission();
+  }
+
+  /**
+   * Fire-and-forget a promise, surfacing any rejection as a red notice instead
+   * of letting it hit the (degraded, non-fatal) unhandledRejection path.
+   */
+  function fireAndLog(p: Promise<unknown>, what: string): void {
+    p.catch((e) => {
+      logger.error(`异步操作失败（${what}）:`, e);
+      if (!state.quitting) {
+        model.addNotice(`操作失败：${e instanceof Error ? e.message : String(e)}`, true);
+        render();
+      }
+    });
   }
 
   function pickRejectOnce(options: PermissionOption[]): string | null {
@@ -453,6 +493,17 @@ export async function runTui(argv: string[]): Promise<number> {
         input.insert(k.char);
         render();
         break;
+      case "paste": {
+        // Single-line editor: normalize pasted newlines (incl. CRLF) to
+        // spaces so multi-line paste becomes one editable line and never
+        // triggers Enter.
+        const text = k.text.replace(/\r\n|\r|\n/g, " ");
+        if (text !== "") {
+          input.insert(text);
+          render();
+        }
+        break;
+      }
       case "enter":
         if (state.busy) {
           // Concurrency guard (§7): never fire a second prompt mid-turn.
@@ -460,7 +511,7 @@ export async function runTui(argv: string[]): Promise<number> {
           render();
         } else if (!input.isEmpty()) {
           const line = input.text;
-          void submit(line);
+          fireAndLog(submit(line), "发送");
         }
         break;
       case "ctrl-c":
@@ -474,7 +525,7 @@ export async function runTui(argv: string[]): Promise<number> {
         break;
       case "ctrl-d":
         if (!state.busy && input.isEmpty()) {
-          void quit();
+          fireAndLog(quit(), "退出");
         } else {
           input.deleteForward();
         }
@@ -641,7 +692,7 @@ export async function runTui(argv: string[]): Promise<number> {
 
   /** Fire a command from a key handler without awaiting (keeps the loop live). */
   function awaitCmd(action: CommandAction): void {
-    void runCommand(action);
+    fireAndLog(runCommand(action), "命令");
   }
 
   function commonPrefix(candidates: string[]): string {
@@ -662,8 +713,8 @@ export async function runTui(argv: string[]): Promise<number> {
     state.quitting = true;
     try {
       if (state.busy && state.sessionId) {
-        void bridge.cancel(state.sessionId);
         bridge.cancelPendingPermission();
+        await bridge.cancel(state.sessionId).catch(() => {});
       }
       await bridge.shutdown();
     } catch {
@@ -677,7 +728,7 @@ export async function runTui(argv: string[]): Promise<number> {
     process.removeListener("SIGHUP", onSignal);
     process.removeListener("uncaughtException", fatal);
     process.removeListener("unhandledRejection", fatal);
-    stdout.removeListener("resize", render as never);
+    stdout.removeListener("resize", onResize);
     restoreTerminal();
     logger.info("zhente tui exit");
     process.exit(0);

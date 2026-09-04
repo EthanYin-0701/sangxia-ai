@@ -130,7 +130,10 @@ const W = (s: string) => stringWidth(s);
 export function renderFrame(frame: Frame, theme: Theme, stdout: { write(s: string): void }): void {
   const { rows, cols } = frame;
   if (rows < 4 || cols < 10) {
-    stdout.write("\x1b[2J\x1b[H" + C.err(theme, `terminal too small (${cols}x${rows}), resize`));
+    // Invalidate the diff cache too: when the terminal grows back we must
+    // repaint everything, not skip rows that match a stale-width frame.
+    invalidateFrame(stdout);
+    stdout.write(C.err(theme, `terminal too small (${cols}x${rows}), resize`));
     return;
   }
   const rowsOut: string[] = [];
@@ -352,6 +355,18 @@ function composeDialog(dialog: DialogFrame, theme: Theme, cols: number): string[
 }
 
 const prevRows: string[] = [];
+
+/**
+ * Drop the dirty-row diff cache. Call before a full repaint when the previous
+ * frame no longer matches the terminal (resize, alternate-screen reset): stale
+ * "same content" rows would otherwise be skipped while the terminal has
+ * already reflowed. Optionally clears the screen too.
+ */
+export function invalidateFrame(stdout?: { write(s: string): void }): void {
+  prevRows.length = 0;
+  if (stdout) stdout.write("\x1b[2J\x1b[H");
+}
+
 export function writeDiffed(rows: string[], totalRows: number, cols: number, stdout: { write(s: string): void }): void {
   // Diff against the previous frame; only rewrite changed rows. Frames have a
   // fixed row count so clearing below is unnecessary.
@@ -370,7 +385,9 @@ export function writeDiffed(rows: string[], totalRows: number, cols: number, std
     } else {
       fitted = truncateWidth(stripAnsi(cur), cols).text;
     }
-    buf += `\x1b[${y + 1};1H${fitted}`;
+    // Erase to end of line: chat/tool/dialog rows are not padded to `cols`, so
+    // a shorter (or blank) row would otherwise leave stale glyphs behind.
+    buf += `\x1b[${y + 1};1H${fitted}\x1b[K`;
   }
   prevRows.length = totalRows;
   stdout.write(buf);

@@ -27,6 +27,8 @@ import { parseCommand, completeLine, helpLines } from "../dist/tui/commands.js";
 import { makeTheme } from "../dist/tui/theme.js";
 import { stringWidth, truncateWidth } from "../dist/tui/wcwidth.js";
 import { InputLine } from "../dist/tui/input.js";
+import { KeyReader } from "../dist/tui/keys.js";
+import { renderFrame, invalidateFrame } from "../dist/tui/ui.js";
 import { logger } from "../dist/logger.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -100,6 +102,22 @@ const ok = (name, cond, extra = "") => {
   ok("input commit empty returns", il.text === "" && il.isEmpty());
 }
 
+// P1-4: bracketed paste (ESC[200~ … ESC[201~) arrives as ONE paste key, and
+// newlines inside never become Enter presses.
+{
+  const seen = [];
+  const kr = new KeyReader((k) => seen.push(k));
+  kr.push("\x1b[200~line1\nline2\r\n第三行\x1b[201~");
+  ok("paste emitted as a single paste key", seen.length === 1 && seen[0].type === "paste", JSON.stringify(seen));
+  ok(
+    "paste text keeps inner newlines",
+    seen[0].type === "paste" && seen[0].text === "line1\nline2\r\n第三行",
+    JSON.stringify(seen[0]),
+  );
+  kr.push("ab");
+  ok("keystrokes after paste parse normally", seen.length === 3 && seen[1].type === "char" && seen[2].type === "char", JSON.stringify(seen));
+}
+
 {
   const m = new ChatModel();
   m.applyUpdate({ sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } });
@@ -112,6 +130,88 @@ const ok = (name, cond, extra = "") => {
   ok("plan is replaceable (single block)", plans.length === 1 && plans[0].kind === "plan" && plans[0].entries[0].content === "y");
   m.finalizeStream();
   ok("finalize moves streaming to assistant", m.entries.some((e) => e.kind === "assistant" && e.text === "hi"));
+
+  // P1-3: text of each iteration must precede the tool row it led to (and a
+  // second paragraph must follow the tool row) — the per-iteration flush on
+  // tool_call/plan must keep the transcript in chronological order.
+  const m3 = new ChatModel();
+  m3.applyUpdate({ sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "先看一下。" } } });
+  m3.applyUpdate({ sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "t1", title: "执行 ls", kind: "execute", status: "in_progress" } });
+  m3.applyUpdate({ sessionId: "s", update: { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", content: [] } });
+  m3.applyUpdate({ sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "看完了，结论是……" } } });
+  m3.finalizeStream();
+  const kinds3 = m3.entries.map((e) => e.kind);
+  ok(
+    "iteration text precedes its tool row (P1-3)",
+    kinds3.indexOf("assistant") >= 0 && kinds3.indexOf("tool") > kinds3.indexOf("assistant"),
+    kinds3.join(","),
+  );
+  ok(
+    "later paragraph follows the tool row (P1-3)",
+    kinds3.lastIndexOf("assistant") > kinds3.indexOf("tool"),
+    kinds3.join(","),
+  );
+  ok("tool_call only flushes text, never creates an empty assistant row", m3.entries.filter((e) => e.kind === "assistant").every((e) => e.text.length > 0));
+}
+
+// ───────── renderer: dirty-row tail erase (P0-1) + resize full repaint (P0-2) ─────────
+{
+  const theme = makeTheme({ crt: false, noColor: true }); // no ANSI -> easier string checks
+  const makeFrame = (over = {}) => ({
+    appName: "ZhenTe",
+    modelLabel: "mock-fast",
+    cwd: "/tmp",
+    modeId: "confirm",
+    rows: 10,
+    cols: 40,
+    scroll: 0,
+    chat: [],
+    inputText: "",
+    inputCursorText: 0,
+    inputCursorCol: 2,
+    busy: false,
+    canSend: true,
+    spinnerTick: 0,
+    ...over,
+  });
+  const capture = () => {
+    let out = "";
+    return { out: () => out, write: (s) => { out += s; } };
+  };
+
+  // P0-1: when a row shortens (or becomes empty), the rewrite must erase the
+  // old tail — assert the frame rewrite carries ESC[K (or pads to full width).
+  {
+    const c1 = capture();
+    invalidateFrame();
+    renderFrame(makeFrame({ chat: [{ kind: "notice", text: "A".repeat(34) }] }), theme, c1);
+    const c2 = capture();
+    renderFrame(makeFrame({ chat: [{ kind: "notice", text: "B" }] }), theme, c2);
+    const second = c2.out();
+    ok("shortened row erases its tail (\\x1b[K)", second.includes("\x1b[K"), JSON.stringify(second.slice(0, 160)));
+  }
+  // ...and when a row becomes empty the previous glyphs are gone too.
+  {
+    const c1 = capture();
+    invalidateFrame();
+    renderFrame(makeFrame({ chat: [{ kind: "notice", text: "C".repeat(34) }] }), theme, c1);
+    const c2 = capture();
+    renderFrame(makeFrame({ chat: [] }), theme, c2);
+    ok("emptied row erases old content (\\x1b[K)", c2.out().includes("\x1b[K"), JSON.stringify(c2.out().slice(0, 160)));
+  }
+
+  // P0-2: resize (terminal reflow) invalidates the diff cache — the next
+  // frame must repaint every row even when the content is identical.
+  {
+    const c1 = capture();
+    invalidateFrame();
+    renderFrame(makeFrame({ rows: 12, cols: 60, chat: [{ kind: "notice", text: "same" }] }), theme, c1);
+    const c2 = capture();
+    invalidateFrame(); // what the resize handler calls
+    renderFrame(makeFrame({ rows: 12, cols: 60, chat: [{ kind: "notice", text: "same" }] }), theme, c2);
+    const locators = (c2.out().match(/\x1b\[\d+;1H/g) ?? []).length;
+    ok("invalidateFrame forces a full repaint on identical content", locators >= 12, `locators=${locators}`);
+  }
 }
 
 // ───────────────── in-process ACP pairing ─────────────────

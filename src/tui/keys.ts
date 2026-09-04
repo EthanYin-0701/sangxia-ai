@@ -14,8 +14,13 @@
 
 import { StringDecoder } from "node:string_decoder";
 
+// Bracketed paste markers (terminal mode set via `ESC[?2004h`).
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+
 export type Key =
   | { type: "char"; char: string }
+  | { type: "paste"; text: string }
   | { type: "enter" }
   | { type: "tab" }
   | { type: "shift-tab" }
@@ -51,6 +56,9 @@ export class KeyReader {
   readonly #decoder = new StringDecoder("utf8");
   #pending: string[] = [];
   #onKey: (k: Key) => void;
+  /** True while inside a bracketed-paste (`ESC[200~ … ESC[201~`) block. */
+  #inPaste = false;
+  #pasteBuf = "";
 
   constructor(onKey: (k: Key) => void) {
     this.#onKey = onKey;
@@ -59,8 +67,45 @@ export class KeyReader {
   /** Feed raw bytes (or already-decoded text) from stdin. */
   push(data: Buffer | string): void {
     const text = typeof data === "string" ? data : this.#decoder.write(data);
-    for (const ch of text) this.#pending.push(ch);
+    this.#ingest(text);
+  }
+
+  /**
+   * Handle bracketed-paste framing at the string level, before per-character
+   * parsing: everything between `ESC[200~` and `ESC[201~` is emitted once as a
+   * `paste` key, so pasted newlines/CRs never become Enter presses.
+   *
+   * Note: we assume the `ESC[200~` marker arrives in the same read chunk as
+   * the pasted text (terminals flush the whole paste as one write) — a marker
+   * split across chunks is not reassembled, which is a v1 simplification.
+   */
+  #ingest(text: string): void {
+    if (this.#inPaste) {
+      const endIdx = text.indexOf(PASTE_END);
+      if (endIdx >= 0) {
+        const content = this.#pasteBuf + text.slice(0, endIdx);
+        this.#pasteBuf = "";
+        this.#inPaste = false;
+        this.#emit({ type: "paste", text: content });
+        const rest = text.slice(endIdx + PASTE_END.length);
+        if (rest) this.#ingest(rest);
+        return;
+      }
+      this.#pasteBuf += text;
+      return;
+    }
+    const startIdx = text.indexOf(PASTE_START);
+    if (startIdx < 0) {
+      for (const ch of text) this.#pending.push(ch);
+      this.#flush();
+      return;
+    }
+    for (const ch of text.slice(0, startIdx)) this.#pending.push(ch);
     this.#flush();
+    this.#inPaste = true;
+    this.#pasteBuf = "";
+    const rest = text.slice(startIdx + PASTE_START.length);
+    if (rest) this.#ingest(rest);
   }
 
   #flush(): void {

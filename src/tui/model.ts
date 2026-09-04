@@ -86,6 +86,11 @@ export class ChatModel {
         return true;
       }
       case "tool_call": {
+        // A tool call starts right after the model's spoken explanation for
+        // this iteration. Flush any accumulated streaming text first so the
+        // tool row appears AFTER the words that led to it (§6 ordering:
+        // “文本解说 → 工具调用 → 结果 → 下一段解说”).
+        this.finalizeBeforeTool();
         const st = u.status ?? "in_progress";
         const existing = this.#toolRow(u.toolCallId);
         if (existing) {
@@ -125,6 +130,9 @@ export class ChatModel {
         return true;
       }
       case "plan": {
+        // Plans usually arrive after a spoken paragraph too — same ordering
+        // rule as tool_call.
+        this.finalizeBeforeTool();
         const block: ChatEntry = {
           kind: "plan",
           entries: (u.entries as PlanEntry[]).map((e) => ({
@@ -144,6 +152,20 @@ export class ChatModel {
       default:
         return false;
     }
+  }
+
+  /**
+   * Flush the streaming block before a tool call / plan notification lands.
+   *
+   * Only text is promoted to an assistant entry: a thought-only intermediate
+   * state (e.g. loop.ts's “（模型处理中…）” placeholder) would be noise as a
+   * permanent row, so it is dropped instead.
+   */
+  finalizeBeforeTool(): void {
+    const s = this.streaming;
+    if (!s) return;
+    this.streaming = null;
+    if (s.text.trim() !== "") this.addAssistant(s.text);
   }
 
   /** Finalize the streaming block into a stored assistant entry. */
