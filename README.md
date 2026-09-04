@@ -183,12 +183,33 @@ stdio (JSON-RPC / ACP)
 - 如果上述任一文件缺失，第一次正式 prompt 前会请求用户确认；确认后 agent 会先扫描项目并只补齐缺失的记忆文件，再执行原始任务。
 - 一次 prompt 的完整时序见 [`doc/uml/prompt-turn.md`](doc/uml/prompt-turn.md)。
 
+## 终端界面（TUI）
+
+`zhente tui` 在真实终端里启动一个聊天式 TUI，与 Zed 走**同一套 ACP 协议**：内部把同一个 `ZhenTeAgent` 通过内存流配对到客户端侧，stdio 只归界面（渲染 + 键盘）。
+
+```bash
+zhente tui              # 需要 stdin 与 stdout 均为 TTY；非 TTY 会友好报错
+zhente tui --crt        # 可选 CRT 黑底模式（默认不强制黑底）
+```
+
+- **布局**：状态栏（agent · 当前模型 · cwd + 权限 badge）→ 对话区（流式回答/工具行/TODO 计划）→ 权限弹窗（confirm 模式）→ 输入行。配色红/绿/白三色（安全=绿、危险/错误=红、正文=白，**颜色永不作唯一通道**）；设置 `NO_COLOR` 可去色。
+- **斜杠命令**（纯客户端本地命令）：
+  - `/model [modelId]` 查看/切换模型（配置 `provider.models`；无参数弹选择器；模型**下一轮生效**，状态栏带 `*` 待生效标记）。
+  - `/access` 只显示当前权限模式；`/access full` 进入 FULL ACCESS（需二次确认，变更不再请求确认，红横幅+badge）；`/access standard` 切回每次确认。切换会清空本会话"总是允许/总是拒绝"记忆。
+  - `/permissions reset` 清空记住的授权决策（等价于重发一次 `set_mode`）；`/help` `/clear` `/new` `/quit`（空行 Ctrl+D 也可退出）。
+- **快捷键**：Enter 发送（上一轮未结束时禁用）、↑/↓ 历史、Tab 补全命令/modelId、Ctrl+C 清空输入行（turn 中=取消）、Ctrl+U 删到行首、PgUp/PgDn 滚动对话区。
+- **日志**：TUI 模式下日志不打印到屏幕，只写入 `ZHENTE_LOG_DIR`（或系统临时目录 `zhente-tui-logs/`）。
+- **已知差异**：TUI 不向 agent 声明 `terminal` 能力，`bash` 走本地子进程回退（输出在命令结束时一次性返回，工具行有 spinner+计时提示仍在运行）。
+
 ## 开发
 
 ```bash
 npm run dev         # tsx 直跑 src/index.ts
 npm run typecheck   # 仅类型检查
 npm run build       # 编译到 dist/
+npm run smoke       # ACP 握手 + 工具 + 权限流冒烟（mock provider）
+npm run smoke:tui   # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
+npm run smoke:mcp   # MCP 工具 + 技能冒烟
 ```
 
 ## 目前未覆盖（预留扩展点）

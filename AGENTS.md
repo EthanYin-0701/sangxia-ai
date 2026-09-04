@@ -20,6 +20,7 @@ npm run build       # 编译到 dist/
 npm run smoke       # 离线冒烟：完整 ACP 握手 + 工具 + 权限流（mock provider）
 npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
 npm run smoke:mcp     # MCP 工具接入冒烟
+npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
 ```
 
 ## 目录约定
@@ -34,8 +35,12 @@ src/
   mcp/         MCP client（client.ts）
   skills/      技能发现与 use_skill（index.ts）
   tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts
-  index.ts     入口（stdio JSON-RPC）
-  logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 ZHENTE_LOG_FILE 单文件或 ZHENTE_LOG_DIR 按 session 分文件）
+  tui/         终端 UI（`zhente tui`）：index.ts 主循环 / bridge.ts 进程内 ACP 配对
+               / ui.ts 备用屏渲染 / keys.ts raw 键盘解析 / input.ts 行编辑
+               / model.ts ACP 通知→聊天条目映射 / commands.ts 斜杠命令
+               / theme.ts 红绿白主题 / wcwidth.ts 最小 CJK 宽度（零依赖）
+  index.ts     入口（stdio JSON-RPC；argv[0]==="tui" 时转 TUI 分支）
+  logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 ZHENTE_LOG_FILE 单文件或 ZHENTE_LOG_DIR 按 session 分文件；logger.configure 支持运行时改 stderr/level/dir，TUI 用它把日志只进文件）
   persistence.ts  会话历史持久化（~/.config/zhente/sessions/）
   project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载
 doc/uml/       时序图（prompt-turn）
@@ -53,9 +58,12 @@ scripts/       冒烟测试脚本（*.mjs）
 7. **新增 LLM 后端**：实现 `LLMProvider` 接口，在 `llm/factory.ts` 注册即可。
 8. **权限模型**：变更类工具（write/edit/bash/MCP 工具）执行前走 `session/request_permission`；读类工具免权限；`update_plan`/`use_skill` 免权限。
 9. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 连接失败只告警跳过，不影响其他工具。
+10. **TUI 纪律**：`zhente tui` 分支完全接管进程生命周期（stdio/TTY/信号），不注册 ACP 模式的 SIGINT 逻辑；TUI 下日志必须 `logger.configure({ stderr:false, dir })` 只进文件，严禁把日志写进备用屏。输入层是自研 raw 键盘解析（keys.ts），不要换回 readline——`rl.pause()` 无法隔离 raw 弹窗（按键会漏进行输入行，spike 已验证）。
+11. **SDK 陷阱**：`@zed-industries/agent-client-protocol@0.4.5` 的 `ClientSideConnection.setSessionModel` 会错发 `session/set_mode`；绕行 `extMethod("zhente.set_model")`（agent.ts 已登记，转发到标准 setSessionModel）。不要"修" SDK 里那两处辅助方法（node_modules 是产物）。
 
 ## 已知扩展点（勿破坏预留接口）
 
 - Anthropic 原生 provider（接口已就绪，未实现）。
 - 图片/音频输入、多模式（`session/set_mode`）。
 - MCP 连接按会话回收（当前进程退出时统一关闭，受 ACP 0.4.5 无会话结束事件限制）。
+- TUI v2：`/resume`（session/load 续持久化会话）、权限弹窗内实时 bash 输出（客户端 createTerminal，terminal:true）、多行输入。

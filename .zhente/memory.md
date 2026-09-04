@@ -69,15 +69,19 @@
 - 本地 DeepSeek 配置当前开放 `deepseek-v4-flash` 和 `deepseek-v4-pro`，默认 `deepseek-v4-flash`。
 - ACP TypeScript SDK 0.4.5 的 `ClientSideConnection.setSessionModel` 错误发送 `session/set_mode`，但 Agent 服务端 `session/set_model` 路由正确；Zed 直接发协议请求不受该辅助方法 bug 影响。
 
-## 待办：TUI 支持（设计已完成，未实现）
+## TUI 支持（已实现，feature-tui 分支）
 
-- 设计文档：`plan/tui_support.md`（`zhente tui` 子命令、进程内 ACP 内存流配对、/model 与 /access 斜杠命令、红/绿/白三色主题）。已过两轮 review（`plan/tui_support-review.md`、`plan/tui_support-review2.md`），backlog A/B/C 组与 N1~N4 全部落地。
-- 核心洞察：`/model`(session/set_model) 与 `/access`(session/set_mode) 的能力 agent 侧已就绪并随会话持久化；TUI 通过内存流配对（PassThrough + ndJsonStream + ClientSideConnection，方向见设计 §2 C6）驱动同一 ZhenTeAgent；stdio 只归 UI。agent.ts 仅两处 1~2 行小改：`setSessionMode` 里 `session.permissions.clear()`（N1：切模式即重置"总是允许/拒绝"记忆，Zed/TUI 同时受益）+ 项目记忆初始化 turn 传 `session.abort` signal（B3 既存缺陷）。
-- 命令语义（最新）：`/access` 无参**只显示不切换**，进 Full Access(auto) 需 `/access full` + 二次确认（C3）；`/model` 下一轮才生效（B5），`/access` 立即生效。
-- 配色：默认**不强制黑底**（撞浅色/半透明终端），`--crt` 才输出 `\x1b[40m`；颜色永不作唯一通道 + 支持 NO_COLOR（C1）；界面符号全 ASCII（B9，自 wcwidth ~30 行，零新依赖）。
-- 日志：logger 无条件写 stderr（`logger.ts` emit），TUI 必须 `logger.configure({ stderr:false })` + ZHENTE_LOG_DIR 落盘；配置须运行时 configure（模块加载即固化，A2）。
-- 关键坑：中文 IME → 输入行 readline cooked 而非裸 raw；TUI 分支完全接管生命周期（不注册 ACP 模式 SIGINT）；崩溃/信号恢复用幂等 `restoreTerminal()`（B8）；权限弹窗 options 动态编号、Esc 优先回 reject_once（B4/N4）；取消 turn 须 resolve 未决权限请求（A7）。
-- 实现时建议按 plan/tui_support.md §13 的 0~8 步走（**步骤 0 是 cooked↔raw spike，失败直接上 ink**）；跑完冒烟记得把 src/tui/ 目录、`zhente tui` 入口与 `smoke:tui` 写进 AGENTS.md，README 加 TUI 用法章节。
+- 设计文档：`plan/tui_support.md`（`zhente tui` 子命令、进程内 ACP 内存流配对、/model 与 /access 斜杠命令、红/绿/白三色主题）。实现于 `src/tui/`，见 AGENTS.md 目录约定。
+- **进程内配对**：bridge.ts 用两个 PassThrough 构成双向 NDJSON（A=client→agent，B=agent→client；接反=自己跟自己说话挂死）。agent 侧 `ndJsonStream(write B, read A)` 喂 ZhenTeAgent，client 侧 `ndJsonStream(write A, read B)` 接 ClientSideConnection。stdio 只归 UI。
+- **输入层改判（spike 证伪 readline）**：设计原定 readline 行编辑 + raw 弹窗 pause/resume 切换；步骤 0 spike 用 pty 实测发现 `rl.pause()` 后 readline 的 keypress 监听仍消费字节（弹窗按键混进输入行，LINE "1def"）。结论：**自研 raw 键盘解析 keys.ts（StringDecoder 增量 UTF-8 + CSI/SS3 状态机）+ input.ts 行编辑**，输入行与弹窗共用同一解析，天然消除"切换残留"。CJK 宽度用自带最小 wcwidth（unicode property 正则，零依赖）；全界面 ASCII 符号。
+- **/model 走 ACP 扩展方法**：SDK 0.4.5 `ClientSideConnection.setSessionModel` 错发 `session/set_mode`（辅助方法 bug，agent 服务端路由本身正确）。TUI 客户端走 `extMethod("zhente.set_model")`（agent.ts 的 extMethod 已登记，转发到标准 setSessionModel，校验/持久化/错误语义一致）——不是旁路 API。Zed 直发协议不受影响。
+- **agent 侧两处小改**（均为所有客户端受益的行为增强）：`setSessionMode` 里 `session.permissions.clear()`（N1：切模式重置"总是允许/拒绝"记忆，`/access standard` 与 `/permissions reset`(语法糖重发 set_mode) 都是恢复途径，M3 不做 already-in-mode 短路）；项目初始化 turn 改传 `session.abort` signal（B3：首次进新目录 Ctrl+C 可取消，之前用独立 AbortController 最多卡 12 轮）。
+- **权限弹窗**：按 agent 返回的 `options[]` 动态编号（初始化请求 3/5 项、工具 4 项，B4）；`option.name` 原样显示；Esc 优先回 `reject_once`（N4），无此选项才回 cancelled；取消 turn（Ctrl+C）时 bridge 以 cancelled resolve 所有未决权限请求（A7），否则 ensurePermission 永久 await、prompt 永不返回。
+- **生命周期**：TUI 分支完全接管（不注册 ACP 模式 SIGINT/stdin-close）；`restoreTerminal()`（`?1049l`+`?25h`）幂等，挂在正常退出、`process.on("exit")`、uncaughtException/unhandledRejection、SIGTERM/SIGHUP 全路径；fatal 先 restore 再打 stderr（备用屏未恢复时用户看不到）。
+- **日志**：logger.ts 加运行时 `logger.configure({ stderr:false, level, dir })`；TUI 启动即 configure 到 `$ZHENTE_LOG_DIR` 或 tmpdir（info→warn 级），日志只进文件不污染备用屏。
+- **验收**：`npm run smoke:tui`（41 断言 headless：命令解析/主题/输入/通知映射/plan 整体替换/tool failed 直达/内存配对权限流/N1/A7 取消）；pty 驱动手工回归 20 项全 PASS（状态栏/中文输入/权限弹窗 Esc→reject/Full Access 横幅+badge/access 切换/model 选择器/退出恢复）；非 TTY 与 TERM=dumb 守卫友好报错。
+- **顺手修复**：agent.ts prepareSession 补工具计数诊断日志（`skills=N mcpTools=N`），恢复 main 上已损坏的 `smoke:mcp` 断言（旧日志格式在 db13a84 重构中被移除，测试自初始提交未改）。
+- 待办（TUI v2，设计已预留）：`/resume`（session/load）、权限弹窗内实时 bash 输出（createTerminal，terminal:true）、多行输入；交互冒烟仍是手工（无 node-pty，零依赖）。
 
 ## DPAIA Benchmark（dpaia-benchmark/）
 
