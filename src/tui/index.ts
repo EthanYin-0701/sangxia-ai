@@ -239,13 +239,14 @@ export async function runTui(argv: string[]): Promise<number> {
   // Rejected promises are handled at their source (see fireAndLog / submit's
   // try-catch); anything that still slips through must NOT kill the UI — log
   // it and surface a red row instead.
-  process.on("unhandledRejection", (reason) => {
+  const onUnhandledRejection = (reason: unknown): void => {
     logger.error("未处理的 Promise 拒绝（已降级为提示）:", reason);
     if (!state.quitting) {
       model.addNotice(`内部错误：${reason instanceof Error ? reason.message : String(reason)}`, true);
       render();
     }
-  });
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
   const onSignal = (sig: NodeJS.Signals): void => {
     restoreTerminal();
     logger.info(`signal ${sig}, exiting`);
@@ -727,7 +728,7 @@ export async function runTui(argv: string[]): Promise<number> {
     process.removeListener("SIGTERM", onSignal);
     process.removeListener("SIGHUP", onSignal);
     process.removeListener("uncaughtException", fatal);
-    process.removeListener("unhandledRejection", fatal);
+    process.removeListener("unhandledRejection", onUnhandledRejection);
     stdout.removeListener("resize", onResize);
     restoreTerminal();
     logger.info("zhente tui exit");
