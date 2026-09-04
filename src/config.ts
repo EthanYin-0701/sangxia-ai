@@ -162,6 +162,9 @@ function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
 
 export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
   const path = resolveConfigPath(argv);
+  // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 ZHENTE_BASE_URL /
+  //   ZHENTE_API_KEY / ZHENTE_MODEL 组合 provider 配置，实现 headless 零配置直跑
+  //   （见 plan/acpreg.md §2.3 路径 C、§3 阶段 1）。
   if (!path) {
     throw new Error(
       "未找到配置文件。请用 --config <path> 指定，或创建 ./zhente.config.json（参考 zhente.config.example.json）。",

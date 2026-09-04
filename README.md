@@ -174,7 +174,8 @@ stdio (JSON-RPC / ACP)
    Session (src/session.ts)       ← 每会话历史 / cwd / 权限记忆 / 取消 / MCP 连接 / 技能
 ```
 
-- **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存文件，`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。
+- **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存为单个文件；`ZHENTE_LOG_DIR` 可按 session 分文件，见下；`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。
+- **按 session 分日志**：设置 `ZHENTE_LOG_DIR=<目录>` 后，每个 session 的日志写入 `<目录>/<sessionId>.log`（启动、`initialize` 等无 session 的日志写入 `<目录>/global.log`）。session 归属基于 Node `AsyncLocalStorage`（`logger.withSession`），多 session 并发执行时日志也不会串文件；行内带 `[session=<id>]` 标记；同时设置时 `ZHENTE_LOG_DIR` 优先于 `ZHENTE_LOG_FILE`。
 - Provider 是接口，新增后端（如 Anthropic 原生）只需实现 `LLMProvider` 再在 `llm/factory.ts` 注册。
 - 会话工具集在 `newSession`/`loadSession` 组装：内置工具 + `use_skill`（若发现技能）+ 已连接的 MCP 工具（`src/agent.ts`）。
 - 会话历史默认持久化到 `~/.config/zhente/sessions/<sessionId>.json`，可用 `ZHENTE_SESSION_DIR` 修改目录；支持 ACP `session/load` 恢复历史。

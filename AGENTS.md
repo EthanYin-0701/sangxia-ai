@@ -35,7 +35,7 @@ src/
   skills/      技能发现与 use_skill（index.ts）
   tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts
   index.ts     入口（stdio JSON-RPC）
-  logger.ts    日志（stdout 是协议通道，日志一律走 stderr / ZHENTE_LOG_FILE）
+  logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 ZHENTE_LOG_FILE 单文件或 ZHENTE_LOG_DIR 按 session 分文件）
   persistence.ts  会话历史持久化（~/.config/zhente/sessions/）
   project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载
 doc/uml/       时序图（prompt-turn）
@@ -46,7 +46,7 @@ scripts/       冒烟测试脚本（*.mjs）
 
 1. **先读后改**：不臆测文件内容，先用 `read_file`/`list_dir`/`glob`/`grep` 确认；修改用 `edit_file` 做最小化精确改动。
 2. **运行命令**：构建/测试/git 等一律通过 `bash` 执行；提交前必须过 `npm run typecheck`（可再跑 `npm run build`）。
-3. **日志纪律**：stdout 是 ACP 协议通道，任何调试/日志输出必须走 stderr 或 `ZHENTE_LOG_FILE`，严禁污染 stdout。日志时间戳含本地时区 UTC 偏移；宿主时区不对时用 `ZHENTE_LOG_TIMEZONE` 修正。
+3. **日志纪律**：stdout 是 ACP 协议通道，任何调试/日志输出必须走 stderr 或 `ZHENTE_LOG_FILE`/`ZHENTE_LOG_DIR`，严禁污染 stdout。日志时间戳含本地时区 UTC 偏移；宿主时区不对时用 `ZHENTE_LOG_TIMEZONE` 修正。`ZHENTE_LOG_DIR` 按 session 分文件（`<sessionId>.log` + `global.log`），session 归属用 `AsyncLocalStorage` 实现（`logger.withSession`，见 agent.ts 的 newSession/loadSession/prompt/cancel 包裹），多 session 并发也不串文件。
 4. **配置与密钥**：`zhente.config.json` 已被 gitignore，不要提交；密钥用 `${ENV_VAR}` 引用，避免落盘。
 5. **产物与生成文件**：`dist/`、`node_modules/` 为构建产物，不手改、不提交。
 6. **记忆维护**：跨 session 的项目背景、重要决策、待办事项写入 `.zhente/memory.md`（每次 session 自动加载）；涉及架构/决策/未完成事项时，任务完成后更新。

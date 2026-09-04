@@ -71,6 +71,9 @@ const client = {
 const conn = new ClientSideConnection(() => client, stream);
 
 try {
+  // TODO(acpreg): 扩展冒烟断言 —— initialize 响应需包含 authMethods（Terminal Auth），
+  //   并新增无配置环境下的 AUTH_REQUIRED 用例；另见计划新增 scripts/smoke-setup.mjs
+  //   （见 plan/acpreg.md §3 阶段 3）。
   const init = await conn.initialize({
     protocolVersion: PROTOCOL_VERSION,
     clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },

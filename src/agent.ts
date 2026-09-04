@@ -60,6 +60,9 @@ export class ZhenTeAgent implements Agent {
       terminal: Boolean(params.clientCapabilities?.terminal),
     };
     logger.info("initialize: client caps =", this.#clientCaps);
+    // TODO(acpreg): ACP 注册准入 —— initialize 响应需声明 authMethods（Terminal Auth：
+    //   { id: "terminal-setup", name, description }），否则无法通过 registry CI 的
+    //   authMethods 校验（见 plan/acpreg.md §2.2、§3 阶段 2）。
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
@@ -72,39 +75,45 @@ export class ZhenTeAgent implements Agent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+    // TODO(acpreg): 未认证（unconfigured）时拒绝建会话，返回 AUTH_REQUIRED 错误并
+    //   提示运行 `zhente setup`（见 plan/acpreg.md §2.2、§3 阶段 2）。
     const id = randomUUID();
-    const session = new Session(
-      id,
-      params.cwd,
-      params.mcpServers ?? [],
-      this.#clientCaps,
-      this.#config.agent.permissionMode,
-      this.#config.provider.model,
-    );
-    await this.prepareSession(session);
-    session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
-    this.#sessions.set(id, session);
-    await this.persist(session);
-    logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
-    return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+    return logger.withSession(id, async () => {
+      const session = new Session(
+        id,
+        params.cwd,
+        params.mcpServers ?? [],
+        this.#clientCaps,
+        this.#config.agent.permissionMode,
+        this.#config.provider.model,
+      );
+      await this.prepareSession(session);
+      session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
+      this.#sessions.set(id, session);
+      await this.persist(session);
+      logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
+      return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+    });
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     const saved = await loadPersistedSession(params.sessionId);
     if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
-    const session = new Session(
-      params.sessionId,
-      params.cwd || saved.cwd,
-      params.mcpServers ?? [],
-      this.#clientCaps,
-      saved.permissionMode ?? this.#config.agent.permissionMode,
-      this.isAvailableModel(saved.modelId) ? saved.modelId : this.#config.provider.model,
-    );
-    await this.prepareSession(session);
-    session.messages = saved.messages;
-    this.#sessions.set(session.id, session);
-    logger.info(`loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length}`);
-    return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+    return logger.withSession(params.sessionId, async () => {
+      const session = new Session(
+        params.sessionId,
+        params.cwd || saved.cwd,
+        params.mcpServers ?? [],
+        this.#clientCaps,
+        saved.permissionMode ?? this.#config.agent.permissionMode,
+        this.isAvailableModel(saved.modelId) ? saved.modelId : this.#config.provider.model,
+      );
+      await this.prepareSession(session);
+      session.messages = saved.messages;
+      this.#sessions.set(session.id, session);
+      logger.info(`loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length}`);
+      return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+    });
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<void> {
@@ -214,33 +223,38 @@ export class ZhenTeAgent implements Agent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
+    // TODO(acpreg): 未认证（unconfigured）时 prompt 返回 AUTH_REQUIRED JSON-RPC 错误
+    //   （含 type:"terminal"、args:["setup"] 声明），而不是继续运行（见 plan/acpreg.md
+    //   §2.2、§3 阶段 2）。
     const session = this.#sessions.get(params.sessionId);
     if (!session) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     }
 
-    const text = promptToText(params.prompt);
-    await this.maybeInitializeProject(session, text);
-    session.messages.push({ role: "user", content: text });
-    await this.persist(session);
-
-    const abort = new AbortController();
-    session.abort = abort;
-    try {
-      const stopReason = await runTurn({
-        conn: this.#conn,
-        session,
-        provider: this.providerFor(session.modelId),
-        tools: session.tools,
-        config: this.#config.agent,
-        signal: abort.signal,
-      });
+    return logger.withSession(params.sessionId, async () => {
+      const text = promptToText(params.prompt);
+      await this.maybeInitializeProject(session, text);
+      session.messages.push({ role: "user", content: text });
       await this.persist(session);
-      logger.info(`prompt ${params.sessionId} → ${stopReason}`);
-      return { stopReason };
-    } finally {
-      session.abort = null;
-    }
+
+      const abort = new AbortController();
+      session.abort = abort;
+      try {
+        const stopReason = await runTurn({
+          conn: this.#conn,
+          session,
+          provider: this.providerFor(session.modelId),
+          tools: session.tools,
+          config: this.#config.agent,
+          signal: abort.signal,
+        });
+        await this.persist(session);
+        logger.info(`prompt ${params.sessionId} → ${stopReason}`);
+        return { stopReason };
+      } finally {
+        session.abort = null;
+      }
+    });
   }
 
   private async maybeInitializeProject(session: Session, prompt: string): Promise<void> {
@@ -325,13 +339,16 @@ export class ZhenTeAgent implements Agent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    const session = this.#sessions.get(params.sessionId);
-    session?.abort?.abort();
-    logger.info(`cancel ${params.sessionId}`);
+    return logger.withSession(params.sessionId, () => {
+      const session = this.#sessions.get(params.sessionId);
+      session?.abort?.abort();
+      logger.info(`cancel ${params.sessionId}`);
+    });
   }
 
-  // No authentication required (we advertise no authMethods), but the ACP Agent
-  // interface requires the method to exist.
+  // TODO(acpreg): ACP 注册准入 —— 实现 Terminal Auth 认证：methodId === "terminal-setup"
+  //   时，stdin 为 TTY 则直接进入 `zhente setup` 交互向导，否则返回引导说明；已认证
+  //   状态返回成功即可（见 plan/acpreg.md §2.2、§3 阶段 2）。
   async authenticate(): Promise<void> {
     /* no-op */
   }
