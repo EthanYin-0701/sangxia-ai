@@ -26,6 +26,10 @@
 - 配置项决定新会话默认模式，实际模式保存在 `Session.permissionMode` 并随会话持久化；变更工具执行时读取会话模式。
 - 覆盖优先级：CLI `--permission-mode auto|confirm` > 环境变量 `ZHENTE_PERMISSION_MODE` > 配置文件（实现于 `src/config.ts` 的 `permissionModeOverride`），便于 IDE ACP agent 配置（args/env）里按 agent 各自选择。
 
+## 设计书（根据代码整理）
+
+- `plan/agent-design.md`：依据现有代码整理的完整设计书（架构分层/harness/权限模型/工具系统/LLM 抽象/MCP/技能/TUI/持久化/健壮性/配置/待办扩展点），与 `src/` 代码一一对应；后续改动大时记得同步更新。
+
 ## 待办：Sub Agent 工作模式（设计已完成，未实现）
 
 - 设计文档：`plan/subAgentPlan-ds4flash.md`（spawn_subagent 工具、独立子上下文循环、权限模型、配置 schema、实施步骤）。
