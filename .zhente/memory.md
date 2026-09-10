@@ -73,7 +73,9 @@
 - 本地 DeepSeek 配置当前开放 `deepseek-v4-flash` 和 `deepseek-v4-pro`，默认 `deepseek-v4-flash`。
 - ACP TypeScript SDK 0.4.5 的 `ClientSideConnection.setSessionModel` 错误发送 `session/set_mode`，但 Agent 服务端 `session/set_model` 路由正确；Zed 直接发协议请求不受该辅助方法 bug 影响。
 
-## TUI 支持（已实现，feature-tui 分支）
+## TUI 支持（已实现，已合并入 main）
+
+- 合并记录：`feature-tui` 以 `--no-ff` 合入 `main`（merge commit `960cac3`，前一个 main 为 `f0358ba`）；合并后 `main` 内容与 `feature-tui` 完全一致，本地分支 `feature-tui` 保留未删。
 
 - 设计文档：`plan/tui_support.md`（`zhente tui` 子命令、进程内 ACP 内存流配对、/model 与 /access 斜杠命令、红/绿/白三色主题）。实现于 `src/tui/`，见 AGENTS.md 目录约定。
 - **进程内配对**：bridge.ts 用两个 PassThrough 构成双向 NDJSON（A=client→agent，B=agent→client；接反=自己跟自己说话挂死）。agent 侧 `ndJsonStream(write B, read A)` 喂 ZhenTeAgent，client 侧 `ndJsonStream(write A, read B)` 接 ClientSideConnection。stdio 只归 UI。
@@ -87,7 +89,7 @@
 - **顺手修复**：agent.ts prepareSession 补工具计数诊断日志（`skills=N mcpTools=N`），恢复 main 上已损坏的 `smoke:mcp` 断言（旧日志格式在 db13a84 重构中被移除，测试自初始提交未改）。
 - 待办（TUI v2，设计已预留）：`/resume`（session/load）、权限弹窗内实时 bash 输出（createTerminal，terminal:true）、多行输入；交互冒烟仍是手工（无 node-pty，零依赖）。
 
-## TUI 代码 review 修复（P0/P1，已合入 feature-tui）
+## TUI 代码 review 修复（P0/P1，已合入 main）
 
 - Review 文档：`plan/tui_code-review.md`。P0+P1 六项全部修复 + 冒烟断言补齐（smoke:tui 47→50 断言，另补 pty 回归）。
 - **P0-1 行尾残留**：`writeDiffed` 每行重写追加 `\x1b[K`（chat/tool/dialog 行不补白，行变短/变空会残留旧字形）。
