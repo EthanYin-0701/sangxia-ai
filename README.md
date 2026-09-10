@@ -1,4 +1,4 @@
-# ZhenTe · 基于 Node.js 的 ACP Coding AI Agent
+# 珍特 · 基于 Node.js 的 ACP Coding AI Agent
 
 一个用 TypeScript 写的编程 AI agent：
 
@@ -20,7 +20,12 @@ export OPENAI_API_KEY=sk-...        # 配置里用 ${OPENAI_API_KEY} 引用
 # 冒烟测试（离线，无需 key）
 npm run smoke          # 完整 ACP 握手 + 工具 + 权限流（mock provider）
 npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器）
+
+# 两种用法：接入 Zed 等 ACP 客户端（见「接入 Zed」），或直接在终端里用 TUI
+node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ```
+
+> 下文的 `zhente` 是 `package.json` 里声明的 bin 名；本地仓库直接用 `node dist/index.js …`，或先 `npm link` 让 `zhente` 进 PATH。
 
 ## 配置
 
@@ -63,6 +68,8 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
 > **会话模型选择**：配置 `provider.models` 后，ZhenTe 会在 `session/new` / `session/load` 返回 ACP model 列表，并处理 `session/set_model`。`provider.model` 是新会话默认值，且必须出现在 `models` 中；未配置 `models` 时只暴露默认模型。
 
 支持 ACP Session Modes 的客户端会在会话输入框下方显示权限下拉菜单：`Standard Access` 对应 `confirm`，`Full Access` 对应 `auto`。配置文件、CLI 或环境变量决定新会话的默认选项；在下拉菜单中的切换仅作用于当前会话，并随会话持久化。
+
+> **切换模式会清空权限记忆**：`session/set_mode` 会同时清空该会话里已记住的「总是允许 / 总是拒绝」决策。ACP 没有单独的「重置授权」消息，因此这也是误按「总是拒绝」后唯一的恢复途径（Zed 里切一次模式、TUI 里 `/access standard` 或 `/permissions reset` 均可）。
 
 ### 兼容的端点
 
@@ -113,6 +120,7 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
 | 权限控制 | 变更类工具执行前 `session/request_permission`（可"总是允许/拒绝"并记忆） | — |
 | LLM 后端 | 任意 OpenAI 兼容 `/chat/completions`（`openai` / `mock` provider），JSON 配置 | 可换 baseURL/model |
 | 取消 | `session/cancel` 中断进行中的 turn | — |
+| 终端界面 | `zhente tui`：同进程 ACP 配对的聊天式 TUI（流式/工具行/权限弹窗/斜杠命令） | 见「终端界面（TUI）」 |
 
 ## 内置工具
 
@@ -162,8 +170,11 @@ description: 一句话说明何时用它（会进 system prompt 清单）
 ## 架构
 
 ```
-stdio (JSON-RPC / ACP)
-        │
+入口 A  stdio (JSON-RPC / ACP)     ← Zed 等 ACP 客户端驱动
+入口 B  zhente tui (src/tui/)      ← 界面自带 ClientSideConnection，
+        │                            经内存流 PassThrough 与下方 agent 配对；
+        │                            两个入口走完全相同的协议路径
+        ▼
    AgentSideConnection            ← @zed-industries/agent-client-protocol
         │
    ZhenTeAgent (src/agent.ts)     ← initialize / newSession / prompt / cancel
@@ -174,7 +185,7 @@ stdio (JSON-RPC / ACP)
    Session (src/session.ts)       ← 每会话历史 / cwd / 权限记忆 / 取消 / MCP 连接 / 技能
 ```
 
-- **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存为单个文件；`ZHENTE_LOG_DIR` 可按 session 分文件，见下；`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。
+- **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存为单个文件；`ZHENTE_LOG_DIR` 可按 session 分文件，见下；`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。TUI 模式下 stdout 是渲染目标而非协议通道，因此启动时会 `logger.configure({ stderr: false, … })` 把日志只写进文件。
 - **按 session 分日志**：设置 `ZHENTE_LOG_DIR=<目录>` 后，每个 session 的日志写入 `<目录>/<sessionId>.log`（启动、`initialize` 等无 session 的日志写入 `<目录>/global.log`）。session 归属基于 Node `AsyncLocalStorage`（`logger.withSession`），多 session 并发执行时日志也不会串文件；行内带 `[session=<id>]` 标记；同时设置时 `ZHENTE_LOG_DIR` 优先于 `ZHENTE_LOG_FILE`。
 - Provider 是接口，新增后端（如 Anthropic 原生）只需实现 `LLMProvider` 再在 `llm/factory.ts` 注册。
 - 会话工具集在 `newSession`/`loadSession` 组装：内置工具 + `use_skill`（若发现技能）+ 已连接的 MCP 工具（`src/agent.ts`）。
@@ -183,16 +194,44 @@ stdio (JSON-RPC / ACP)
 - 如果上述任一文件缺失，第一次正式 prompt 前会请求用户确认；确认后 agent 会先扫描项目并只补齐缺失的记忆文件，再执行原始任务。
 - 一次 prompt 的完整时序见 [`doc/uml/prompt-turn.md`](doc/uml/prompt-turn.md)。
 
+## 终端界面（TUI）
+
+`zhente tui` 在真实终端里启动一个聊天式 TUI，与 Zed 走**同一套 ACP 协议**：内部把同一个 `ZhenTeAgent` 通过内存流配对到客户端侧，stdio 只归界面（渲染 + 键盘）。
+
+```bash
+zhente tui                          # 需要 stdin 与 stdout 均为 TTY；非 TTY 会友好报错
+zhente tui --crt                    # 可选 CRT 黑底模式（默认不强制黑底）
+zhente tui --config ./other.json    # 与 ACP 模式共用同一套配置解析
+zhente tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即有红色 badge + 横幅）
+```
+
+- **布局**：状态栏（agent · 当前模型 · cwd + 权限 badge）→ 对话区（流式回答/工具行/TODO 计划）→ 权限弹窗（confirm 模式）→ 输入行。配色红/绿/白三色（安全=绿、危险/错误=红、正文=白，**颜色永不作唯一通道**）；设置 `NO_COLOR` 可去色。
+- **斜杠命令**（纯客户端本地命令）：
+  - `/model [modelId]` 查看/切换模型（配置 `provider.models`；无参数弹选择器；模型**下一轮生效**，状态栏带 `*` 待生效标记）。
+  - `/access` 只显示当前权限模式；`/access full` 进入 FULL ACCESS（需二次确认，变更不再请求确认，红横幅+badge）；`/access standard` 切回每次确认。切换会清空本会话"总是允许/总是拒绝"记忆。
+  - `/permissions reset` 清空记住的授权决策（等价于重发一次 `set_mode`）；`/help`、`/clear`（只清屏，不动会话历史）、`/new`（重开会话，仅空闲时可用）、`/quit`。
+- **快捷键**：Enter 发送（上一轮未结束时禁用，Ctrl+C 可取消该轮）、↑/↓ 输入历史、Tab 补全命令/modelId、Ctrl+C 清空输入行（turn 中 = 取消）、Ctrl+U 删到行首、Ctrl+W 删词、Ctrl+A/Ctrl+E 行首/行尾、Ctrl+D 删字符（空行 = 退出）、PgUp/PgDn 与 Shift+↑/↓ 滚动对话区、Esc 关弹窗。权限弹窗支持数字键直选或 ↑/↓ + Enter；模型选择器用 ↑/↓ + Enter，Esc 取消。
+- **粘贴**：启用了终端 bracketed paste，粘贴多行文本不会被当成多次回车——换行会归一成空格并入单行输入（v1 是单行编辑器）。
+- **日志**：TUI 模式下日志不打印到屏幕，只写入 `ZHENTE_LOG_DIR`（未设置时为系统临时目录 `zhente-tui-logs/`），级别默认降到 `warn`。
+- **已知差异**：TUI 不向 agent 声明 `fs` / `terminal` 能力，文件读写与 `bash` 都走本地 Node 回退——`bash` 输出在命令结束时一次性返回（工具行的 spinner + 计时是"仍在运行"的唯一信号）；Zed 里则走编辑器的终端、输出实时可见。
+
 ## 开发
 
 ```bash
 npm run dev         # tsx 直跑 src/index.ts
 npm run typecheck   # 仅类型检查
 npm run build       # 编译到 dist/
+npm run smoke        # ACP 握手 + 工具 + 权限流冒烟（mock provider）
+npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器）
+npm run smoke:mcp    # MCP 工具 + 技能冒烟
+npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
 ```
 
 ## 目前未覆盖（预留扩展点）
 
 - Anthropic 原生 provider（接口已就绪）。
-- 图片/音频输入、多模式（`session/set_mode`）。
+- 图片/音频输入（`initialize` 里 `promptCapabilities.image/audio` 均为 false）。
 - MCP 连接的按会话回收（当前在进程退出时统一关闭；ACP 0.4.5 无会话结束事件）。
+- TUI v2：`/resume`（`session/load` 续持久化会话）、权限弹窗内的实时 `bash` 输出（客户端 `createTerminal`）、多行输入。
+
+> 权限模式（`session/set_mode`）与模型选择（`session/set_model`）已实现，见上文「配置」。

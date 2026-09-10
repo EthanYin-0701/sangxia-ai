@@ -123,8 +123,12 @@ export class ZhenTeAgent implements Agent {
       throw RequestError.invalidParams({ modeId: `未知权限模式: ${params.modeId}` });
     }
     session.permissionMode = params.modeId;
+    // N1: switching access mode resets remembered "always allow/reject"
+    // decisions — the recovery path for an accidental "always reject" (the
+    // ACP protocol has no message to read/clear that map).
+    session.permissions.clear();
     await this.persist(session);
-    logger.info(`session ${session.id} permissionMode=${session.permissionMode}`);
+    logger.info(`session ${session.id} permissionMode=${session.permissionMode} (permission memory cleared)`);
   }
 
   async setSessionModel(params: SetSessionModelRequest): Promise<void> {
@@ -195,7 +199,11 @@ export class ZhenTeAgent implements Agent {
       ...(session.skills.length > 0 ? [useSkillTool] : []),
       ...mcpTools,
     ]);
-
+    // Diagnostic used by scripts/smoke-mcp.mjs to verify MCP + skill wiring.
+    logger.info(
+      `session ${session.id} 工具集: builtin=${this.#builtinTools.length} ` +
+        `skills=${session.skills.length} mcpTools=${mcpTools.length}`,
+    );
   }
 
   private async systemPrompt(cwd: string, skills: Session["skills"], memoryCwd = cwd): Promise<string> {
@@ -233,13 +241,22 @@ export class ZhenTeAgent implements Agent {
 
     return logger.withSession(params.sessionId, async () => {
       const text = promptToText(params.prompt);
-      await this.maybeInitializeProject(session, text);
-      session.messages.push({ role: "user", content: text });
-      await this.persist(session);
 
+      // B3: one abort controller for the whole prompt turn — including the
+      // project-initialization sub-turn. Previously that sub-turn used a fresh
+      // AbortController, so Ctrl+C during a first-time init did nothing (the
+      // UI appeared hung for up to 12 iterations). Sharing session.abort lets
+      // session/cancel reach it like any other turn.
       const abort = new AbortController();
       session.abort = abort;
       try {
+        await this.maybeInitializeProject(session, text, abort.signal);
+        session.messages.push({ role: "user", content: text });
+        await this.persist(session);
+        if (abort.signal.aborted) {
+          logger.info(`prompt ${params.sessionId} cancelled during initialization`);
+          return { stopReason: "cancelled" };
+        }
         const stopReason = await runTurn({
           conn: this.#conn,
           session,
@@ -257,7 +274,7 @@ export class ZhenTeAgent implements Agent {
     });
   }
 
-  private async maybeInitializeProject(session: Session, prompt: string): Promise<void> {
+  private async maybeInitializeProject(session: Session, prompt: string, signal: AbortSignal): Promise<void> {
     if (session.initializationChecked) return;
     session.initializationChecked = true;
     const mentionedDirectory = await findMentionedDirectory(prompt, session.cwd);
@@ -326,7 +343,7 @@ export class ZhenTeAgent implements Agent {
         provider: this.providerFor(session.modelId),
         tools: new ToolRegistry(this.#builtinTools.filter((tool) => ["read_file", "list_dir", "glob", "grep", "write_file"].includes(tool.name))),
         config: { ...this.#config.agent, maxIterations: Math.min(this.#config.agent.maxIterations, 12) },
-        signal: new AbortController().signal,
+        signal,
       });
     } finally {
       if (previousWritePermission) session.permissions.set("write_file", previousWritePermission);
@@ -351,6 +368,22 @@ export class ZhenTeAgent implements Agent {
   //   状态返回成功即可（见 plan/acpreg.md §2.2、§3 阶段 2）。
   async authenticate(): Promise<void> {
     /* no-op */
+  }
+
+  /**
+   * Extension request handler. ACP 扩展点（客户端发 `_<method>` 请求）。
+   *
+   * 目前只登记 `zhente.set_model`：ACP SDK 0.4.5 的 ClientSideConnection.setSessionModel
+   * 辅助方法错发 `session/set_mode`（见 .zhente/memory.md），TUI 客户端因此改走扩展方法
+   * 通道转发到同一 setSessionModel —— 语义与标准 `session/set_model` 完全一致（同样的
+   * modelId 校验/持久化/日志），不是旁路 API。
+   */
+  async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (method === "zhente.set_model") {
+      await this.setSessionModel(params as unknown as SetSessionModelRequest);
+      return {};
+    }
+    throw RequestError.methodNotFound(`_${method}`);
   }
 
   /**

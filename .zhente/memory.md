@@ -26,6 +26,10 @@
 - 配置项决定新会话默认模式，实际模式保存在 `Session.permissionMode` 并随会话持久化；变更工具执行时读取会话模式。
 - 覆盖优先级：CLI `--permission-mode auto|confirm` > 环境变量 `ZHENTE_PERMISSION_MODE` > 配置文件（实现于 `src/config.ts` 的 `permissionModeOverride`），便于 IDE ACP agent 配置（args/env）里按 agent 各自选择。
 
+## 设计书（根据代码整理）
+
+- `plan/agent-design.md`：依据现有代码整理的完整设计书（架构分层/harness/权限模型/工具系统/LLM 抽象/MCP/技能/TUI/持久化/健壮性/配置/待办扩展点），与 `src/` 代码一一对应；后续改动大时记得同步更新。
+
 ## 待办：Sub Agent 工作模式（设计已完成，未实现）
 
 - 设计文档：`plan/subAgentPlan-ds4flash.md`（spawn_subagent 工具、独立子上下文循环、权限模型、配置 schema、实施步骤）。
@@ -69,15 +73,31 @@
 - 本地 DeepSeek 配置当前开放 `deepseek-v4-flash` 和 `deepseek-v4-pro`，默认 `deepseek-v4-flash`。
 - ACP TypeScript SDK 0.4.5 的 `ClientSideConnection.setSessionModel` 错误发送 `session/set_mode`，但 Agent 服务端 `session/set_model` 路由正确；Zed 直接发协议请求不受该辅助方法 bug 影响。
 
-## 待办：TUI 支持（设计已完成，未实现）
+## TUI 支持（已实现，feature-tui 分支）
 
-- 设计文档：`plan/tui_support.md`（`zhente tui` 子命令、进程内 ACP 内存流配对、/model 与 /access 斜杠命令、红/绿/白三色主题）。已过两轮 review（`plan/tui_support-review.md`、`plan/tui_support-review2.md`），backlog A/B/C 组与 N1~N4 全部落地。
-- 核心洞察：`/model`(session/set_model) 与 `/access`(session/set_mode) 的能力 agent 侧已就绪并随会话持久化；TUI 通过内存流配对（PassThrough + ndJsonStream + ClientSideConnection，方向见设计 §2 C6）驱动同一 ZhenTeAgent；stdio 只归 UI。agent.ts 仅两处 1~2 行小改：`setSessionMode` 里 `session.permissions.clear()`（N1：切模式即重置"总是允许/拒绝"记忆，Zed/TUI 同时受益）+ 项目记忆初始化 turn 传 `session.abort` signal（B3 既存缺陷）。
-- 命令语义（最新）：`/access` 无参**只显示不切换**，进 Full Access(auto) 需 `/access full` + 二次确认（C3）；`/model` 下一轮才生效（B5），`/access` 立即生效。
-- 配色：默认**不强制黑底**（撞浅色/半透明终端），`--crt` 才输出 `\x1b[40m`；颜色永不作唯一通道 + 支持 NO_COLOR（C1）；界面符号全 ASCII（B9，自 wcwidth ~30 行，零新依赖）。
-- 日志：logger 无条件写 stderr（`logger.ts` emit），TUI 必须 `logger.configure({ stderr:false })` + ZHENTE_LOG_DIR 落盘；配置须运行时 configure（模块加载即固化，A2）。
-- 关键坑：中文 IME → 输入行 readline cooked 而非裸 raw；TUI 分支完全接管生命周期（不注册 ACP 模式 SIGINT）；崩溃/信号恢复用幂等 `restoreTerminal()`（B8）；权限弹窗 options 动态编号、Esc 优先回 reject_once（B4/N4）；取消 turn 须 resolve 未决权限请求（A7）。
-- 实现时建议按 plan/tui_support.md §13 的 0~8 步走（**步骤 0 是 cooked↔raw spike，失败直接上 ink**）；跑完冒烟记得把 src/tui/ 目录、`zhente tui` 入口与 `smoke:tui` 写进 AGENTS.md，README 加 TUI 用法章节。
+- 设计文档：`plan/tui_support.md`（`zhente tui` 子命令、进程内 ACP 内存流配对、/model 与 /access 斜杠命令、红/绿/白三色主题）。实现于 `src/tui/`，见 AGENTS.md 目录约定。
+- **进程内配对**：bridge.ts 用两个 PassThrough 构成双向 NDJSON（A=client→agent，B=agent→client；接反=自己跟自己说话挂死）。agent 侧 `ndJsonStream(write B, read A)` 喂 ZhenTeAgent，client 侧 `ndJsonStream(write A, read B)` 接 ClientSideConnection。stdio 只归 UI。
+- **输入层改判（spike 证伪 readline）**：设计原定 readline 行编辑 + raw 弹窗 pause/resume 切换；步骤 0 spike 用 pty 实测发现 `rl.pause()` 后 readline 的 keypress 监听仍消费字节（弹窗按键混进输入行，LINE "1def"）。结论：**自研 raw 键盘解析 keys.ts（StringDecoder 增量 UTF-8 + CSI/SS3 状态机）+ input.ts 行编辑**，输入行与弹窗共用同一解析，天然消除"切换残留"。CJK 宽度用自带最小 wcwidth（unicode property 正则，零依赖）；全界面 ASCII 符号。
+- **/model 走 ACP 扩展方法**：SDK 0.4.5 `ClientSideConnection.setSessionModel` 错发 `session/set_mode`（辅助方法 bug，agent 服务端路由本身正确）。TUI 客户端走 `extMethod("zhente.set_model")`（agent.ts 的 extMethod 已登记，转发到标准 setSessionModel，校验/持久化/错误语义一致）——不是旁路 API。Zed 直发协议不受影响。
+- **agent 侧两处小改**（均为所有客户端受益的行为增强）：`setSessionMode` 里 `session.permissions.clear()`（N1：切模式重置"总是允许/拒绝"记忆，`/access standard` 与 `/permissions reset`(语法糖重发 set_mode) 都是恢复途径，M3 不做 already-in-mode 短路）；项目初始化 turn 改传 `session.abort` signal（B3：首次进新目录 Ctrl+C 可取消，之前用独立 AbortController 最多卡 12 轮）。
+- **权限弹窗**：按 agent 返回的 `options[]` 动态编号（初始化请求 3/5 项、工具 4 项，B4）；`option.name` 原样显示；Esc 优先回 `reject_once`（N4），无此选项才回 cancelled；取消 turn（Ctrl+C）时 bridge 以 cancelled resolve 所有未决权限请求（A7），否则 ensurePermission 永久 await、prompt 永不返回。
+- **生命周期**：TUI 分支完全接管（不注册 ACP 模式 SIGINT/stdin-close）；`restoreTerminal()`（`?1049l`+`?25h`）幂等，挂在正常退出、`process.on("exit")`、uncaughtException/unhandledRejection、SIGTERM/SIGHUP 全路径；fatal 先 restore 再打 stderr（备用屏未恢复时用户看不到）。
+- **日志**：logger.ts 加运行时 `logger.configure({ stderr:false, level, dir })`；TUI 启动即 configure 到 `$ZHENTE_LOG_DIR` 或 tmpdir（info→warn 级），日志只进文件不污染备用屏。
+- **验收**：`npm run smoke:tui`（41 断言 headless：命令解析/主题/输入/通知映射/plan 整体替换/tool failed 直达/内存配对权限流/N1/A7 取消）；pty 驱动手工回归 20 项全 PASS（状态栏/中文输入/权限弹窗 Esc→reject/Full Access 横幅+badge/access 切换/model 选择器/退出恢复）；非 TTY 与 TERM=dumb 守卫友好报错。
+- **顺手修复**：agent.ts prepareSession 补工具计数诊断日志（`skills=N mcpTools=N`），恢复 main 上已损坏的 `smoke:mcp` 断言（旧日志格式在 db13a84 重构中被移除，测试自初始提交未改）。
+- 待办（TUI v2，设计已预留）：`/resume`（session/load）、权限弹窗内实时 bash 输出（createTerminal，terminal:true）、多行输入；交互冒烟仍是手工（无 node-pty，零依赖）。
+
+## TUI 代码 review 修复（P0/P1，已合入 feature-tui）
+
+- Review 文档：`plan/tui_code-review.md`。P0+P1 六项全部修复 + 冒烟断言补齐（smoke:tui 47→50 断言，另补 pty 回归）。
+- **P0-1 行尾残留**：`writeDiffed` 每行重写追加 `\x1b[K`（chat/tool/dialog 行不补白，行变短/变空会残留旧字形）。
+- **P0-2 resize 失效 diff 缓存**：`ui.ts` 导出 `invalidateFrame()`（清 `prevRows` + 可清屏），resize handler 与 "terminal too small" 分支都先调用再重画——否则旧宽度帧的内容相同行被 diff 跳过，放大回来大片空白。
+- **P1-3 正文/工具行顺序**：`model.ts` 新增 `finalizeBeforeTool()`，收到 `tool_call` 或 `plan` 通知时先固化当前 streaming 文本段（只有文本才固化，纯 thinking 中间态如"（模型处理中…）"丢弃），转录按"解说→工具行→解说"时间序排列。
+- **P1-4 bracketed paste**：进备用屏发 `\x1b[?2004h`、restore 发 `\x1b[?2004l`；`keys.ts` 在字符串层识别 `ESC[200~…ESC[201~` 整体作为一个 `paste` key（多行含 \r\n 不触发 Enter）；index.ts 将粘贴内换行归一为空格插入单行输入框。
+- **P1-5 `/model` 待生效标记**：仅 turn 进行中（`state.busy`）切换才挂 `pendingModelSwitch`（状态栏"旧模型*"，prompt 返回后应用）；空闲切换立即更新 `currentModelId`、不加星、无"下一轮生效"文案——不再出现"用新模型跑的一整轮状态栏还显示旧模型"。
+- **P1-6 fire-and-forget Promise**：新增 `fireAndLog(p, what)`（.catch → logger.error + 红行 notice），替换 `submit`/`quit`/`cancelTurn`/`awaitCmd` 的裸 `void`；`unhandledRejection` 从 fatal 降级为"记日志 + 红行提示"（`uncaughtException` 仍 fatal exit）——连接异常不再整 UI 退出。
+- 顺手 P2-9：`bridge.respondPermission`/`dismissPermission` resolve 前先清 `#pendingPermission`/`#permissionRequest`（getter 不再返回已回答请求）。
+- 新增冒烟断言：行缩短/变空含 `\x1b[K`；`invalidateFrame` 后相同内容全量重画（定位序列数≥行数）；"文本→tool_call→文本"后 assistant 在 tool 之前、且 tool_call 不产生空 assistant 行；paste 单 key 且保留内嵌换行、其后按键正常。pty 新增粘贴（多行粘贴成单行不触发发送）与空闲 `/model` 即时切换无星两个场景。
 
 ## DPAIA Benchmark（dpaia-benchmark/）
 

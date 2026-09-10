@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:openai": "npm run build && node scripts/smoke-openai.mjs",
-    "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs"
+    "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
+    "smoke:tui": "npm run build && node scripts/smoke-tui.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
