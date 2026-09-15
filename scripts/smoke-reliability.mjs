@@ -19,6 +19,7 @@ import { validateToolArguments } from "../dist/harness/validation.js";
 import { ZhenTeAgent } from "../dist/agent.js";
 import { createHeadTailBuffer, truncateMiddle, truncationMarker } from "../dist/harness/truncate.js";
 import { bashTool } from "../dist/tools/bash.js";
+import { appendEvent, loadSession } from "../dist/persistence.js";
 
 const dir = await mkdtemp(join(tmpdir(), "zhente-reliability-"));
 process.env.ZHENTE_SESSION_DIR = join(dir, "sessions");
@@ -85,9 +86,8 @@ async function turn(sequence, { toolList = [], permission, config = {}, setup } 
     config: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null, ...config },
   });
   assert.deepEqual(sanitizeHistory(session.messages), session.messages, "history must remain paired");
-  const rawSaved = await readFile(join(dir, "sessions", `${session.id}.json`), "utf8").catch(() => null);
-  if (rawSaved) {
-    const saved = JSON.parse(rawSaved);
+  const saved = await loadSession(session.id).catch(() => null);
+  if (saved) {
     assert.deepEqual(saved.messages, JSON.parse(JSON.stringify(session.messages)));
     // M2: mid-turn checkpoints must carry the full field set (model/permission).
     assert.equal(saved.modelId, "test");
@@ -182,12 +182,18 @@ try {
   });
   await check("interrupted history is repaired as 'result unknown', turn-cancel stays 'not executed'", async () => {
     // Cross-restart repair (H1①): the tool may have completed before the process died.
-    const repaired = sanitizeHistory([
-      { role: "assistant", content: null, tool_calls: [{ id: "call_x", name: "bash", arguments: "{}" }] },
-    ]);
+    const orphan = [{ role: "assistant", content: null, tool_calls: [{ id: "call_x", name: "bash", arguments: "{}" }] }];
+    const repaired = sanitizeHistory(orphan);
     assert.equal(repaired.length, 2);
     assert.match(repaired[1].content, /结果未知/);
     assert.match(repaired[1].content, /核实/);
+    // H1②: with a persisted `tool_started` the wording is unchanged …
+    assert.match(sanitizeHistory(orphan, new Set(["call_x"]))[1].content, /结果未知/);
+    // … and without one the call provably never ran, so it is safe to retry.
+    const neverRan = sanitizeHistory(orphan, new Set(["call_other"]));
+    assert.match(neverRan[1].content, /未执行/);
+    assert.match(neverRan[1].content, /可以安全重试/);
+    assert.ok(!neverRan[1].content.includes("结果未知"));
 
     // In-turn cancel (loop.ts remaining-calls path): those calls truly never ran.
     const abortingWrite = { ...write, run: async (_args, { session }) => { session.abort.abort(); return { output: "ok" }; } };
@@ -200,6 +206,100 @@ try {
     const placeholder = r.session.messages.find((m) => m.role === "tool" && m.tool_call_id === "call-b");
     assert.match(placeholder.content, /未执行/);
     assert.ok(!placeholder.content.includes("结果未知"), "in-turn cancel wording must differ from cross-restart repair");
+  });
+  await check("JSONL event log round-trips history, mode/model and started tool calls", async () => {
+    const localWrite = { ...write, run: async () => ({ output: "ok" }) }; // don't touch the shared `executed` counter
+    const r = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}', "call_1")]), answer],
+      { toolList: [localWrite] });
+    assert.equal(r.stopReason, "end_turn");
+    const raw = await readFile(join(dir, "sessions", `${r.session.id}.jsonl`), "utf8");
+    const events = raw.trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(events[0].t, "meta");
+    assert.equal(events[0].version, 2);
+    assert.equal(events[0].cwd, dir);
+    assert.equal(events[0].modelId, "test");
+    assert.equal(events[0].permissionMode, "confirm");
+    assert.deepEqual(events.filter((e) => e.t === "tool_started").map((e) => e.toolCallId), ["call_1"]);
+    assert.deepEqual(events.filter((e) => e.t === "tool_finished").map((e) => e.status), ["completed"]);
+    // `tool_started` must precede the result, and the run must precede the finish.
+    assert.ok(events.findIndex((e) => e.t === "tool_started") < events.findIndex((e) => e.t === "tool_finished"));
+    // No snapshot rewrite: message events are appended once, exactly mirroring history.
+    assert.equal(events.filter((e) => e.t === "message").length, r.session.messages.length);
+    const { readdir } = await import("node:fs/promises");
+    assert.equal((await readdir(join(dir, "sessions"))).filter((f) => f.includes(".tmp-")).length, 0, "no tmp+rename snapshot writes");
+
+    const loaded = await loadSession(r.session.id);
+    assert.deepEqual(loaded.messages, JSON.parse(JSON.stringify(r.session.messages)));
+    assert.equal(loaded.modelId, "test");
+    assert.equal(loaded.permissionMode, "confirm");
+    assert.deepEqual([...loaded.startedToolCalls], ["call_1"]);
+    // A repaired history is replayed as a replacement, not doubled.
+    assert.deepEqual(
+      sanitizeHistory(loaded.messages, loaded.startedToolCalls),
+      JSON.parse(JSON.stringify(r.session.messages)),
+    );
+  });
+  await check("a crash during a tool leaves retry-safe vs unknown distinguishable", async () => {
+    // Simulate a run killed mid-tool: the log has the assistant message, a
+    // `tool_started` event and no result.
+    const id = randomUUID();
+    await appendEvent(id, { t: "meta", version: 2, sessionId: id, cwd: dir, permissionMode: "confirm", modelId: "test", createdAt: new Date().toISOString() });
+    await appendEvent(id, { t: "message", message: { role: "user", content: "go" } });
+    await appendEvent(id, { t: "message", message: { role: "assistant", content: null, tool_calls: [{ id: "started_1", name: "bash", arguments: "{}" }] } });
+    await appendEvent(id, { t: "tool_started", toolCallId: "started_1", name: "bash", at: new Date().toISOString() });
+    const loaded = await loadSession(id);
+    const repaired = sanitizeHistory(loaded.messages, loaded.startedToolCalls);
+    assert.match(repaired.at(-1).content, /结果未知/);
+    assert.ok(!repaired.at(-1).content.includes("安全重试"));
+  });
+  await check("a truncated tail line is ignored, corruption in the middle is skipped", async () => {
+    const r = await turn([answer]);
+    const path = join(dir, "sessions", `${r.session.id}.jsonl`);
+    const good = await readFile(path, "utf8");
+    await writeFile(path, `${good}{"t":"message","mess`, "utf8"); // half-written final line
+    const loaded = await loadSession(r.session.id);
+    assert.deepEqual(loaded.messages, JSON.parse(JSON.stringify(r.session.messages)));
+
+    const lines = good.trim().split("\n");
+    await writeFile(path, `${lines[0]}\nNOT JSON\n${lines.slice(1).join("\n")}\n`, "utf8");
+    const loaded2 = await loadSession(r.session.id);
+    assert.deepEqual(loaded2.messages, JSON.parse(JSON.stringify(r.session.messages)));
+  });
+  await check("legacy JSON snapshots are migrated to JSONL on first read", async () => {
+    const id = randomUUID();
+    const legacy = {
+      version: 1, sessionId: id, cwd: dir, permissionMode: "auto", modelId: "test",
+      updatedAt: new Date().toISOString(),
+      messages: [{ role: "user", content: "old" }, { role: "assistant", content: "old answer" }],
+    };
+    await mkdir(join(dir, "sessions"), { recursive: true });
+    await writeFile(join(dir, "sessions", `${id}.json`), JSON.stringify(legacy), "utf8");
+    const loaded = await loadSession(id);
+    assert.deepEqual(loaded.messages, legacy.messages);
+    assert.equal(loaded.permissionMode, "auto");
+    assert.equal(loaded.modelId, "test");
+    assert.equal(loaded.startedToolCalls.size, 0, "legacy logs carry no started evidence");
+    // Migrated in place: JSONL exists, the old snapshot is gone, content is equivalent.
+    const migrated = await readFile(join(dir, "sessions", `${id}.jsonl`), "utf8");
+    const events = migrated.trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(events[0].t, "meta");
+    assert.equal(events.filter((e) => e.t === "message").length, 2);
+    await assert.rejects(() => readFile(join(dir, "sessions", `${id}.json`), "utf8"));
+    assert.equal((await loadSession(id)).messages.length, 2);
+  });
+  await check("appending a turn does not rewrite the whole log", async () => {
+    const r = await turn([answer]);
+    let lines = (await readFile(join(dir, "sessions", `${r.session.id}.jsonl`), "utf8")).trim().split("\n").length;
+    // A second turn on the same session only appends its own new events.
+    rounds = [answer];
+    await runTurn({ conn: { async sessionUpdate() {} }, session: r.session, provider: new OpenAIProvider(cfg),
+      tools: new ToolRegistry([]), signal: new AbortController().signal,
+      config: { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, permissionMode: "confirm", systemPrompt: null } });
+    const raw = await readFile(join(dir, "sessions", `${r.session.id}.jsonl`), "utf8");
+    const events = raw.trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(events.length > lines, "second turn must append");
+    assert.equal(events.filter((e) => e.t === "message").length, r.session.messages.length,
+      "history must not be re-appended (O(n²) write amplification)");
   });
   await check("isError results get a model-visible prefix, idempotently", async () => {
     const boom = { ...guardedWrite, run: async () => ({ output: "boom", isError: true }) };
@@ -329,7 +429,7 @@ try {
       const planArgs = JSON.stringify({ plan: [{ content: "x", status: "pending", priority: "high" }] });
       rounds = [finish("tool_calls", [callDelta("update_plan", planArgs)]), answer];
       assert.equal((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })).stopReason, "end_turn");
-      const saved = JSON.parse(await readFile(join(dir, "sessions", `${sessionId}.json`), "utf8"));
+      const saved = await loadSession(sessionId);
       assert.equal(saved.modelId, "other");
       // loadSession also restores it.
       const { models, modes } = await agent.loadSession({ sessionId, cwd: dir, mcpServers: [] });

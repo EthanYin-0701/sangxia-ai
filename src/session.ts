@@ -42,6 +42,13 @@ export class Session {
   historyWarned = false;
 
   /**
+   * Tool call ids that actually started in a previous run (from the persisted
+   * `tool_started` events). Lets repair distinguish "may have run" from
+   * "never ran" — see `sanitizeHistory`.
+   */
+  startedToolCalls = new Set<string>();
+
+  /**
    * Whether a prompt turn is in flight (H2: one turn per session invariant).
    * Kept separate from {@link abort} so other paths can't mistake "abort is
    * set" for "a turn is running".

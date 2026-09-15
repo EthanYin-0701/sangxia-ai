@@ -3,7 +3,7 @@ import type { AgentConfig } from "../config.js";
 import type { ChatMessage, LLMProvider, ToolCallRequest } from "../llm/types.js";
 import { logger } from "../logger.js";
 import type { Session } from "../session.js";
-import { persistSession } from "../persistence.js";
+import { persistHistoryReset, persistSession, persistToolEvent } from "../persistence.js";
 import { ensurePermission } from "./permissions.js";
 import type { ToolRegistry } from "./tool.js";
 import { ToolTimeoutError } from "./tool.js";
@@ -16,6 +16,9 @@ export type StopReason = PromptResponse["stopReason"];
 /** Max characters of a tool result surfaced to the client / fed back to the model. */
 const MAX_TOOL_OUTPUT = 100_000;
 
+/** Fallback tool deadline when the config doesn't specify one (agent.toolTimeoutMs). */
+const DEFAULT_TOOL_TIMEOUT_MS = 300_000;
+
 /**
  * Repair a message history that an interrupted turn left inconsistent.
  *
@@ -26,11 +29,31 @@ const MAX_TOOL_OUTPUT = 100_000;
  * assistant message is persisted before its tool results are. This patches the
  * missing responses with placeholder tool messages and drops orphan `tool`
  * messages, so the next request is accepted again.
+ *
+ * The placeholder wording depends on the evidence in `startedToolCalls`
+ * (persisted `tool_started` events):
+ *  - the call did start → the process may have died after the side effect, so
+ *    the model must verify external state instead of blindly retrying;
+ *  - we do have started evidence for this session and the call is not in it →
+ *    it provably never ran, so it is safe to retry;
+ *  - no evidence at all (empty set, e.g. a log written before started events
+ *    existed) → stay conservative: treat the result as unknown.
  */
-export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
+export function sanitizeHistory(
+  messages: ChatMessage[],
+  startedToolCalls: ReadonlySet<string> = new Set(),
+): ChatMessage[] {
   const out: ChatMessage[] = [];
   // tool_call ids of the current assistant message still awaiting a response.
   let pending: string[] | null = null;
+  // An empty set carries no information: "not listed" must not be read as
+  // "did not run".
+  const hasEvidence = startedToolCalls.size > 0;
+
+  const placeholder = (id: string): string =>
+    !hasEvidence || startedToolCalls.has(id)
+      ? "Error: 该工具调用的结果未知（进程在工具执行期间中断）。若该操作可能有副作用，请先核实外部状态，再决定是否重试。"
+      : "Error: 该工具调用未执行（turn 被取消或中断），可以安全重试。";
 
   const flushPending = () => {
     if (pending && pending.length > 0) {
@@ -38,13 +61,7 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
         out.push({
           role: "tool",
           tool_call_id: id,
-          // H1①: this path only runs on turn-open repair, i.e. an interruption
-          // (crash / kill / cancel) from a *previous* process. The process may
-          // have died after the tool actually ran (bash committed, MCP opened a
-          // ticket), so claiming "未执行" would invite a duplicate side effect.
-          // Step 9 refines this into "可安全重试" for calls that never started.
-          content:
-            "Error: 该工具调用的结果未知（进程在工具执行期间中断）。若该操作可能有副作用，请先核实外部状态，再决定是否重试。",
+          content: placeholder(id),
         });
       }
     }
@@ -126,14 +143,14 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   // tool_calls without matching tool responses), otherwise OpenAI-compatible
   // endpoints reject the request with a 400.
   const before = session.messages.length;
-  const repaired = sanitizeHistory(session.messages);
+  const repaired = sanitizeHistory(session.messages, session.startedToolCalls);
   if (repaired.length !== before || repaired.some((m, i) => m !== session.messages[i])) {
     logger.warn(
       `turn ${session.id} 历史不完整，已修复 ${before} → ${repaired.length} 条 ` +
         `(取消/中断遗留的 tool_calls 已补齐占位响应)`,
     );
     session.messages = repaired;
-    await persistSession(session);
+    await persistHistoryReset(session);
   }
 
   for (let iter = 0; iter < config.maxIterations; iter++) {
@@ -363,17 +380,29 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   // Run it, under a harness-level deadline (M3). Tools had no watchdog at all
   // while the LLM had two, so a hung tool blocked the turn forever.
   const requestTimeout = Number(args.timeout);
-  const effectiveTimeout =
-    Number.isFinite(requestTimeout) && requestTimeout > 0 ? requestTimeout : tool.timeoutMs ?? config.toolTimeoutMs;
+  const configTimeout = Number(config.toolTimeoutMs);
+  const effectiveTimeout = Number.isFinite(requestTimeout) && requestTimeout > 0
+    ? requestTimeout
+    : tool.timeoutMs ?? (Number.isFinite(configTimeout) && configTimeout > 0 ? configTimeout : DEFAULT_TOOL_TIMEOUT_MS);
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new ToolTimeoutError(effectiveTimeout)), effectiveTimeout);
   const toolSignal = linkSignals(signal, deadline.signal);
+  // H1②: evidence that this call really started. Written *before* tool.run —
+  // ordering matters, otherwise a crash during the tool would look identical to
+  // a crash before it and repair could only guess.
+  let dispatched = false;
+  const finishTool = async (toolCallId: string, status: "completed" | "failed") => {
+    if (dispatched) await persistToolEvent(session.id, { t: "tool_finished", toolCallId, status });
+  };
   try {
     signal.throwIfAborted();
     // Race the tool against its deadline: a tool that ignores the signal (or a
     // promise that simply never settles) must not pin the turn. The harness
     // stops waiting; it cannot force-kill an arbitrary tool, so a non-abortable
     // operation may keep running in the background.
+    dispatched = true;
+    session.startedToolCalls.add(toolCallId);
+    await persistToolEvent(session.id, { t: "tool_started", toolCallId, name: tool.name });
     const pending = tool.run(args, { conn, session, signal: toolSignal.signal });
     pending.catch(() => {}); // losing the race must not surface as unhandled
     const result = await Promise.race([
@@ -403,6 +432,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       },
     });
     await pushToolResult(session, toolCallId, output);
+    await finishTool(toolCallId, result.isError ? "failed" : "completed");
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=${result.isError ? "failed" : "completed"} ` +
@@ -415,6 +445,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       // missing a response (the caller only fills in the *remaining* calls).
       logger.info(`turn ${session.id} cancelled during tool ${tool.name}`);
       await pushToolResult(session, toolCallId, "Error: 工具调用未执行（turn 被取消）");
+      await finishTool(toolCallId, "failed");
       return;
     }
     if (deadline.signal.aborted) {
@@ -422,12 +453,14 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} timeoutMs=${effectiveTimeout}`);
       await emitToolUpdate(conn, session, toolCallId, "failed", `Error: ${msg}`);
       await pushToolResult(session, toolCallId, `Error: ${msg}`);
+      await finishTool(toolCallId, "failed");
       return;
     }
     const msg = e instanceof Error ? e.message : String(e);
     logger.error(`工具 ${tool.name} 执行异常:`, e);
     await emitToolUpdate(conn, session, toolCallId, "failed", msg);
     await pushToolResult(session, toolCallId, `Error: ${msg}`);
+    await finishTool(toolCallId, "failed");
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=failed elapsedMs=${Date.now() - startedAt}`,

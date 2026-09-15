@@ -110,8 +110,12 @@ export class ZhenTeAgent implements Agent {
       );
       await this.prepareSession(session);
       session.messages = saved.messages;
+      session.startedToolCalls = saved.startedToolCalls ?? new Set();
       this.#sessions.set(session.id, session);
-      logger.info(`loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length}`);
+      logger.info(
+        `loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length} ` +
+          `startedToolCalls=${session.startedToolCalls.size}`,
+      );
       return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
     });
   }

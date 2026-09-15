@@ -108,6 +108,24 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 > 本地服务（Ollama/LM Studio）通常不校验 key，`apiKey` 随便填一个即可。
 
+## 会话持久化
+
+会话按事件流落盘到 `$ZHENTE_SESSION_DIR`（默认 `~/.config/zhente/sessions/`），每个会话一个 `<sessionId>.jsonl`，**只追加、不重写**（避免长会话的全量重写放大）：
+
+```jsonc
+{"t":"meta","version":2,"sessionId":"…","cwd":"…","permissionMode":"confirm","modelId":"…","createdAt":"…"}
+{"t":"message","message":{…}}                 // 历史消息，按序
+{"t":"tool_started","toolCallId":"…","name":"bash","at":"…"}   // 写于工具真正启动之前
+{"t":"tool_finished","toolCallId":"…","status":"completed","at":"…"}
+{"t":"reset","messages":[…]}                  // 历史被整体替换（如中途修复）
+{"t":"mode","permissionMode":"…"} / {"t":"model","modelId":"…"}
+```
+
+- 崩溃只会留下一个写了一半的**末行**，读取时忽略；中间的坏行跳过并告警。
+- `tool_started` 是判断"工具到底跑没跑"的唯一证据：进程被中断后重新加载会话时，启动过但结果缺失的调用会被修补成「结果未知…请先核实外部状态」，未启动过的则修补成「未执行…可以安全重试」。日志里没有任何 `tool_started`（旧格式）时一律按保守的「结果未知」处理。
+- 兼容旧格式：存在 `<sessionId>.json` 快照时会在首次读取时迁移为 JSONL（原文件删除），此后只写 JSONL。
+- `sessionId` 来自客户端，写文件前会过白名单校验（`^[a-zA-Z0-9-]+$`）防路径注入。
+
 ## 接入 Zed
 
 在 Zed 的 `settings.json` 里加一个外部 agent（用编译产物的绝对路径）：
