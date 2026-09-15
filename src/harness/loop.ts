@@ -8,6 +8,7 @@ import { ensurePermission } from "./permissions.js";
 import type { ToolRegistry } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
 import { validateToolArguments } from "./validation.js";
+import { truncateMiddle } from "./truncate.js";
 
 export type StopReason = PromptResponse["stopReason"];
 
@@ -430,8 +431,7 @@ async function emitToolUpdate(
 }
 
 function truncate(s: string): string {
-  if (s.length <= MAX_TOOL_OUTPUT) return s;
-  return `${s.slice(0, MAX_TOOL_OUTPUT)}\n…(输出过长，已截断，共 ${s.length} 字符)`;
+  return truncateMiddle(s, MAX_TOOL_OUTPUT);
 }
 
 function safeTitle(tool: { title(a: unknown): string; name: string }, args: unknown): string {

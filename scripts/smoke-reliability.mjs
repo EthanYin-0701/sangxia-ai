@@ -17,6 +17,8 @@ import { connectMcpServer } from "../dist/mcp/client.js";
 import { logger } from "../dist/logger.js";
 import { validateToolArguments } from "../dist/harness/validation.js";
 import { ZhenTeAgent } from "../dist/agent.js";
+import { createHeadTailBuffer, truncateMiddle, truncationMarker } from "../dist/harness/truncate.js";
+import { bashTool } from "../dist/tools/bash.js";
 
 const dir = await mkdtemp(join(tmpdir(), "zhente-reliability-"));
 process.env.ZHENTE_SESSION_DIR = join(dir, "sessions");
@@ -238,6 +240,60 @@ try {
     } finally {
       await agent.shutdown();
     }
+  });
+  await check("truncation keeps head and tail, never splits surrogate pairs", async () => {
+    const hasLoneSurrogate = (s) => {
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          if (!(i + 1 < s.length && s.charCodeAt(i + 1) >= 0xdc00 && s.charCodeAt(i + 1) <= 0xdfff)) return true;
+          i++;
+        } else if (c >= 0xdc00 && c <= 0xdfff) return true;
+      }
+      return false;
+    };
+    for (const [text, limit] of [
+      [`${"A".repeat(100)}MIDDLE${"B".repeat(100)}`, 40],
+      [`${"😀".repeat(60)}tail`, 25],
+      [`head${"中".repeat(60)}`, 25],
+    ]) {
+      const out = truncateMiddle(text, limit);
+      assert.ok(out.includes("已省略中间"), "must carry the shared marker");
+      assert.ok(out.length <= limit + truncationMarker(0, 0).length + 12, `length bound: ${out.length}`);
+      assert.ok(!hasLoneSurrogate(out), "must not split a surrogate pair");
+      assert.equal(out.slice(0, 1), text.slice(0, 1));
+      assert.equal(out.slice(-1), text.slice(-1));
+    }
+    assert.equal(truncateMiddle("short", 40), "short", "short output unchanged");
+    // Streaming buffer: same marker, keeps the tail.
+    const buffer = createHeadTailBuffer(100);
+    for (let i = 0; i < 40; i++) buffer.push(`chunk-${i}-`);
+    assert.ok(buffer.dropped() > 0);
+    assert.match(buffer.text(), /^chunk-0-/);
+    assert.match(buffer.text(), /chunk-39-$/);
+    assert.match(buffer.text(), /已省略中间/);
+    const small = createHeadTailBuffer(100);
+    small.push("tiny");
+    assert.equal(small.text(), "tiny");
+    assert.equal(small.dropped(), 0);
+  });
+  await check("oversized tool output reaches the model head and tail", async () => {
+    const big = `<<HEAD>>${"A".repeat(150_000)}<<TAIL>>`;
+    const bigTool = { ...guardedWrite, run: async () => ({ output: big }) };
+    const r = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], { toolList: [bigTool] });
+    const content = r.session.messages.find((m) => m.role === "tool").content;
+    assert.match(content, /<<HEAD>>/);
+    assert.match(content, /<<TAIL>>/);
+    assert.match(content, /已省略中间/);
+    assert.ok(content.length < big.length);
+  });
+  await check("local bash fallback keeps the tail of a huge output", async () => {
+    const session = new Session(randomUUID(), dir, [], caps, "confirm", "test");
+    const command = `node -e "process.stdout.write('A'.repeat(1200000));process.stdout.write('<<TAIL>>')"`;
+    const result = await bashTool.run({ command }, { conn: {}, session, signal: new AbortController().signal });
+    assert.match(result.output, /<<TAIL>>/);
+    assert.match(result.output, /已省略中间/);
+    assert.ok(result.raw.droppedBytes > 0);
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {

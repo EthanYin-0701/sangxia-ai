@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import type { Session } from "../session.js";
 import type { Tool, ToolContext, ToolResult } from "../harness/tool.js";
+import { createHeadTailBuffer, truncateMiddle } from "../harness/truncate.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const OUTPUT_BYTE_LIMIT = 1_000_000;
@@ -28,8 +29,10 @@ async function runViaClientTerminal(command: string, cwd: string, ctx: ToolConte
     const out = await terminal.currentOutput();
     const code = exit.exitCode ?? null;
     const header = `exit=${code ?? `signal:${exit.signal ?? "?"}`}`;
+    // H3③: the client owns `outputByteLimit`, so its tail fidelity is up to the
+    // client. Still cap what *we* feed back to the model (head+tail).
     return {
-      output: `${header}\n${out.output}`.trim() || header,
+      output: truncateMiddle(`${header}\n${out.output}`.trim() || header, OUTPUT_BYTE_LIMIT),
       isError: code !== 0,
       raw: { exitCode: code, signal: exit.signal ?? null, truncated: out.truncated },
     };
@@ -48,13 +51,10 @@ function runViaChildProcess(
 ): Promise<ToolResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, { shell: true, cwd, signal: ctx.signal });
-    let out = "";
-    let size = 0;
-    const append = (chunk: Buffer) => {
-      if (size >= OUTPUT_BYTE_LIMIT) return;
-      size += chunk.length;
-      out += chunk.toString("utf8");
-    };
+    // H3③: keep both ends of the output instead of swallowing everything after
+    // the limit — test/build failures are reported at the tail.
+    const buffer = createHeadTailBuffer(OUTPUT_BYTE_LIMIT);
+    const append = (chunk: Buffer) => buffer.push(chunk.toString("utf8"));
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
 
@@ -68,9 +68,9 @@ function runViaChildProcess(
       clearTimeout(timer);
       const header = `exit=${code ?? `signal:${signal ?? "?"}`}`;
       resolvePromise({
-        output: `${header}\n${out}`.trim() || header,
+        output: `${header}\n${buffer.text()}`.trim() || header,
         isError: code !== 0,
-        raw: { exitCode: code, signal },
+        raw: { exitCode: code, signal, droppedBytes: buffer.dropped() },
       });
     });
   });
