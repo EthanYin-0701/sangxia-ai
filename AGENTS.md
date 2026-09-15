@@ -22,7 +22,7 @@ npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
 npm run smoke:mcp     # MCP 工具接入冒烟
 npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
 npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
-npm run smoke:reliability # 截断/空响应/参数校验/流式超时/取消与断连回归
+npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
 ```
 
 ## 目录约定
@@ -33,6 +33,7 @@ src/
   agent.ts     主 Agent：initialize / newSession / prompt / cancel；组装会话工具集
   config.ts    配置加载（--config → $ZHENTE_CONFIG → ./zhente.config.json → ~/.config/zhente/config.json，支持 ${ENV} 插值）
   harness/     主循环 loop.ts、权限 permissions.ts、工具抽象 tool.ts、统一参数校验 validation.ts
+               头尾截断 truncate.ts、prompt token 估算 context.ts
   llm/         LLMProvider 接口（types.ts）+ OpenAI（openai.ts）/ mock（mock.ts）+ factory.ts
   mcp/         MCP client（client.ts）
   skills/      技能发现与 use_skill（index.ts）
@@ -43,7 +44,7 @@ src/
                / theme.ts 红绿白主题 / wcwidth.ts 最小 CJK 宽度（零依赖）
   index.ts     入口（stdio JSON-RPC；argv[0]==="tui" 时转 TUI 分支）
   logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 ZHENTE_LOG_FILE 单文件或 ZHENTE_LOG_DIR 按 session 分文件；logger.configure 支持运行时改 stderr/level/dir，TUI 用它把日志只进文件）
-  persistence.ts  会话历史持久化（~/.config/zhente/sessions/）
+  persistence.ts  会话持久化：JSONL 事件流（~/.config/zhente/sessions/<id>.jsonl），persistSession 唯一写入口
   project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载
 doc/uml/       时序图（prompt-turn）
 scripts/       冒烟测试脚本（*.mjs）
@@ -72,6 +73,9 @@ scripts/       冒烟测试脚本（*.mjs）
 9. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 连接失败只告警跳过，不影响其他工具。
 10. **TUI 纪律**：`zhente tui` 分支完全接管进程生命周期（stdio/TTY/信号），不注册 ACP 模式的 SIGINT 逻辑；TUI 下日志必须 `logger.configure({ stderr:false, dir })` 只进文件，严禁把日志写进备用屏。输入层是自研 raw 键盘解析（keys.ts），不要换回 readline——`rl.pause()` 无法隔离 raw 弹窗（按键会漏进行输入行，spike 已验证）。
 11. **SDK 陷阱**：`@zed-industries/agent-client-protocol@0.4.5` 的 `ClientSideConnection.setSessionModel` 会错发 `session/set_mode`；绕行 `extMethod("zhente.set_model")`（agent.ts 已登记，转发到标准 setSessionModel）。不要"修" SDK 里那两处辅助方法（node_modules 是产物）。
+12. **持久化纪律**：`src/persistence.ts` 是唯一的会话写入口（`persistSession`）+ 工具事件（`persistToolEvent`）+ 历史替换（`persistHistoryReset`）。存储是 append-only JSONL 事件流（`meta`/`message`/`reset`/`tool_started`/`tool_finished`/`mode`/`model`），**不要**退回"每条消息全量重写快照"（长会话 O(n²)，且无法记录工具是否启动过）。`tool_started` 必须在 `tool.run` **之前**落盘——`sanitizeHistory` 靠它区分"结果未知"与"可安全重试"。`sessionId` 写文件前必过 `/^[a-zA-Z0-9-]+$/` 白名单。
+13. **工具超时纪律**：工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，`tool.timeoutMs` / 调用参数（bash 的 `timeout`）优先；deadline 必须 **race** 工具 promise，只 abort signal 不够（不理会 signal 的工具会永久 await）。超时按 `deadline.signal.aborted && !signal.aborted` 判定为失败 tool result，用户取消优先级更高（语义不得混）。
+14. **LLM 重试边界**：provider 只重试**首个 delta 之前**的瞬时失败（网络/408/409/429/5xx），尊重 `Retry-After`，可被 signal 打断；已流出内容、`StreamTimeoutError`、参数类错误一律不重试。SDK `maxRetries: 0` 保持不动。
 
 ## 已知扩展点（勿破坏预留接口）
 
@@ -79,3 +83,4 @@ scripts/       冒烟测试脚本（*.mjs）
 - 图片/音频输入、多模式（`session/set_mode`）。
 - MCP 连接按会话回收（当前进程退出时统一关闭，受 ACP 0.4.5 无会话结束事件限制）。
 - TUI v2：`/resume`（session/load 续持久化会话）、权限弹窗内实时 bash 输出（客户端 createTerminal，terminal:true）、多行输入。
+- 上下文压缩（`plan/harness_hardening_plan.md` 步骤 10b/10c）：`harness/context.ts` 已备好 `estimateTokens` / `shouldCompact`，但**按实测证据挂起**（真实请求最大 182k prompt tokens / 789 消息、0 次 `context_length_exceeded`，见 `.zhente/memory.md`）；重启前先看有没有新的溢出证据，不要用 128k 之类的默认窗口猜阈值。
