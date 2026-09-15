@@ -9,6 +9,9 @@
         "modelId": "gpt-4o",
         "name": "GPT-4o",
         "description": "默认模型"
+        // 可按模型覆盖 maxTokens / streamIdleTimeoutMs / streamTotalTimeoutMs /
+        // streamRetries / streamRetryBaseDelayMs；未设置时用 provider 下的同名全局值
+        // "maxTokens": 32768
       }
     ],
     "temperature": 0,

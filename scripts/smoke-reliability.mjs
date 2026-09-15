@@ -103,6 +103,8 @@ try {
       const r = await turn([finish("length", deltas)]);
       assert.equal(r.stopReason, "max_tokens");
       assert.match(r.text, /输出被截断/);
+      assert.match(r.text, /maxTokens=100/, "notice must name the actual budget");
+      assert.match(r.text, /思考过程 \+ 正文 \+ 工具参数/, "notice must explain what shares the budget");
       if (deltas[0]?.content) assert.match(r.text, /^半截/);
       assert.equal(requests.length, 1);
     }
@@ -541,6 +543,20 @@ try {
     assert.equal(r.stopReason, "cancelled");
     assert.ok(sawAbort, "the tool must observe the abort");
     assert.match(r.session.messages.find((m) => m.role === "tool").content, /turn 被取消/);
+  });
+  await check("per-model maxTokens overrides the global output budget", async () => {
+    const { OpenAIProvider } = await import("../dist/llm/openai.js");
+    assert.equal(new OpenAIProvider(cfg).maxTokens, 100, "global value by default");
+    const perModel = new OpenAIProvider({
+      ...cfg,
+      models: [{ modelId: "test", name: "test", maxTokens: 32768 }],
+    });
+    assert.equal(perModel.maxTokens, 32768);
+    // The override is what actually goes on the wire.
+    rounds = [answer];
+    requests = [];
+    for await (const _ of perModel.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) { /* consume */ }
+    assert.equal(requests[0].max_tokens, 32768);
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {

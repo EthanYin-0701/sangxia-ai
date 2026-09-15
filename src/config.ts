@@ -32,6 +32,13 @@ const providerSchema = z
           streamTotalTimeoutMs: z.number().int().positive().optional(),
           streamRetries: z.number().int().min(0).max(5).optional(),
           streamRetryBaseDelayMs: z.number().int().positive().optional(),
+          /**
+           * Per-model output budget. `max_tokens` is one shared pool for
+           * reasoning + visible text + tool-call arguments, and providers count
+           * it against the context window, so a reasoning model needs a much
+           * larger budget than a plain chat model.
+           */
+          maxTokens: z.number().int().positive().optional(),
         }),
       )
       .min(1)

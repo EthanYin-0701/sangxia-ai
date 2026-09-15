@@ -59,6 +59,13 @@ export interface LLMProvider {
   readonly model: string;
 
   /**
+   * Output budget sent as `max_tokens` for this model (per-model override wins
+   * over the global value). Surfaced so the harness can name the actual limit
+   * when it reports a truncation.
+   */
+  readonly maxTokens?: number;
+
+  /**
    * `prompt_tokens` the backend reported for the most recent request, when it
    * returns usage at all. Used only to calibrate the local prompt-size estimate
    * (see `harness/context.ts`).

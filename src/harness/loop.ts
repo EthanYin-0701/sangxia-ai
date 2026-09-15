@@ -267,7 +267,18 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       }
       if (signal.aborted) return "cancelled";
       if (finishReason === "length") {
-        await notice("[输出被截断] 模型达到输出 Token 上限，请调整 maxTokens 或缩小任务后继续。");
+        // Name the actual budget: `max_tokens` is a single pool shared by
+        // reasoning + visible text + tool-call arguments, so "which limit am I
+        // hitting" is the first thing worth knowing.
+        const budget = provider.maxTokens ? `（maxTokens=${provider.maxTokens}）` : "";
+        logger.warn(
+          `turn ${session.id} 输出被截断 finishReason=length maxTokens=${provider.maxTokens ?? "unknown"} ` +
+            `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length}`,
+        );
+        await notice(
+          `[输出被截断] 模型达到输出 Token 上限${budget}。该额度由「思考过程 + 正文 + 工具参数」共用，` +
+            `请调大 provider.maxTokens（或按模型在 provider.models[].maxTokens 单独设置），也可以缩小任务后继续。`,
+        );
         return "max_tokens";
       }
       await notice(finishReason === "content_filter"

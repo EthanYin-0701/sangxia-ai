@@ -40,10 +40,12 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "apiKey": "${OPENAI_API_KEY}",
     "model": "gpt-4o",
     "models": [                           // 可选：在支持 ACP model selector 的 IDE 中显示
-      { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型" }
+      // 每个模型可用 maxTokens / streamIdleTimeoutMs / streamTotalTimeoutMs /
+      // streamRetries / streamRetryBaseDelayMs 覆盖同名全局值（未设置则继承）
+      { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型", "maxTokens": 32768 }
     ],
     "temperature": 0,
-    "maxTokens": 8192,
+    "maxTokens": 8192,                    // 单次回复的输出上限（思考+正文+工具参数共用，见下）
     "requestTimeoutMs": 120000,           // SDK 请求超时（毫秒）
     "streamIdleTimeoutMs": 60000,         // 等待首个/后续 chunk 的空闲上限
     "streamTotalTimeoutMs": 120000,       // 整次请求含 SSE 消费的总时长上限
@@ -81,6 +83,14 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ### 兼容的端点
 
 流式请求同时受空闲和总时长上限约束；`provider.models` 中的每个模型可用同名 `streamIdleTimeoutMs` / `streamTotalTimeoutMs`（以及 `streamRetries` / `streamRetryBaseDelayMs`）覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示空闲/总时长原因，ACP 返回 `refusal`；用户取消返回 `cancelled`。
+
+**关于 `maxTokens`（输出上限）**：这是**单次回复**的输出上限，由「思考过程（reasoning）+ 正文 + 工具调用参数」**共用**，并且很多后端会把它计入上下文预算（`prompt_tokens + max_tokens ≤ 上下文窗口`，超了直接 400）。因此：
+
+- 思考型模型给 8K 基本等于不可用——实测有 `reasoningChars=28987 / contentChars=0` 的截断，即预算全烧在思考上、正文一个字都没出（表现为「模型响应为空」）。
+- 写文件也吃这个池子：一次 1.9 万字符的 `write_file` 参数就约 5k tokens，加上思考很容易撞顶；撞顶时本次响应的工具调用会被整体拒绝（避免半截参数乱跑），整个回合以 `max_tokens` 结束。
+- 建议值：先看后端的上下文窗口，取 `max_tokens ≤ 窗口 − 你实际遇到的最大 prompt`。常见选择是 **32768**（稳妥）；若确认窗口 ≥256K 也可用 65536（对齐部分推理模型的默认输出）。
+- 调大不额外花钱（按实际输出计费），但会放宽单轮的最坏延迟。
+- 撞顶时提示会写明实际额度（`[输出被截断] …（maxTokens=8192）`），日志同时记录当次 `textChars/reasoningChars/toolCalls`，便于判断是思考、正文还是工具参数吃掉了预算。
 
 **首 token 前有界重试**：网络抖动、429、5xx 这类失败若发生在**首个流式 delta 之前**（此时没有已展示内容、也没有副作用），ZhenTe 会按 `streamRetries`（默认 2 次）指数退避重试，并尊重响应里的 `Retry-After`。一旦已经流出内容就不再重试（否则会重复输出），自己的空闲/总时长 watchdog 也不重试（否则等待时间翻倍），中途失败仍按现状终止为 `refusal`。运行期取消（`session/cancel`、Ctrl+C）会立即打断退避等待。
 

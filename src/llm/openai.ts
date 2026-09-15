@@ -38,9 +38,9 @@ export class OpenAIProvider implements LLMProvider {
   constructor(cfg: ProviderConfig) {
     this.model = cfg.model;
     this.#temperature = cfg.temperature;
-    this.#maxTokens = cfg.maxTokens;
-    this.#requestTimeoutMs = cfg.requestTimeoutMs;
     const modelConfig = cfg.models?.find((m) => m.modelId === cfg.model);
+    this.#maxTokens = modelConfig?.maxTokens ?? cfg.maxTokens;
+    this.#requestTimeoutMs = cfg.requestTimeoutMs;
     this.#idleTimeoutMs = modelConfig?.streamIdleTimeoutMs ?? cfg.streamIdleTimeoutMs;
     this.#totalTimeoutMs = modelConfig?.streamTotalTimeoutMs ?? cfg.streamTotalTimeoutMs;
     this.#includeUsage = cfg.streamIncludeUsage;
@@ -89,6 +89,10 @@ export class OpenAIProvider implements LLMProvider {
 
   get lastPromptTokens(): number | null {
     return this.#lastPromptTokens;
+  }
+
+  get maxTokens(): number {
+    return this.#maxTokens;
   }
 
   async *#attemptStream(
