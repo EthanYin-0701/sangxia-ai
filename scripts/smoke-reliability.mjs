@@ -163,6 +163,27 @@ try {
     assert.equal(r.permissions, 0);
     assert.equal(requests.length, 1);
   });
+  await check("interrupted history is repaired as 'result unknown', turn-cancel stays 'not executed'", async () => {
+    // Cross-restart repair (H1①): the tool may have completed before the process died.
+    const repaired = sanitizeHistory([
+      { role: "assistant", content: null, tool_calls: [{ id: "call_x", name: "bash", arguments: "{}" }] },
+    ]);
+    assert.equal(repaired.length, 2);
+    assert.match(repaired[1].content, /结果未知/);
+    assert.match(repaired[1].content, /核实/);
+
+    // In-turn cancel (loop.ts remaining-calls path): those calls truly never ran.
+    const abortingWrite = { ...write, run: async (_args, { session }) => { session.abort.abort(); return { output: "ok" }; } };
+    const twoCalls = { finish: "tool_calls", deltas: [
+      { tool_calls: [{ index: 0, id: "call-a", function: { name: "write_file", arguments: '{"path":"a","content":"x"}' } }] },
+      { tool_calls: [{ index: 1, id: "call-b", function: { name: "write_file", arguments: '{"path":"b","content":"x"}' } }] },
+    ] };
+    const r = await turn([twoCalls], { toolList: [abortingWrite] });
+    assert.equal(r.stopReason, "cancelled");
+    const placeholder = r.session.messages.find((m) => m.role === "tool" && m.tool_call_id === "call-b");
+    assert.match(placeholder.content, /未执行/);
+    assert.ok(!placeholder.content.includes("结果未知"), "in-turn cancel wording must differ from cross-restart repair");
+  });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
       rounds = [kind === "idle" ? "idle" : "reasoning-forever"];

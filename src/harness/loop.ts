@@ -36,7 +36,13 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
         out.push({
           role: "tool",
           tool_call_id: id,
-          content: "Error: 工具调用未执行（turn 被取消或中断）",
+          // H1①: this path only runs on turn-open repair, i.e. an interruption
+          // (crash / kill / cancel) from a *previous* process. The process may
+          // have died after the tool actually ran (bash committed, MCP opened a
+          // ticket), so claiming "未执行" would invite a duplicate side effect.
+          // Step 9 refines this into "可安全重试" for calls that never started.
+          content:
+            "Error: 该工具调用的结果未知（进程在工具执行期间中断）。若该操作可能有副作用，请先核实外部状态，再决定是否重试。",
         });
       }
     }
