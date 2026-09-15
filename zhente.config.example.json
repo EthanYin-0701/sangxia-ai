@@ -16,6 +16,8 @@
     "requestTimeoutMs": 120000,
     "streamIdleTimeoutMs": 60000,
     "streamTotalTimeoutMs": 120000,
+    "streamRetries": 2,
+    "streamRetryBaseDelayMs": 500,
     "streamIncludeUsage": false,
     "extraHeaders": {}
   },

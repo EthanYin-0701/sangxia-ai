@@ -47,6 +47,8 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "requestTimeoutMs": 120000,           // SDK 请求超时（毫秒）
     "streamIdleTimeoutMs": 60000,         // 等待首个/后续 chunk 的空闲上限
     "streamTotalTimeoutMs": 120000,       // 整次请求含 SSE 消费的总时长上限
+    "streamRetries": 2,                   // 仅在“首个 delta 之前”失败时重试（网络抖动/429/5xx）
+    "streamRetryBaseDelayMs": 500,        // 重试退避基数（指数增长，上限 8s；尊重 Retry-After）
     "streamIncludeUsage": false,          // 兼容端点可开启 stream_options.include_usage
     "extraHeaders": {}                     // 可选附加请求头
   },
@@ -77,7 +79,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 ### 兼容的端点
 
-流式请求同时受空闲和总时长上限约束；`provider.models` 中的每个模型可用同名 `streamIdleTimeoutMs` / `streamTotalTimeoutMs` 覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示空闲/总时长原因，ACP 返回 `refusal`；用户取消返回 `cancelled`。
+流式请求同时受空闲和总时长上限约束；`provider.models` 中的每个模型可用同名 `streamIdleTimeoutMs` / `streamTotalTimeoutMs`（以及 `streamRetries` / `streamRetryBaseDelayMs`）覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示空闲/总时长原因，ACP 返回 `refusal`；用户取消返回 `cancelled`。
+
+**首 token 前有界重试**：网络抖动、429、5xx 这类失败若发生在**首个流式 delta 之前**（此时没有已展示内容、也没有副作用），ZhenTe 会按 `streamRetries`（默认 2 次）指数退避重试，并尊重响应里的 `Retry-After`。一旦已经流出内容就不再重试（否则会重复输出），自己的空闲/总时长 watchdog 也不重试（否则等待时间翻倍），中途失败仍按现状终止为 `refusal`。运行期取消（`session/cancel`、Ctrl+C）会立即打断退避等待。
 
 模型返回 `length` 时显示“输出被截断”并返回 `max_tokens`，本次工具调用全部拒绝执行；服务端过滤、未知或缺失结束原因返回 `refusal`。仅正常 `stop` 且有正文时结束为 `end_turn`；空正文且无工具调用的 `stop` 最多补偿一次，补偿计入 `maxIterations`，不回传 reasoning。正文里的 JSON / function 标签只作诊断。
 

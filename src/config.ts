@@ -30,6 +30,8 @@ const providerSchema = z
           description: z.string().optional(),
           streamIdleTimeoutMs: z.number().int().positive().optional(),
           streamTotalTimeoutMs: z.number().int().positive().optional(),
+          streamRetries: z.number().int().min(0).max(5).optional(),
+          streamRetryBaseDelayMs: z.number().int().positive().optional(),
         }),
       )
       .min(1)
@@ -39,6 +41,14 @@ const providerSchema = z
     requestTimeoutMs: z.number().int().positive().default(120_000),
     streamIdleTimeoutMs: z.number().int().positive().default(60_000),
     streamTotalTimeoutMs: z.number().int().positive().default(120_000),
+    /**
+     * Bounded retries for failures **before the first streamed delta** (network
+     * blips, 429, 5xx). Once anything was streamed a retry could duplicate
+     * output, so those failures still terminate the turn. The SDK's own
+     * retries stay off (`maxRetries: 0`) — retry semantics belong to us.
+     */
+    streamRetries: z.number().int().min(0).max(5).default(2),
+    streamRetryBaseDelayMs: z.number().int().positive().default(500),
     streamIncludeUsage: z.boolean().default(false),
     extraHeaders: z.record(z.string()).optional(),
   })

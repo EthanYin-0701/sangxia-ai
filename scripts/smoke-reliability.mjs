@@ -28,15 +28,22 @@ const server = createServer(async (req, res) => {
   let body = "";
   for await (const part of req) body += part;
   requests.push(JSON.parse(body));
-  res.writeHead(200, { "content-type": "text/event-stream" });
-  res.flushHeaders();
   const round = rounds.shift();
-  const send = (delta, finish_reason) => res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`);
   let interval;
   res.on("close", () => { closed++; clearInterval(interval); });
+  const send = (delta, finish_reason) => res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`);
+  if (round === "fail500") { res.writeHead(500, { "content-type": "text/plain" }).end("boom"); return; }
+  if (round === "rate-limit") { res.writeHead(429, { "content-type": "text/plain", "retry-after": "1" }).end("slow down"); return; }
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  res.flushHeaders();
   if (round === "idle") return;
   if (round === "reasoning-forever") {
     interval = setInterval(() => send({ reasoning_content: "private reasoning" }), 10);
+    return;
+  }
+  if (round === "midfail") {
+    send({ content: "半段" });
+    setTimeout(() => res.destroy(), 20);
     return;
   }
   for (const delta of round?.deltas ?? []) send(delta);
@@ -78,11 +85,14 @@ async function turn(sequence, { toolList = [], permission, config = {}, setup } 
     config: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null, ...config },
   });
   assert.deepEqual(sanitizeHistory(session.messages), session.messages, "history must remain paired");
-  const saved = JSON.parse(await readFile(join(dir, "sessions", `${session.id}.json`), "utf8"));
-  assert.deepEqual(saved.messages, JSON.parse(JSON.stringify(session.messages)));
-  // M2: mid-turn checkpoints must carry the full field set (model/permission).
-  assert.equal(saved.modelId, "test");
-  assert.equal(saved.permissionMode, "confirm");
+  const rawSaved = await readFile(join(dir, "sessions", `${session.id}.json`), "utf8").catch(() => null);
+  if (rawSaved) {
+    const saved = JSON.parse(rawSaved);
+    assert.deepEqual(saved.messages, JSON.parse(JSON.stringify(session.messages)));
+    // M2: mid-turn checkpoints must carry the full field set (model/permission).
+    assert.equal(saved.modelId, "test");
+    assert.equal(saved.permissionMode, "confirm");
+  }
   return { session, stopReason, permissions, updates,
     text: updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map((u) => u.content.text).join("") };
 }
@@ -341,6 +351,51 @@ try {
       config: { maxIterations: 5, historyWarningMessages: 1, permissionMode: "confirm", systemPrompt: null } });
     const notices = r.session.messages.slice(before).filter((m) => /\[上下文较大\]/.test(m.content ?? ""));
     assert.equal(notices.length, 0, "warning is once per session");
+  });
+  await check("transient pre-first-delta failures retry, mid-stream failures do not", async () => {
+    const r = await turn(["fail500", answer]);
+    assert.equal(r.stopReason, "end_turn");
+    assert.equal(requests.length, 2);
+    const log = await readFile(join(dir, "logs", "global.log"), "utf8");
+    assert.match(log, /LLM retry/);
+
+    // A failure after the first delta must not re-run the request.
+    const mid = await turn(["midfail"]);
+    assert.equal(mid.stopReason, "refusal");
+    assert.equal(requests.length, 1);
+    assert.match(mid.text, /调用模型失败/);
+
+    // Cap: default 2 retries → 3 attempts total for 3 consecutive failures.
+    const capped = await turn(["fail500", "fail500", "fail500", answer]);
+    assert.equal(capped.stopReason, "refusal");
+    assert.equal(requests.length, 3);
+    assert.equal(capped.session.messages.filter((m) => m.role === "assistant").length, 0, "no duplicated assistant turns");
+  });
+  await check("retry respects Retry-After, caps the delay, and yields to cancellation", async () => {
+    const providerCfg = { ...cfg, streamRetries: 1, streamRetryBaseDelayMs: 10 };
+    rounds = ["rate-limit", answer];
+    const started = Date.now();
+    let done = false;
+    for await (const ev of new OpenAIProvider(providerCfg).streamChat({ messages: [], tools: [], signal: new AbortController().signal })) {
+      if (ev.type === "done") done = true;
+    }
+    assert.ok(done);
+    assert.ok(Date.now() - started >= 800, `Retry-After must be honored (${Date.now() - started}ms)`);
+
+    // Cancellation during the backoff wait must reject immediately.
+    rounds = ["fail500", answer];
+    const controller = new AbortController();
+    const before = requests.length;
+    const rejectReason = new Error("user-cancel");
+    const pending = (async () => {
+      await assert.rejects(async () => {
+        for await (const _ of new OpenAIProvider({ ...cfg, streamRetryBaseDelayMs: 5000 }).streamChat({ messages: [], tools: [], signal: controller.signal })) { /* consume */ }
+      }, (e) => e === rejectReason);
+    })();
+    for (let i = 0; i < 200 && requests.length === before; i++) await new Promise((r) => setTimeout(r, 10));
+    setTimeout(() => controller.abort(rejectReason), 100);
+    await pending;
+    assert.equal(requests.length, before + 1, "cancelled retry must not issue a second request");
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {

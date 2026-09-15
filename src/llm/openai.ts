@@ -1,4 +1,9 @@
-import OpenAI from "openai";
+import OpenAI, {
+  APIConnectionError,
+  APIConnectionTimeoutError,
+  APIError,
+  APIUserAbortError,
+} from "openai";
 import type { ProviderConfig } from "../config.js";
 import { logger } from "../logger.js";
 import { normalizeFinishReason } from "./types.js";
@@ -26,6 +31,8 @@ export class OpenAIProvider implements LLMProvider {
   readonly #idleTimeoutMs: number;
   readonly #totalTimeoutMs: number;
   readonly #includeUsage: boolean;
+  readonly #retries: number;
+  readonly #retryBaseDelayMs: number;
 
   constructor(cfg: ProviderConfig) {
     this.model = cfg.model;
@@ -36,6 +43,8 @@ export class OpenAIProvider implements LLMProvider {
     this.#idleTimeoutMs = modelConfig?.streamIdleTimeoutMs ?? cfg.streamIdleTimeoutMs;
     this.#totalTimeoutMs = modelConfig?.streamTotalTimeoutMs ?? cfg.streamTotalTimeoutMs;
     this.#includeUsage = cfg.streamIncludeUsage;
+    this.#retries = modelConfig?.streamRetries ?? cfg.streamRetries ?? 2;
+    this.#retryBaseDelayMs = modelConfig?.streamRetryBaseDelayMs ?? cfg.streamRetryBaseDelayMs ?? 500;
     this.#client = new OpenAI({
       baseURL: cfg.baseURL,
       apiKey: cfg.apiKey ?? "unused",
@@ -45,7 +54,43 @@ export class OpenAIProvider implements LLMProvider {
     });
   }
 
-  async *streamChat({ messages, tools, signal }: StreamChatParams): AsyncIterable<StreamEvent> {
+  /**
+   * Stream one completion, retrying failures that happened **before the first
+   * delta** (nothing streamed yet → no visible duplicates, no side effects).
+   *
+   * Deliberately not retried:
+   *  - user cancellation (`signal.aborted`),
+   *  - our own idle/total watchdogs (retrying would multiply the wait),
+   *  - anything after a delta was yielded (a retry would repeat output),
+   *  - non-transient errors (4xx other than 408/409/429).
+   */
+  async *streamChat(params: StreamChatParams): AsyncIterable<StreamEvent> {
+    const { signal } = params;
+    for (let attempt = 1; ; attempt++) {
+      const state: AttemptState = { yieldedAnything: false };
+      try {
+        yield* this.#attemptStream(params, state, attempt);
+        return;
+      } catch (error) {
+        const reason = signal.aborted ? (signal.reason ?? new Error("aborted")) : null;
+        if (reason) throw reason;
+        if (error instanceof StreamTimeoutError) throw error;
+        if (state.yieldedAnything || attempt > this.#retries || !isRetryable(error)) throw error;
+        const delayMs = retryDelayMs(error, attempt, this.#retryBaseDelayMs);
+        logger.warn(
+          `LLM retry model=${this.model} nextAttempt=${attempt + 1}/${this.#retries + 1} ` +
+            `reason=${describeError(error)} delayMs=${delayMs}`,
+        );
+        await sleep(delayMs, signal);
+      }
+    }
+  }
+
+  async *#attemptStream(
+    { messages, tools, signal }: StreamChatParams,
+    state: AttemptState,
+    attempt: number,
+  ): AsyncIterable<StreamEvent> {
     const startedAt = Date.now();
     let firstChunkAt: number | null = null;
     let lastChunkAt: number | null = null;
@@ -115,6 +160,7 @@ export class OpenAIProvider implements LLMProvider {
         if (typeof delta.content === "string" && delta.content.length > 0) {
           contentChars += delta.content.length;
           firstTextAt ??= Date.now();
+          state.yieldedAnything = true;
           yield { type: "text-delta", text: delta.content };
         }
 
@@ -122,6 +168,7 @@ export class OpenAIProvider implements LLMProvider {
         const reasoning: unknown = delta.reasoning_content ?? delta.reasoning;
         if (typeof reasoning === "string" && reasoning.length > 0) {
           reasoningChars += reasoning.length;
+          state.yieldedAnything = true;
           yield { type: "reasoning-delta", text: reasoning };
         }
 
@@ -148,6 +195,7 @@ export class OpenAIProvider implements LLMProvider {
       controller.signal.throwIfAborted();
 
       if (acc.size > 0) {
+        state.yieldedAnything = true;
         const calls: ToolCallRequest[] = [...acc.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([, e], i) => ({
@@ -167,7 +215,7 @@ export class OpenAIProvider implements LLMProvider {
       clearTimeout(idleTimer!);
       signal.removeEventListener("abort", onAbort);
       controller.abort();
-      logger.info(`LLM request end model=${this.model} elapsedMs=${Date.now() - startedAt} ` +
+      logger.info(`LLM request end model=${this.model} attempt=${attempt} elapsedMs=${Date.now() - startedAt} ` +
         `firstChunkMs=${firstChunkAt === null ? "none" : firstChunkAt - startedAt} ` +
         `firstTextMs=${firstTextAt === null ? "none" : firstTextAt - startedAt} ` +
         `lastChunkMs=${lastChunkAt === null ? "none" : lastChunkAt - startedAt} ` +
@@ -182,6 +230,74 @@ export class StreamTimeoutError extends Error {
     super(`模型流${kind === "idle" ? "空闲" : "总时长"}超时 (${timeoutMs}ms)`);
     this.name = "StreamTimeoutError";
   }
+}
+
+/** Per-attempt bookkeeping used to decide whether a retry is still safe. */
+interface AttemptState {
+  /** Whether this attempt already yielded text/reasoning/tool-calls. */
+  yieldedAnything: boolean;
+}
+
+/** Retryable: transient transport failures and the usual "try again" statuses. */
+function isRetryable(error: unknown): boolean {
+  if (error instanceof APIUserAbortError) return false;
+  if (error instanceof APIConnectionTimeoutError || error instanceof APIConnectionError) return true;
+  if (error instanceof APIError) {
+    const status = error.status;
+    if (status === undefined) return true; // no HTTP response (transport-level)
+    return status === 408 || status === 409 || status === 429 || status >= 500;
+  }
+  // Unknown error types (e.g. our own abort) are not retried.
+  return false;
+}
+
+/** Exponential backoff, honoring `Retry-After` (seconds or HTTP date). */
+function retryDelayMs(error: unknown, attempt: number, baseDelayMs: number): number {
+  const retryAfter = parseRetryAfter(error);
+  if (retryAfter !== null) return Math.min(retryAfter, 30_000);
+  return Math.min(baseDelayMs * 2 ** (attempt - 1), 8_000);
+}
+
+function parseRetryAfter(error: unknown): number | null {
+  if (!(error instanceof APIError)) return null;
+  const headers = error.headers;
+  // The SDK passes a Fetch `Headers` instance; tolerate plain objects too.
+  const header =
+    typeof (headers as Headers | undefined)?.get === "function"
+      ? (headers as Headers).get("retry-after")
+      : (headers as Record<string, string> | undefined)?.["retry-after"];
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
+function describeError(error: unknown): string {
+  const name = error instanceof Error ? (error.constructor?.name ?? error.name) : typeof error;
+  if (error instanceof APIError) {
+    return `${name}${error.status === undefined ? "" : ` status=${error.status}`}`;
+  }
+  return name;
+}
+
+/** Abortable sleep — Ctrl+C must not wait out the backoff. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new Error("aborted"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Map our neutral ChatMessage[] to the OpenAI chat-completions message shape. */
