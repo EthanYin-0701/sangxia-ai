@@ -397,6 +397,51 @@ try {
     await pending;
     assert.equal(requests.length, before + 1, "cancelled retry must not issue a second request");
   });
+  await check("tool deadline fires without killing the whole turn", async () => {
+    const hanging = {
+      ...guardedWrite,
+      run: async () => new Promise(() => {}),
+    };
+    const r = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], {
+      toolList: [hanging], config: { toolTimeoutMs: 100 },
+    });
+    assert.equal(r.stopReason, "end_turn", "turn must continue after a tool deadline");
+    assert.match(r.session.messages.find((m) => m.role === "tool").content, /工具执行超时（100ms）/);
+    assert.match(r.session.messages.find((m) => m.role === "tool").content, /重试/);
+    const failed = r.updates.filter((u) => u.sessionUpdate === "tool_call_update" && u.status === "failed");
+    assert.equal(failed.length, 1);
+  });
+  await check("bash kills the whole process group on timeout", async () => {
+    const pwned = join(dir, "PWNED");
+    await rm(pwned, { force: true });
+    const session = new Session(randomUUID(), dir, [], caps, "confirm", "test");
+    const command = `node -e "setTimeout(()=>require('fs').writeFileSync('${pwned}','x'),4000)"`;
+    const result = await bashTool.run({ command, timeout: 300 }, {
+      conn: {}, session, signal: new AbortController().signal,
+    });
+    assert.match(result.output, /命令执行超时（300ms）/);
+    assert.equal(result.raw.signal, "SIGKILL");
+    assert.equal(result.raw.timedOut, true);
+    await new Promise((r) => setTimeout(r, 1500));
+    await assert.rejects(() => readFile(pwned, "utf8"), "grandchild must not survive the kill");
+    await rm(pwned, { force: true });
+  });
+  await check("user cancellation outranks the tool deadline", async () => {
+    let sawAbort = false;
+    const aborting = {
+      ...guardedWrite,
+      run: async (_a, { signal }) => new Promise((resolve) => {
+        signal.addEventListener("abort", () => { sawAbort = true; resolve({ output: "aborted" }); });
+      }),
+    };
+    const r = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')])], {
+      toolList: [aborting], config: { toolTimeoutMs: 2000 },
+      setup: (session) => setTimeout(() => session.abort.abort(), 30),
+    });
+    assert.equal(r.stopReason, "cancelled");
+    assert.ok(sawAbort, "the tool must observe the abort");
+    assert.match(r.session.messages.find((m) => m.role === "tool").content, /turn 被取消/);
+  });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
       rounds = [kind === "idle" ? "idle" : "reasoning-forever"];

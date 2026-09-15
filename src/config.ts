@@ -83,6 +83,12 @@ const agentSchema = z
   .object({
     maxIterations: z.number().int().positive().default(40),
     historyWarningMessages: z.number().int().positive().default(400),
+    /**
+     * Default deadline for one tool invocation (M3). The LLM has idle/total
+     * watchdogs; tools previously had no counterpart at all. A tool that
+     * declares `timeoutMs` (or a call that sets `timeout`, e.g. bash) wins.
+     */
+    toolTimeoutMs: z.number().int().positive().default(300_000),
     permissionMode: z.enum(["confirm", "auto"]).optional(),
     /** @deprecated 用 `permissionMode: "auto"` 替代；`true` 等价于 auto。 */
     autoApprove: z.boolean().optional(),
@@ -91,6 +97,7 @@ const agentSchema = z
   .transform((cfg) => ({
     maxIterations: cfg.maxIterations,
     historyWarningMessages: cfg.historyWarningMessages,
+    toolTimeoutMs: cfg.toolTimeoutMs,
     permissionMode: cfg.permissionMode ?? (cfg.autoApprove === true ? "auto" : "confirm"),
     systemPrompt: cfg.systemPrompt,
   }));

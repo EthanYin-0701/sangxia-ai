@@ -6,6 +6,7 @@ import type { Session } from "../session.js";
 import { persistSession } from "../persistence.js";
 import { ensurePermission } from "./permissions.js";
 import type { ToolRegistry } from "./tool.js";
+import { ToolTimeoutError } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
 import { validateToolArguments } from "./validation.js";
 import { truncateMiddle } from "./truncate.js";
@@ -359,10 +360,30 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     }
   }
 
-  // Run it.
+  // Run it, under a harness-level deadline (M3). Tools had no watchdog at all
+  // while the LLM had two, so a hung tool blocked the turn forever.
+  const requestTimeout = Number(args.timeout);
+  const effectiveTimeout =
+    Number.isFinite(requestTimeout) && requestTimeout > 0 ? requestTimeout : tool.timeoutMs ?? config.toolTimeoutMs;
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new ToolTimeoutError(effectiveTimeout)), effectiveTimeout);
+  const toolSignal = linkSignals(signal, deadline.signal);
   try {
     signal.throwIfAborted();
-    const result = await tool.run(args, { conn, session, signal });
+    // Race the tool against its deadline: a tool that ignores the signal (or a
+    // promise that simply never settles) must not pin the turn. The harness
+    // stops waiting; it cannot force-kill an arbitrary tool, so a non-abortable
+    // operation may keep running in the background.
+    const pending = tool.run(args, { conn, session, signal: toolSignal.signal });
+    pending.catch(() => {}); // losing the race must not surface as unhandled
+    const result = await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        const onDeadline = () => reject(toolSignal.signal.reason);
+        if (toolSignal.signal.aborted) onDeadline();
+        else toolSignal.signal.addEventListener("abort", onDeadline, { once: true });
+      }),
+    ]);
     // M1: mark failures visibly for the model. Built-in tools prefix errors
     // with "Error:", but MCP tools can return `isError` with arbitrary text
     // ("boom", "no such table") that the model would otherwise read as a
@@ -388,6 +409,21 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
         `outputChars=${output.length} elapsedMs=${Date.now() - startedAt}`,
     );
   } catch (e) {
+    // User cancellation wins over the deadline: the two must not be confused.
+    if (signal.aborted) {
+      // Still close the tool_call, or the assistant's tool_calls would be
+      // missing a response (the caller only fills in the *remaining* calls).
+      logger.info(`turn ${session.id} cancelled during tool ${tool.name}`);
+      await pushToolResult(session, toolCallId, "Error: 工具调用未执行（turn 被取消）");
+      return;
+    }
+    if (deadline.signal.aborted) {
+      const msg = `工具执行超时（${effectiveTimeout}ms）已终止；可缩小任务范围或显式设置 timeout 后重试`;
+      logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} timeoutMs=${effectiveTimeout}`);
+      await emitToolUpdate(conn, session, toolCallId, "failed", `Error: ${msg}`);
+      await pushToolResult(session, toolCallId, `Error: ${msg}`);
+      return;
+    }
     const msg = e instanceof Error ? e.message : String(e);
     logger.error(`工具 ${tool.name} 执行异常:`, e);
     await emitToolUpdate(conn, session, toolCallId, "failed", msg);
@@ -396,7 +432,35 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=failed elapsedMs=${Date.now() - startedAt}`,
     );
+  } finally {
+    clearTimeout(timer);
+    toolSignal.dispose();
   }
+}
+
+/**
+ * Combine two abort signals into one (M3).
+ *
+ * `AbortSignal.any` would be the obvious tool, but this package declares
+ * `node >= 20` and that API only stabilized in 20.3. Listeners are removed in
+ * `dispose()` so a long turn can't accumulate them.
+ */
+function linkSignals(a: AbortSignal, b: AbortSignal): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const forward = (signal: AbortSignal) => () => controller.abort(signal.reason);
+  const onA = forward(a);
+  const onB = forward(b);
+  if (a.aborted) onA();
+  else a.addEventListener("abort", onA, { once: true });
+  if (b.aborted) onB();
+  else b.addEventListener("abort", onB, { once: true });
+  return {
+    signal: controller.signal,
+    dispose() {
+      a.removeEventListener("abort", onA);
+      b.removeEventListener("abort", onB);
+    },
+  };
 }
 
 async function pushToolResult(session: Session, toolCallId: string, content: string): Promise<void> {

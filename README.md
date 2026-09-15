@@ -55,6 +55,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
   "agent": {
     "maxIterations": 40,                   // 单轮最多迭代次数
     "historyWarningMessages": 400,         // 历史消息数告警阈值（不自动裁剪）
+    "toolTimeoutMs": 300000,               // 单次工具执行的默认 deadline（工具自身 timeoutMs / timeout 参数优先）
     "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）
     "systemPrompt": null                   // null 使用内置默认提示词
   },
@@ -86,6 +87,12 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 模型返回 `length` 时显示“输出被截断”并返回 `max_tokens`，本次工具调用全部拒绝执行；服务端过滤、未知或缺失结束原因返回 `refusal`。仅正常 `stop` 且有正文时结束为 `end_turn`；空正文且无工具调用的 `stop` 最多补偿一次，补偿计入 `maxIterations`，不回传 reasoning。正文里的 JSON / function 标签只作诊断。
 
 所有工具（含 MCP）在权限确认前验证 JSON object 和声明的 JSON Schema（支持 draft-07、2019-09、2020-12）；失败返回配对的工具错误，交给模型修正。不会补默认参数或强制转换类型。日志只记录流式字符计数、时序和 token usage 等指标，不记录完整 reasoning 或工具参数。历史达到阈值时告警，保留消息及工具调用配对。
+
+**工具超时（deadline）**：单次工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，工具可以用 `tool.timeoutMs`、单次调用可以用参数（如 `bash` 的 `timeout`，其自己的缺省是 120s）覆盖；超时后返回 `Error: 工具执行超时（Xms）已终止…`，该回合继续（模型可自行缩小范围或重试），只有用户取消才会中止整轮。超时 / 取消同时可能触发时以「取消」为准。deadline 只保证 harness 不再等待：非可中断的工具（纯读文件等）底层操作可能仍在后台跑完，harness 不会假装杀掉了它。
+
+`bash` 本地回退路径用独立进程组启动 shell，超时或取消时 `SIGKILL` **整个进程组**，避免 `npm run …` 之类的孙进程继续存活（POSIX 语义；Windows 上回退为只杀直接子进程）。客户端终端路径同样受 `timeout` 约束，超时会调用 `terminal.kill()`，但其尾部输出的保真度取决于客户端实现。
+
+工具输出超过上限时**头尾各保留**（中间用 `…(输出过长，已省略中间 N 字符，共 M 字符…)` 标记），因为构建/测试的报错几乎总在尾部。
 
 任何暴露 OpenAI `/chat/completions`（含流式 + function calling）的服务都能用，只需改 `baseURL` / `model`：
 

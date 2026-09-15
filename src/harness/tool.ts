@@ -9,6 +9,14 @@ export interface ToolContext {
   signal: AbortSignal;
 }
 
+/** Raised when the harness-level tool deadline fires (M3). */
+export class ToolTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`工具执行超时 (${timeoutMs}ms)`);
+    this.name = "ToolTimeoutError";
+  }
+}
+
 /** Result of running a tool. `output` is fed back to the model and shown to the client. */
 export interface ToolResult {
   output: string;
@@ -31,6 +39,12 @@ export interface Tool {
   readonly needsPermission: boolean;
   /** JSON Schema for the tool's parameters. */
   readonly parameters: Record<string, unknown>;
+
+  /**
+   * Optional default deadline for a single invocation. Unset built-ins fall
+   * back to `agent.toolTimeoutMs`; MCP tools are covered by that default.
+   */
+  readonly timeoutMs?: number;
 
   /** Human-readable one-line title for a specific invocation (shown in the client). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
