@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage } from "./llm/types.js";
-import type { PermissionMode } from "./session.js";
+import { logger } from "./logger.js";
+import type { PermissionMode, Session } from "./session.js";
 
 export interface PersistedSession {
   version: 1;
@@ -45,5 +46,36 @@ export async function loadSession(sessionId: string): Promise<PersistedSession |
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return null;
     throw e;
+  }
+}
+
+/**
+ * The one place a session is written to disk (M2: a single serialization exit).
+ *
+ * Both the agent (session create / mode / model changes) and the harness
+ * (mid-turn checkpoints) go through here, so every write carries the full field
+ * set. Previously the harness had its own copy without `modelId`, which meant a
+ * mid-turn checkpoint silently reverted a restored session's model to the
+ * config default.
+ *
+ * `Pick<...>` rather than the concrete class keeps the signature stable when the
+ * storage format changes (see the JSONL work in step 9) and avoids a runtime
+ * import cycle (type-only imports are erased at compile time).
+ */
+export async function persistSession(
+  session: Pick<Session, "id" | "cwd" | "messages" | "permissionMode" | "modelId">,
+): Promise<void> {
+  try {
+    await saveSession({
+      version: 1,
+      sessionId: session.id,
+      cwd: session.cwd,
+      messages: session.messages,
+      permissionMode: session.permissionMode,
+      modelId: session.modelId,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
   }
 }

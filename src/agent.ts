@@ -29,7 +29,7 @@ import type { LLMProvider } from "./llm/types.js";
 import { logger } from "./logger.js";
 import { connectMcpServer } from "./mcp/client.js";
 import { loadProjectMemory, missingProjectMemory } from "./project-memory.js";
-import { loadSession as loadPersistedSession, saveSession } from "./persistence.js";
+import { loadSession as loadPersistedSession, persistSession } from "./persistence.js";
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
@@ -90,7 +90,7 @@ export class ZhenTeAgent implements Agent {
       await this.prepareSession(session);
       session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
       this.#sessions.set(id, session);
-      await this.persist(session);
+      await persistSession(session);
       logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
       return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
     });
@@ -127,7 +127,7 @@ export class ZhenTeAgent implements Agent {
     // decisions — the recovery path for an accidental "always reject" (the
     // ACP protocol has no message to read/clear that map).
     session.permissions.clear();
-    await this.persist(session);
+    await persistSession(session);
     logger.info(`session ${session.id} permissionMode=${session.permissionMode} (permission memory cleared)`);
   }
 
@@ -138,7 +138,7 @@ export class ZhenTeAgent implements Agent {
       throw RequestError.invalidParams({ modelId: `未知模型: ${params.modelId}` });
     }
     session.modelId = params.modelId;
-    await this.persist(session);
+    await persistSession(session);
     logger.info(`session ${session.id} model=${session.modelId}`);
   }
 
@@ -214,22 +214,6 @@ export class ZhenTeAgent implements Agent {
     return (this.#config.agent.systemPrompt ?? defaultSystemPrompt(cwd)) + skillCatalogPrompt(skills) + memory;
   }
 
-  private async persist(session: Session): Promise<void> {
-    try {
-      await saveSession({
-        version: 1,
-        sessionId: session.id,
-        cwd: session.cwd,
-        messages: session.messages,
-        permissionMode: session.permissionMode,
-        modelId: session.modelId,
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (e) {
-      logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     // TODO(acpreg): 未认证（unconfigured）时 prompt 返回 AUTH_REQUIRED JSON-RPC 错误
     //   （含 type:"terminal"、args:["setup"] 声明），而不是继续运行（见 plan/acpreg.md
@@ -261,7 +245,7 @@ export class ZhenTeAgent implements Agent {
         const text = promptToText(params.prompt);
         await this.maybeInitializeProject(session, text, abort.signal);
         session.messages.push({ role: "user", content: text });
-        await this.persist(session);
+        await persistSession(session);
         if (abort.signal.aborted) {
           logger.info(`prompt ${params.sessionId} cancelled during initialization`);
           return { stopReason: "cancelled" };
@@ -274,7 +258,7 @@ export class ZhenTeAgent implements Agent {
           config: this.#config.agent,
           signal: abort.signal,
         });
-        await this.persist(session);
+        await persistSession(session);
         logger.info(`prompt ${params.sessionId} → ${stopReason}`);
         return { stopReason };
       });
@@ -345,7 +329,7 @@ export class ZhenTeAgent implements Agent {
         "AGENTS.md 保存项目工作规则、技术栈和目录约定；.zhente/memory.md 保存项目背景、当前状态、重要决策和待办事项。不要修改其他文件，完成后简要说明。",
       ].join("\n"),
     });
-    await this.persist(session);
+    await persistSession(session);
     try {
       await runTurn({
         conn: this.#conn,
@@ -361,7 +345,7 @@ export class ZhenTeAgent implements Agent {
     }
     const system = session.messages.find((message) => message.role === "system");
     if (system) system.content = await this.systemPrompt(session.cwd, session.skills, initRoot);
-    await this.persist(session);
+    await persistSession(session);
     logger.info(`项目记忆初始化完成 ${session.id}`);
   }
 

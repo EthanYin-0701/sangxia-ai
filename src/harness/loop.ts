@@ -3,7 +3,7 @@ import type { AgentConfig } from "../config.js";
 import type { ChatMessage, LLMProvider, ToolCallRequest } from "../llm/types.js";
 import { logger } from "../logger.js";
 import type { Session } from "../session.js";
-import { saveSession } from "../persistence.js";
+import { persistSession } from "../persistence.js";
 import { ensurePermission } from "./permissions.js";
 import type { ToolRegistry } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
@@ -123,7 +123,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
         `(取消/中断遗留的 tool_calls 已补齐占位响应)`,
     );
     session.messages = repaired;
-    await persistTurn(session);
+    await persistSession(session);
   }
 
   for (let iter = 0; iter < config.maxIterations; iter++) {
@@ -209,11 +209,11 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       content: text.length > 0 ? text : null,
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     });
-    await persistTurn(session);
+    await persistSession(session);
 
     const notice = async (message: string) => {
       session.messages.push({ role: "assistant", content: message });
-      await persistTurn(session);
+      await persistSession(session);
       await safeSessionUpdate(conn, {
         sessionId: session.id,
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${message}` } },
@@ -241,7 +241,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
         if (!recoveredEmpty && iter + 1 < config.maxIterations) {
           recoveredEmpty = true;
           session.messages.push({ role: "user", content: "上次响应未产生正文，请直接输出最终回答或发起标准工具调用。" });
-          await persistTurn(session);
+          await persistSession(session);
           continue;
         }
         await notice("[模型响应为空] 未获得正文或标准工具调用，已停止重试。");
@@ -394,22 +394,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
 
 async function pushToolResult(session: Session, toolCallId: string, content: string): Promise<void> {
   session.messages.push({ role: "tool", tool_call_id: toolCallId, content });
-  await persistTurn(session);
-}
-
-async function persistTurn(session: Session): Promise<void> {
-  try {
-    await saveSession({
-      version: 1,
-      sessionId: session.id,
-      cwd: session.cwd,
-      messages: session.messages,
-      permissionMode: session.permissionMode,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (e) {
-    logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await persistSession(session);
 }
 
 async function emitToolUpdate(

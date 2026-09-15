@@ -80,6 +80,9 @@ async function turn(sequence, { toolList = [], permission, config = {}, setup } 
   assert.deepEqual(sanitizeHistory(session.messages), session.messages, "history must remain paired");
   const saved = JSON.parse(await readFile(join(dir, "sessions", `${session.id}.json`), "utf8"));
   assert.deepEqual(saved.messages, JSON.parse(JSON.stringify(session.messages)));
+  // M2: mid-turn checkpoints must carry the full field set (model/permission).
+  assert.equal(saved.modelId, "test");
+  assert.equal(saved.permissionMode, "confirm");
   return { session, stopReason, permissions, updates,
     text: updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map((u) => u.content.text).join("") };
 }
@@ -294,6 +297,36 @@ try {
     assert.match(result.output, /<<TAIL>>/);
     assert.match(result.output, /已省略中间/);
     assert.ok(result.raw.droppedBytes > 0);
+  });
+  await check("mid-turn checkpoints preserve the selected model", async () => {
+    const agentConfig = {
+      provider: { ...cfg, models: [{ modelId: "test", name: "Test" }, { modelId: "other", name: "Other" }] },
+      agent: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null },
+      mcp: { enabled: false, connectTimeoutMs: 1000 },
+      skills: { enabled: false, dirs: [] },
+    };
+    const agent = new ZhenTeAgent({
+      async sessionUpdate() {},
+      async requestPermission() { return { outcome: { outcome: "cancelled" } }; },
+    }, agentConfig);
+    await agent.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
+    const { sessionId } = await agent.newSession({ cwd: dir, mcpServers: [] });
+    try {
+      await agent.setSessionModel({ sessionId, modelId: "other" });
+      // A turn that hits the mid-turn checkpoint (tool call → result) must not
+      // revert the persisted model to the config default.
+      const planArgs = JSON.stringify({ plan: [{ content: "x", status: "pending", priority: "high" }] });
+      rounds = [finish("tool_calls", [callDelta("update_plan", planArgs)]), answer];
+      assert.equal((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })).stopReason, "end_turn");
+      const saved = JSON.parse(await readFile(join(dir, "sessions", `${sessionId}.json`), "utf8"));
+      assert.equal(saved.modelId, "other");
+      // loadSession also restores it.
+      const { models, modes } = await agent.loadSession({ sessionId, cwd: dir, mcpServers: [] });
+      assert.equal(models.currentModelId, "other");
+      assert.equal(modes.currentModeId, "confirm");
+    } finally {
+      await agent.shutdown();
+    }
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
