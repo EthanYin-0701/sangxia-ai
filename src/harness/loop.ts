@@ -110,7 +110,16 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   const { conn, session, provider, tools, config, signal } = opts;
   const startedAt = Date.now();
   let recoveredEmpty = false;
-  let warnedHistory = false;
+
+  /** Surface a message to the client *and* into the history in one place. */
+  const notice = async (message: string) => {
+    session.messages.push({ role: "assistant", content: message });
+    await persistSession(session);
+    await safeSessionUpdate(conn, {
+      sessionId: session.id,
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${message}` } },
+    });
+  };
 
   // Repair any history an interrupted turn left inconsistent (assistant
   // tool_calls without matching tool responses), otherwise OpenAI-compatible
@@ -128,9 +137,15 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
 
   for (let iter = 0; iter < config.maxIterations; iter++) {
     if (signal.aborted) return "cancelled";
-    if (!warnedHistory && session.messages.length >= config.historyWarningMessages) {
-      warnedHistory = true;
+    if (!session.historyWarned && session.messages.length >= config.historyWarningMessages) {
+      session.historyWarned = true; // once per session, not once per iteration
+      // H3①: a logger.warn only reaches stderr/log files — neither the user nor
+      // the model ever sees it. Notice the user, and put it in the history so the
+      // model can factor it in. Keeping `logger.warn` too keeps log assertions.
       logger.warn(`历史上下文较大 messages=${session.messages.length} threshold=${config.historyWarningMessages}；保留完整工具配对，建议开始新会话`);
+      await notice(
+        `[上下文较大] 当前历史 ${session.messages.length} 条消息（阈值 ${config.historyWarningMessages}）。为保留完整工具配对，本会话不自动裁剪；若后续请求变慢或失败，建议开始新会话。`,
+      );
     }
 
     logger.info(
@@ -211,14 +226,6 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     });
     await persistSession(session);
 
-    const notice = async (message: string) => {
-      session.messages.push({ role: "assistant", content: message });
-      await persistSession(session);
-      await safeSessionUpdate(conn, {
-        sessionId: session.id,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${message}` } },
-      });
-    };
     if (signal.aborted || (finishReason !== "stop" && finishReason !== "tool_calls")) {
       for (const call of toolCalls) {
         await pushToolResult(session, call.id, "Error: 响应被截断、过滤或中断，工具调用未执行");

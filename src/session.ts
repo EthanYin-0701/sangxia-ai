@@ -38,6 +38,9 @@ export class Session {
   /** Set while a prompt turn is running; used to cancel. */
   abort: AbortController | null = null;
 
+  /** Whether the large-history notice was already sent this session (H3①). */
+  historyWarned = false;
+
   /**
    * Whether a prompt turn is in flight (H2: one turn per session invariant).
    * Kept separate from {@link abort} so other paths can't mistake "abort is

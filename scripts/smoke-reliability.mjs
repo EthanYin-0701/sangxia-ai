@@ -107,7 +107,8 @@ try {
     const reasoning = finish("stop", [{ reasoning_content: "private reasoning" }]);
     const ok = await turn([reasoning, answer]);
     assert.equal(ok.stopReason, "end_turn");
-    assert.match(requests[1].messages.at(-1).content, /上次响应未产生正文/);
+    // The recovery prompt is in the request; an unrelated notice may follow it.
+    assert.ok(requests[1].messages.some((m) => /上次响应未产生正文/.test(m.content ?? "")), "recovery prompt must reach the model");
     assert.ok(!JSON.stringify(requests[1]).includes("private reasoning"));
     const empty = await turn([reasoning, reasoning, answer]);
     assert.equal(empty.stopReason, "refusal");
@@ -327,6 +328,19 @@ try {
     } finally {
       await agent.shutdown();
     }
+  });
+  await check("large-history warning is visible to the user and the model, once per session", async () => {
+    const r = await turn([answer], { config: { historyWarningMessages: 1 } });
+    assert.match(r.text, /\[上下文较大\]/);
+    assert.ok(r.session.messages.some((m) => m.role === "assistant" && /\[上下文较大\]/.test(m.content ?? "")), "notice must land in history");
+    // A second turn in the same session must not repeat it.
+    const before = r.session.messages.length;
+    rounds = [answer];
+    await runTurn({ conn: { async sessionUpdate() {} }, session: r.session, provider: new OpenAIProvider(cfg),
+      tools: new ToolRegistry([]), signal: new AbortController().signal,
+      config: { maxIterations: 5, historyWarningMessages: 1, permissionMode: "confirm", systemPrompt: null } });
+    const notices = r.session.messages.slice(before).filter((m) => /\[上下文较大\]/.test(m.content ?? ""));
+    assert.equal(notices.length, 0, "warning is once per session");
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
