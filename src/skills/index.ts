@@ -26,23 +26,67 @@ export interface Skill {
   path: string;
 }
 
-/** Minimal frontmatter split — only the leading `---` block, `key: value` lines. */
+/**
+ * Minimal frontmatter split — leading `---` block, `key: value` lines only.
+ *
+ * YAML block scalars are supported because real-world (Claude Code) skills write
+ * long descriptions as `description: >-` followed by an indented block; without
+ * this the catalog would show the literal `>-`. Folded (`>`/`>-`/`>+`) joins
+ * lines with spaces (blank line → paragraph break), literal (`|`/`|-`/`|+`)
+ * keeps newlines; both are dedented and trimmed.
+ */
 function parseFrontmatter(raw: string): { data: Record<string, string>; body: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw);
   if (!m) return { data: {}, body: raw };
   const data: Record<string, string> = {};
-  for (const line of m[1]!.split(/\r?\n/)) {
+  const lines = m[1]!.split(/\r?\n/);
+
+  const blockValue = (style: ">" | "|", collected: string[]): string => {
+    const nonEmpty = collected.filter((l) => l.trim() !== "");
+    if (nonEmpty.length === 0) return "";
+    const indent = Math.min(...nonEmpty.map((l) => l.length - l.trimStart().length));
+    const dedented = collected.map((l) => (l.trim() === "" ? "" : l.slice(indent)));
+    if (style === "|") return dedented.join("\n").trim();
+    let out = "";
+    for (const [i, l] of dedented.entries()) {
+      if (l === "") {
+        out += "\n";
+        continue;
+      }
+      out += (i > 0 && out !== "" && !out.endsWith("\n") ? " " : "") + l;
+    }
+    return out.trim();
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     const idx = line.indexOf(":");
     if (idx < 0) continue;
     const key = line.slice(0, idx).trim();
+    if (!key || key.startsWith("-")) continue;
     let val = line.slice(idx + 1).trim();
+
+    const block = /^([>|])([-+]?)$/.exec(val);
+    if (block) {
+      const collected: string[] = [];
+      // Block ends at the first less-indented line (a new top-level key or `---`).
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1]!;
+        if (next.trim() !== "" && !/^\s/.test(next)) break;
+        collected.push(next);
+        i++;
+      }
+      data[key] = blockValue(block[1] as ">" | "|", collected);
+      continue;
+    }
+
     if (
       (val.startsWith('"') && val.endsWith('"')) ||
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1);
     }
-    if (key) data[key] = val;
+    data[key] = val;
   }
   return { data, body: raw.slice(m[0].length) };
 }

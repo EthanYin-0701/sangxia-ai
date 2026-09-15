@@ -44,11 +44,15 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     ],
     "temperature": 0,
     "maxTokens": 8192,
-    "requestTimeoutMs": 120000,           // 模型请求超时（毫秒）
+    "requestTimeoutMs": 120000,           // SDK 请求超时（毫秒）
+    "streamIdleTimeoutMs": 60000,         // 等待首个/后续 chunk 的空闲上限
+    "streamTotalTimeoutMs": 120000,       // 整次请求含 SSE 消费的总时长上限
+    "streamIncludeUsage": false,          // 兼容端点可开启 stream_options.include_usage
     "extraHeaders": {}                     // 可选附加请求头
   },
   "agent": {
     "maxIterations": 40,                   // 单轮最多迭代次数
+    "historyWarningMessages": 400,         // 历史消息数告警阈值（不自动裁剪）
     "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）
     "systemPrompt": null                   // null 使用内置默认提示词
   },
@@ -72,6 +76,12 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 > **切换模式会清空权限记忆**：`session/set_mode` 会同时清空该会话里已记住的「总是允许 / 总是拒绝」决策。ACP 没有单独的「重置授权」消息，因此这也是误按「总是拒绝」后唯一的恢复途径（Zed 里切一次模式、TUI 里 `/access standard` 或 `/permissions reset` 均可）。
 
 ### 兼容的端点
+
+流式请求同时受空闲和总时长上限约束；`provider.models` 中的每个模型可用同名 `streamIdleTimeoutMs` / `streamTotalTimeoutMs` 覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示空闲/总时长原因，ACP 返回 `refusal`；用户取消返回 `cancelled`。
+
+模型返回 `length` 时显示“输出被截断”并返回 `max_tokens`，本次工具调用全部拒绝执行；服务端过滤、未知或缺失结束原因返回 `refusal`。仅正常 `stop` 且有正文时结束为 `end_turn`；空正文且无工具调用的 `stop` 最多补偿一次，补偿计入 `maxIterations`，不回传 reasoning。正文里的 JSON / function 标签只作诊断。
+
+所有工具（含 MCP）在权限确认前验证 JSON object 和声明的 JSON Schema（支持 draft-07、2019-09、2020-12）；失败返回配对的工具错误，交给模型修正。不会补默认参数或强制转换类型。日志只记录流式字符计数、时序和 token usage 等指标，不记录完整 reasoning 或工具参数。历史达到阈值时告警，保留消息及工具调用配对。
 
 任何暴露 OpenAI `/chat/completions`（含流式 + function calling）的服务都能用，只需改 `baseURL` / `model`：
 
@@ -225,6 +235,7 @@ npm run smoke        # ACP 握手 + 工具 + 权限流冒烟（mock provider）
 npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器）
 npm run smoke:mcp    # MCP 工具 + 技能冒烟
 npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
+npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 ```
 
 ## 目前未覆盖（预留扩展点）

@@ -12,11 +12,12 @@
 
 `package.json` 对本项目的定义就是 “a Node.js coding AI agent speaking ACP, **with a tool harness**”。
 Harness = 夹在 **ACP 协议接口层** 与 **可插拔的 LLM / 工具** 之间的**编排层**，
-就是 `src/harness/` 这一个目录，三个文件：
+就是 `src/harness/` 这一个目录，四个文件：
 
 | 文件 | 职责 |
 |------|------|
 | `harness/loop.ts` (`runTurn`) | 一次 prompt turn 的主循环：迭代控制、调模型、转发流事件、维护历史、调度工具、判定 stopReason |
+| `harness/validation.ts` | 权限前统一校验工具 JSON object 与 JSON Schema |
 | `harness/permissions.ts` (`ensurePermission`) | 工具执行前的权限门，含 “总是允许/拒绝” 的记忆 |
 | `harness/tool.ts` (`ToolRegistry` / `Tool` / `ToolContext`) | 工具抽象：向模型通告 schema、按名解析、派发执行 |
 
@@ -30,7 +31,7 @@ Harness = 夹在 **ACP 协议接口层** 与 **可插拔的 LLM / 工具** 之�
 | **newSession 装配**：发现技能 + 连接 MCP + 组装 `session.tools` | ACP 接口层 `agent.ts` | ✗ |
 | **迭代循环控制**（`maxIterations`）、`cancelled` 判定 | `harness/loop.ts` | **★** |
 | **调 `streamChat` 并把模型流事件转成 `sessionUpdate`**（正文/思考/工具分片） | `harness/loop.ts` | **★** |
-| **stopReason 判定**：异常→`refusal`、无工具→`end_turn`、超限→`max_turn_requests` | `harness/loop.ts` | **★** |
+| **stopReason 判定**：异常/过滤→`refusal`、截断→`max_tokens`、有效 stop→`end_turn`、超限→`max_turn_requests` | `harness/loop.ts` | **★** |
 | **维护消息历史**（回填 assistant / tool 消息） | `harness/loop.ts` | **★** |
 | **工具调度**：`tools.schemas()` 通告、`tools.get(name)` 解析、`run()` 派发、`truncate(100k)`（内置 / MCP / use_skill 统一） | `harness/loop.ts` + `harness/tool.ts` | **★** |
 | **权限门**：`ensurePermission` + `session/request_permission` + 决定记忆（MCP 工具默认命中） | `harness/permissions.ts` | **★** |
@@ -99,13 +100,20 @@ sequenceDiagram
             Loop-->>Agent: return "refusal"（Harness 判定）
         end
         Loop->>Session: push(assistant 正文 + tool_calls)（Harness 维护历史）
-        alt 没有 tool_calls
+        alt length / content_filter / 未知结束原因
+            Loop->>Session: 所有工具补失败结果，不执行
+            Loop->>Client: 截断或异常提示
+            Loop-->>Agent: max_tokens / refusal
+        else stop 且无正文、无工具
+            Note over Loop: 通用提示补偿一次，仍为空则 refusal
+        else stop 且有正文、没有 tool_calls
             Loop-->>Agent: return "end_turn"（Harness 判定）
         else 有 tool_calls —— Harness 逐个调度
             loop 遍历每个 tool call
-                Loop->>Loop: parse args + tools.get(name)（Harness 调度）
+                Loop->>Loop: parse args + tools.get(name) + JSON Schema 校验
+                Note over Loop: 参数无效则补失败结果，跳过权限及执行
                 Loop->>Client: sessionUpdate(tool_call, in_progress)
-                opt needsPermission 且 非 autoApprove（Harness 权限门）
+                opt needsPermission 且 permissionMode 非 auto（Harness 权限门）
                     Note over Loop,Perm: 写/改类内置工具 + 全部 MCP 工具命中；use_skill/只读跳过
                     Loop->>Perm: ensurePermission(tool)
                     Perm->>Client: session/request_permission
@@ -143,7 +151,7 @@ sequenceDiagram
     Agent->>Agent: logger.info(prompt id 与 stopReason)
     Agent-->>Client: PromptResponse{ stopReason }
     Client->>User: 展示最终结果
-    Note over Agent,McpSrv: 进程退出：agent.shutdown() → session.dispose() 关闭全部 MCP 连接
+    Note over Agent,McpSrv: 进程退出：agent.shutdown() → abort 全部活跃 turn → session.dispose() 关闭 MCP 连接
 ```
 
 ## 如何查看

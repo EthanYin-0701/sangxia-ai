@@ -111,14 +111,21 @@ loop 最多 config.maxIterations (=40) 轮  【Harness 循环控制】
   Loop -> Session : messages.push(assistant：正文 + tool_calls)  【Harness 维护历史】
 
   == 2) 是否需要工具？【Harness 判定】 ==
-  alt 没有 tool_calls
+  alt length / content_filter / 未知结束原因
+    Loop -> Session : 工具调用补失败结果，不执行
+    Loop -> Client : 截断或异常提示
+    Loop --> Agent : max_tokens / refusal
+  else stop 且正文与工具均为空
+    note right of Loop : 通用提示补偿一次，仍为空则 refusal
+  else stop 且有正文，没有 tool_calls
     Loop --> Agent : return "end_turn"
   else 有 tool_calls —— ★Harness 逐个调度执行
     loop 遍历每个 tool call
-      Loop -> Loop   : JSON.parse(arguments)，tools.get(name)  【Harness 调度】
+      Loop -> Loop   : JSON.parse(arguments)，tools.get(name)，JSON Schema 校验
+      note right of Loop : 参数无效则补失败结果，跳过权限及执行
       Loop -> Client : sessionUpdate(tool_call, in_progress)
 
-      opt tool.needsPermission 且 !config.autoApprove  【Harness 权限门】
+      opt tool.needsPermission 且 session.permissionMode != auto  【Harness 权限门】
         note over Loop, Perm : 写/改类内置工具与 <b>全部 MCP 工具</b> 命中此门；\nuse_skill 与只读工具 needsPermission=false，跳过
         Loop -> Perm    : ensurePermission(tool, …)
         Perm -> Session : 查已记住的权限决定
@@ -176,7 +183,7 @@ Agent --> Client : PromptResponse{ stopReason }
 Client -> User   : 展示最终结果
 
 note over Agent, McpSrv
-  会话结束/进程退出：agent.shutdown() → 逐个 session.dispose()
+  会话结束/进程退出：agent.shutdown() → abort 全部活跃 turn → 逐个 session.dispose()
   关闭全部 MCP 连接（ACP 0.4.5 无「会话结束」事件，故统一在退出时回收）。
 end note
 

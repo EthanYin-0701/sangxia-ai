@@ -18,11 +18,15 @@
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:openai": "npm run build && node scripts/smoke-openai.mjs",
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
-    "smoke:tui": "npm run build && node scripts/smoke-tui.mjs"
+    "smoke:skill": "npm run build && node scripts/smoke-skill.mjs",
+    "smoke:tui": "npm run build && node scripts/smoke-tui.mjs",
+    "smoke:reliability": "npm run build && node scripts/smoke-reliability.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@zed-industries/agent-client-protocol": "^0.4.5",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "openai": "^6.0.0",
     "tinyglobby": "^0.2.0",
     "zod": "^3.23.0"

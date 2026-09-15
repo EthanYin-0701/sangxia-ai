@@ -391,6 +391,7 @@ export class ZhenTeAgent implements Agent {
    * so this runs once on process exit (see index.ts) rather than per session.
    */
   async shutdown(): Promise<void> {
+    for (const session of this.#sessions.values()) session.abort?.abort();
     await Promise.all([...this.#sessions.values()].map((s) => s.dispose()));
   }
 }

@@ -44,11 +44,13 @@ async function main(): Promise<void> {
 
   // Stay alive until the client disconnects (stdin closes) or we're signaled.
   await new Promise<void>((resolve) => {
+    process.stdin.once("end", () => resolve());
     process.stdin.once("close", () => resolve());
     process.once("SIGINT", () => resolve());
     process.once("SIGTERM", () => resolve());
   });
   await agent?.shutdown();
+  process.stdin.destroy();
   logger.info("连接关闭，退出。");
 }
 

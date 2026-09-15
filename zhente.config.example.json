@@ -14,10 +14,14 @@
     "temperature": 0,
     "maxTokens": 8192,
     "requestTimeoutMs": 120000,
+    "streamIdleTimeoutMs": 60000,
+    "streamTotalTimeoutMs": 120000,
+    "streamIncludeUsage": false,
     "extraHeaders": {}
   },
   "agent": {
     "maxIterations": 40,
+    "historyWarningMessages": 400,
     "permissionMode": "confirm",
     "systemPrompt": null
   },

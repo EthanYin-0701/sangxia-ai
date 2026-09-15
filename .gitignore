@@ -8,6 +8,9 @@ zhente.config.json
 # 日志
 *.log
 
+# 本地分析产物（heap dump 解析结果等，勿提交）
+/.analyze/
+
 # IDE / 编辑器
 .idea/
 .vscode/

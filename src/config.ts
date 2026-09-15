@@ -28,6 +28,8 @@ const providerSchema = z
           modelId: z.string().min(1),
           name: z.string().min(1),
           description: z.string().optional(),
+          streamIdleTimeoutMs: z.number().int().positive().optional(),
+          streamTotalTimeoutMs: z.number().int().positive().optional(),
         }),
       )
       .min(1)
@@ -35,6 +37,9 @@ const providerSchema = z
     temperature: z.number().min(0).max(2).default(0),
     maxTokens: z.number().int().positive().default(8192),
     requestTimeoutMs: z.number().int().positive().default(120_000),
+    streamIdleTimeoutMs: z.number().int().positive().default(60_000),
+    streamTotalTimeoutMs: z.number().int().positive().default(120_000),
+    streamIncludeUsage: z.boolean().default(false),
     extraHeaders: z.record(z.string()).optional(),
   })
   .superRefine((cfg, ctx) => {
@@ -67,6 +72,7 @@ const providerSchema = z
 const agentSchema = z
   .object({
     maxIterations: z.number().int().positive().default(40),
+    historyWarningMessages: z.number().int().positive().default(400),
     permissionMode: z.enum(["confirm", "auto"]).optional(),
     /** @deprecated 用 `permissionMode: "auto"` 替代；`true` 等价于 auto。 */
     autoApprove: z.boolean().optional(),
@@ -74,6 +80,7 @@ const agentSchema = z
   })
   .transform((cfg) => ({
     maxIterations: cfg.maxIterations,
+    historyWarningMessages: cfg.historyWarningMessages,
     permissionMode: cfg.permissionMode ?? (cfg.autoApprove === true ? "auto" : "confirm"),
     systemPrompt: cfg.systemPrompt,
   }));

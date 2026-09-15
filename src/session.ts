@@ -66,8 +66,9 @@ export class Session {
     this.modelId = modelId;
   }
 
-  /** Close all MCP connections held by this session (best-effort). */
+  /** Abort the active turn, then close all MCP connections (best-effort). */
   async dispose(): Promise<void> {
+    this.abort?.abort();
     await Promise.all(this.mcpConnections.map((c) => c.close().catch(() => {})));
     this.mcpConnections = [];
   }

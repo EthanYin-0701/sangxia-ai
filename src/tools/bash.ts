@@ -22,6 +22,7 @@ async function runViaClientTerminal(command: string, cwd: string, ctx: ToolConte
   });
   const onAbort = () => void terminal.kill().catch(() => {});
   ctx.signal.addEventListener("abort", onAbort, { once: true });
+  if (ctx.signal.aborted) onAbort();
   try {
     const exit = await terminal.waitForExit();
     const out = await terminal.currentOutput();
@@ -92,6 +93,7 @@ export const bashTool: Tool = {
   },
   title: (a) => `执行 ${String(a.command).split("\n")[0]}`,
   run: async (a, ctx) => {
+    ctx.signal.throwIfAborted();
     const command = String(a.command ?? "");
     if (!command.trim()) return { output: "Error: command 为空", isError: true };
     const cwd = a.cwd ? abs(ctx.session, String(a.cwd)) : ctx.session.cwd;

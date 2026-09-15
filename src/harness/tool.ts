@@ -21,7 +21,7 @@ export interface ToolResult {
  * A capability the agent exposes to the LLM as a callable function.
  *
  * `args` is typed as `any` deliberately: it's whatever the model produced,
- * validated by JSON-schema at the API layer and defensively inside each tool.
+ * validated by JSON Schema in the harness before permission or execution.
  */
 export interface Tool {
   readonly name: string;

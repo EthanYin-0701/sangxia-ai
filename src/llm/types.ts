@@ -34,11 +34,20 @@ export interface ToolSchema {
 }
 
 /** Events streamed out of a provider during a single completion. */
+export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "unknown";
+
+export function normalizeFinishReason(reason: unknown): FinishReason {
+  switch (reason) {
+    case "stop": case "tool_calls": case "length": case "content_filter": return reason;
+    default: return "unknown";
+  }
+}
+
 export type StreamEvent =
   | { type: "text-delta"; text: string }
   | { type: "reasoning-delta"; text: string }
   | { type: "tool-calls"; calls: ToolCallRequest[] }
-  | { type: "done"; finishReason: string | null };
+  | { type: "done"; finishReason: FinishReason; rawFinishReason?: string | null };
 
 export interface StreamChatParams {
   messages: ChatMessage[];

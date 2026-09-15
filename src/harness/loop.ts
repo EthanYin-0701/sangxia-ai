@@ -7,6 +7,7 @@ import { saveSession } from "../persistence.js";
 import { ensurePermission } from "./permissions.js";
 import type { ToolRegistry } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
+import { validateToolArguments } from "./validation.js";
 
 export type StopReason = PromptResponse["stopReason"];
 
@@ -95,19 +96,21 @@ export interface RunTurnOptions {
  * The agent harness — one prompt turn.
  *
  * Loops: ask the LLM → stream text → run any tool calls → feed results back →
- * repeat, until the model stops calling tools (`end_turn`), the turn is
- * cancelled (`cancelled`), or the iteration cap is hit (`max_turn_requests`).
+ * repeat until a valid final answer (`end_turn`), truncation (`max_tokens`),
+ * error/filter (`refusal`), cancellation or the iteration cap.
  */
 export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   const { conn, session, provider, tools, config, signal } = opts;
   const startedAt = Date.now();
+  let recoveredEmpty = false;
+  let warnedHistory = false;
 
   // Repair any history an interrupted turn left inconsistent (assistant
   // tool_calls without matching tool responses), otherwise OpenAI-compatible
   // endpoints reject the request with a 400.
   const before = session.messages.length;
   const repaired = sanitizeHistory(session.messages);
-  if (repaired.length !== before) {
+  if (repaired.length !== before || repaired.some((m, i) => m !== session.messages[i])) {
     logger.warn(
       `turn ${session.id} 历史不完整，已修复 ${before} → ${repaired.length} 条 ` +
         `(取消/中断遗留的 tool_calls 已补齐占位响应)`,
@@ -118,6 +121,10 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
 
   for (let iter = 0; iter < config.maxIterations; iter++) {
     if (signal.aborted) return "cancelled";
+    if (!warnedHistory && session.messages.length >= config.historyWarningMessages) {
+      warnedHistory = true;
+      logger.warn(`历史上下文较大 messages=${session.messages.length} threshold=${config.historyWarningMessages}；保留完整工具配对，建议开始新会话`);
+    }
 
     logger.info(
       `turn ${session.id} iteration=${iter + 1}/${config.maxIterations} ` +
@@ -135,6 +142,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     let text = "";
     let toolCalls: ToolCallRequest[] = [];
     let finishReason: string | null = null;
+    let reasoningChars = 0;
+    let rawFinishReason: string | null | undefined;
 
     try {
       for await (const ev of provider.streamChat({
@@ -152,6 +161,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
             });
             break;
           case "reasoning-delta":
+            reasoningChars += ev.text.length;
             await conn.sessionUpdate({
               sessionId: session.id,
               update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: ev.text } },
@@ -162,6 +172,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
             break;
           case "done":
             finishReason = ev.finishReason;
+            rawFinishReason = ev.rawFinishReason;
             break;
         }
       }
@@ -169,7 +180,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       if (signal.aborted) return "cancelled";
       logger.error("LLM 流式请求失败:", e);
       const msg = e instanceof Error ? e.message : String(e);
-      await conn.sessionUpdate({
+      await safeSessionUpdate(conn, {
         sessionId: session.id,
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n[错误] 调用模型失败: ${msg}` } },
       });
@@ -178,7 +189,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
 
     logger.info(
       `turn ${session.id} iteration=${iter + 1} completed ` +
-        `textChars=${text.length} toolCalls=${toolCalls.length} finishReason=${finishReason ?? "none"}`,
+        `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length} ` +
+        `finishReason=${finishReason ?? "none"} rawFinishReason=${JSON.stringify(rawFinishReason)}`,
     );
     if (text.length === 0 && toolCalls.length === 0) {
       logger.warn(`turn ${session.id} 模型返回空的可见内容（可能只有 reasoning 或被服务端过滤）`);
@@ -192,7 +204,51 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     });
     await persistTurn(session);
 
-    if (toolCalls.length === 0) return "end_turn";
+    const notice = async (message: string) => {
+      session.messages.push({ role: "assistant", content: message });
+      await persistTurn(session);
+      await safeSessionUpdate(conn, {
+        sessionId: session.id,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${message}` } },
+      });
+    };
+    if (signal.aborted || (finishReason !== "stop" && finishReason !== "tool_calls")) {
+      for (const call of toolCalls) {
+        await pushToolResult(session, call.id, "Error: 响应被截断、过滤或中断，工具调用未执行");
+        await safeSessionUpdate(conn, { sessionId: session.id, update: {
+          sessionUpdate: "tool_call", toolCallId: call.id, title: call.name, kind: "other", status: "failed",
+        } });
+      }
+      if (signal.aborted) return "cancelled";
+      if (finishReason === "length") {
+        await notice("[输出被截断] 模型达到输出 Token 上限，请调整 maxTokens 或缩小任务后继续。");
+        return "max_tokens";
+      }
+      await notice(finishReason === "content_filter"
+        ? "[请求被过滤] 模型服务端阻止了本次响应。"
+        : "[模型协议异常] 响应缺少有效的结束原因，已停止执行。");
+      return "refusal";
+    }
+    if (toolCalls.length === 0) {
+      if (!text.trim() && finishReason === "stop") {
+        if (!recoveredEmpty && iter + 1 < config.maxIterations) {
+          recoveredEmpty = true;
+          session.messages.push({ role: "user", content: "上次响应未产生正文，请直接输出最终回答或发起标准工具调用。" });
+          await persistTurn(session);
+          continue;
+        }
+        await notice("[模型响应为空] 未获得正文或标准工具调用，已停止重试。");
+        return "refusal";
+      }
+      if (finishReason !== "stop") {
+        await notice("[模型协议异常] 模型声明工具调用结束，但未返回标准工具调用。");
+        return "refusal";
+      }
+      if (/<function_call\b|```(?:json)?\s*\{\s*"tool"\s*:/i.test(text)) {
+        logger.warn(`turn ${session.id} 正文包含疑似工具调用示例，仅诊断、不执行`);
+      }
+      return "end_turn";
+    }
 
     // Execute tool calls sequentially.
     for (let i = 0; i < toolCalls.length; i++) {
@@ -209,6 +265,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       }
       await executeToolCall(call, opts);
     }
+    if (signal.aborted) return "cancelled";
     // Loop again so the model can react to the tool results.
   }
 
@@ -230,10 +287,20 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   );
 
   let args: Record<string, unknown> = {};
+  let argumentError: string | null = null;
   try {
-    args = call.arguments ? (JSON.parse(call.arguments) as Record<string, unknown>) : {};
+    args = JSON.parse(call.arguments) as Record<string, unknown>;
+    if (tool) argumentError = validateToolArguments(tool, args);
   } catch {
-    logger.warn(`工具 ${call.name} 参数不是合法 JSON: ${call.arguments}`);
+    argumentError = "工具参数不是合法 JSON";
+  }
+  if (argumentError) {
+    logger.warn(`工具 ${call.name} 参数校验失败`);
+    await safeSessionUpdate(conn, { sessionId: session.id, update: {
+      sessionUpdate: "tool_call", toolCallId, title: call.name, kind: tool?.kind ?? "other", status: "failed",
+    } });
+    await pushToolResult(session, toolCallId, `Error: ${argumentError}`);
+    return;
   }
 
   if (!tool) {
@@ -267,7 +334,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   if (tool.needsPermission && session.permissionMode !== "auto") {
     let decision: PermissionDecision = "reject";
     try {
-      decision = await ensurePermission(conn, session, tool, toolCallId, title, args);
+      decision = await ensurePermission(conn, session, tool, toolCallId, title, args, signal);
     } catch (e) {
       logger.error(`工具 ${tool.name} 权限确认失败，按拒绝处理: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -280,6 +347,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
 
   // Run it.
   try {
+    signal.throwIfAborted();
     const result = await tool.run(args, { conn, session, signal });
     const output = truncate(result.output);
     await safeSessionUpdate(conn, {
