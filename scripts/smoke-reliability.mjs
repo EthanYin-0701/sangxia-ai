@@ -16,6 +16,7 @@ import { fsTools } from "../dist/tools/fs-tools.js";
 import { connectMcpServer } from "../dist/mcp/client.js";
 import { logger } from "../dist/logger.js";
 import { validateToolArguments } from "../dist/harness/validation.js";
+import { ZhenTeAgent } from "../dist/agent.js";
 
 const dir = await mkdtemp(join(tmpdir(), "zhente-reliability-"));
 process.env.ZHENTE_SESSION_DIR = join(dir, "sessions");
@@ -201,6 +202,42 @@ try {
     const already = { ...guardedWrite, run: async () => ({ output: "[工具执行失败] 又一次", isError: true }) };
     const r3 = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], { toolList: [already] });
     assert.equal(r3.session.messages.find((m) => m.role === "tool").content, "[工具执行失败] 又一次");
+  });
+  await check("a second prompt is rejected while one is in flight, and the turn still cancels", async () => {
+    const agentConfig = {
+      provider: cfg,
+      agent: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null },
+      mcp: { enabled: false, connectTimeoutMs: 1000 },
+      skills: { enabled: false, dirs: [] },
+    };
+    const agent = new ZhenTeAgent({
+      async sessionUpdate() {},
+      async requestPermission() { return { outcome: { outcome: "cancelled" } }; },
+    }, agentConfig);
+    await agent.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
+    const { sessionId } = await agent.newSession({ cwd: dir, mcpServers: [] });
+    try {
+      // "idle" never finishes the response, so turn #1 stays in flight.
+      rounds = ["idle"]; requests = [];
+      const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "first" }] });
+      for (let i = 0; i < 200 && requests.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.equal(requests.length, 1, "first prompt must have started");
+
+      await assert.rejects(
+        () => agent.prompt({ sessionId, prompt: [{ type: "text", text: "second" }] }),
+        (e) => /在运行中/.test(e?.data?.sessionId ?? ""),
+      );
+      assert.equal(requests.length, 1, "rejected prompt must not reach the provider");
+
+      await agent.cancel({ sessionId });
+      assert.equal((await pending).stopReason, "cancelled");
+
+      // The claim is released, not a one-shot lock.
+      rounds = [answer];
+      assert.equal((await agent.prompt({ sessionId, prompt: [{ type: "text", text: "third" }] })).stopReason, "end_turn");
+    } finally {
+      await agent.shutdown();
+    }
   });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {

@@ -38,6 +38,13 @@ export class Session {
   /** Set while a prompt turn is running; used to cancel. */
   abort: AbortController | null = null;
 
+  /**
+   * Whether a prompt turn is in flight (H2: one turn per session invariant).
+   * Kept separate from {@link abort} so other paths can't mistake "abort is
+   * set" for "a turn is running".
+   */
+  promptInFlight = false;
+
   /** Tools for this session = built-ins + `use_skill` + MCP tools. Populated in `newSession`. */
   tools: ToolRegistry = new ToolRegistry([]);
 

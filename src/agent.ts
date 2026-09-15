@@ -239,17 +239,26 @@ export class ZhenTeAgent implements Agent {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     }
 
-    return logger.withSession(params.sessionId, async () => {
-      const text = promptToText(params.prompt);
-
+    // H2: serialize prompts per session. Two concurrent turns would share
+    // `session.messages` and interleave history; worse, whichever turn ends
+    // first would null out the other's abort controller, so `session/cancel`
+    // would silently stop working for the still-running turn.
+    if (session.promptInFlight) {
+      throw RequestError.invalidParams({ sessionId: "该会话已有 prompt 在运行中，请先取消或等待其结束" });
+    }
+    session.promptInFlight = true; // synchronous claim — no await between check and set
+    const abort = new AbortController();
+    session.abort = abort;
+    try {
       // B3: one abort controller for the whole prompt turn — including the
       // project-initialization sub-turn. Previously that sub-turn used a fresh
       // AbortController, so Ctrl+C during a first-time init did nothing (the
       // UI appeared hung for up to 12 iterations). Sharing session.abort lets
       // session/cancel reach it like any other turn.
-      const abort = new AbortController();
-      session.abort = abort;
-      try {
+      // The claim happens outside `withSession` so the invariant doesn't rely on
+      // AsyncLocalStorage running its callback synchronously.
+      return await logger.withSession(params.sessionId, async () => {
+        const text = promptToText(params.prompt);
         await this.maybeInitializeProject(session, text, abort.signal);
         session.messages.push({ role: "user", content: text });
         await this.persist(session);
@@ -268,10 +277,11 @@ export class ZhenTeAgent implements Agent {
         await this.persist(session);
         logger.info(`prompt ${params.sessionId} → ${stopReason}`);
         return { stopReason };
-      } finally {
-        session.abort = null;
-      }
-    });
+      });
+    } finally {
+      if (session.abort === abort) session.abort = null; // only clear our own reference
+      session.promptInFlight = false;
+    }
   }
 
   private async maybeInitializeProject(session: Session, prompt: string, signal: AbortSignal): Promise<void> {
