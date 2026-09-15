@@ -10,6 +10,7 @@ import { ToolTimeoutError } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
 import { validateToolArguments } from "./validation.js";
 import { truncateMiddle } from "./truncate.js";
+import { calibrateEstimate, estimateTokens } from "./context.js";
 
 export type StopReason = PromptResponse["stopReason"];
 
@@ -128,6 +129,10 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   const { conn, session, provider, tools, config, signal } = opts;
   const startedAt = Date.now();
   let recoveredEmpty = false;
+  // H3②(10a): heuristic prompt-size tracking. `lastEstimate` pairs with the
+  // provider's reported `prompt_tokens` from the previous request so the next
+  // estimate can be calibrated instead of drifting.
+  let lastEstimate: number | null = null;
 
   /** Surface a message to the client *and* into the history in one place. */
   const notice = async (message: string) => {
@@ -166,9 +171,18 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       );
     }
 
+    // Log the estimated prompt size *before* the request: this is the number
+    // that later thresholds (compaction) will key off, and it is what makes a
+    // real long-running task diagnosable ("is it the context?").
+    const schemas = tools.schemas();
+    const rawEstimate = estimateTokens(session.messages, schemas);
+    const estimatedPromptTokens = calibrateEstimate(rawEstimate, lastEstimate, provider.lastPromptTokens ?? null);
+    lastEstimate = estimatedPromptTokens;
     logger.info(
       `turn ${session.id} iteration=${iter + 1}/${config.maxIterations} ` +
-        `messages=${session.messages.length}`,
+        `messages=${session.messages.length} tools=${schemas.length} ` +
+        `estimatedPromptTokens=${estimatedPromptTokens} rawEstimate=${rawEstimate} ` +
+        `lastPromptTokens=${provider.lastPromptTokens ?? "none"}`,
     );
 
     // Give ACP clients immediate feedback while the provider is waiting for
@@ -188,7 +202,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     try {
       for await (const ev of provider.streamChat({
         messages: session.messages,
-        tools: tools.schemas(),
+        tools: schemas,
         signal,
       })) {
         if (signal.aborted) return "cancelled";

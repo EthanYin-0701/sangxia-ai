@@ -33,6 +33,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly #includeUsage: boolean;
   readonly #retries: number;
   readonly #retryBaseDelayMs: number;
+  #lastPromptTokens: number | null = null;
 
   constructor(cfg: ProviderConfig) {
     this.model = cfg.model;
@@ -84,6 +85,10 @@ export class OpenAIProvider implements LLMProvider {
         await sleep(delayMs, signal);
       }
     }
+  }
+
+  get lastPromptTokens(): number | null {
+    return this.#lastPromptTokens;
   }
 
   async *#attemptStream(
@@ -148,6 +153,7 @@ export class OpenAIProvider implements LLMProvider {
           }
           const reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens;
           if (typeof reasoningTokens === "number") usage.reasoning_tokens = reasoningTokens;
+          if (typeof usage.prompt_tokens === "number") this.#lastPromptTokens = usage.prompt_tokens;
         }
         if (firstChunkAt === null) {
           firstChunkAt = Date.now();

@@ -630,6 +630,31 @@ try {
       }
     }
   });
+  await check("prompt size is estimated (and calibrated with usage) before each request", async () => {
+    const { estimateText, estimateTokens, calibrateEstimate, shouldCompact } = await import("../dist/harness/context.js");
+    assert.equal(estimateTokens([], []), 0);
+    assert.equal(estimateText("a".repeat(40)), 10, "ascii ≈ 4 chars/token");
+    assert.equal(estimateText("中".repeat(15)), 10, "non-ascii ≈ 1.5 chars/token");
+    assert.equal(estimateText(null), 0);
+    const oneMessage = estimateTokens([{ role: "user", content: "a".repeat(40) }]);
+    assert.ok(oneMessage > 10, "per-message overhead is included");
+    // A long single message and a tool schema both count.
+    const withTools = estimateTokens([{ role: "user", content: "hi" }], [{ name: "bash", description: "x".repeat(400), parameters: { type: "object" } }]);
+    assert.ok(withTools > estimateTokens([{ role: "user", content: "hi" }], []));
+    // Calibration only applies with both data points, and stays within 0.5×–2×.
+    assert.equal(calibrateEstimate(100, null, 500), 100);
+    assert.equal(calibrateEstimate(100, 50, 500), 200, "ratio clamps at 2×");
+    assert.equal(calibrateEstimate(100, 1000, 1), 50, "ratio clamps at 0.5×");
+    assert.equal(calibrateEstimate(100, 100, 300), 200, "ratio clamps at 2× (300/100 → 2)");
+    assert.equal(calibrateEstimate(100, 100, 150), 150, "in-range ratio applies as-is");
+    assert.equal(shouldCompact(80_000, 128_000, 0.8), false);
+    assert.equal(shouldCompact(102_400, 128_000, 0.8), true);
+
+    // Logged before the request, with the calibrated value once usage arrives.
+    await turn([{ ...answer, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }]);
+    const log = await readFile(join(dir, "logs", "global.log"), "utf8");
+    assert.match(log, /estimatedPromptTokens=\d+ rawEstimate=\d+ lastPromptTokens=(none|\d+)/);
+  });
   await check("logs contain counts/usage but no reasoning or raw parameters", async () => {
     await turn([{ ...answer, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }]);
     const log = await readFile(join(dir, "logs", "global.log"), "utf8");

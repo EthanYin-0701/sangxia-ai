@@ -57,6 +57,13 @@ export interface StreamChatParams {
 
 export interface LLMProvider {
   readonly model: string;
+
+  /**
+   * `prompt_tokens` the backend reported for the most recent request, when it
+   * returns usage at all. Used only to calibrate the local prompt-size estimate
+   * (see `harness/context.ts`).
+   */
+  readonly lastPromptTokens?: number | null;
   /**
    * Stream a single assistant completion. Implementations must:
    *  - yield `text-delta` for visible content as it arrives,
