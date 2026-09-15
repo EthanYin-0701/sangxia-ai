@@ -184,6 +184,24 @@ try {
     assert.match(placeholder.content, /未执行/);
     assert.ok(!placeholder.content.includes("结果未知"), "in-turn cancel wording must differ from cross-restart repair");
   });
+  await check("isError results get a model-visible prefix, idempotently", async () => {
+    const boom = { ...guardedWrite, run: async () => ({ output: "boom", isError: true }) };
+    const r = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], { toolList: [boom] });
+    const tool = r.session.messages.find((m) => m.role === "tool");
+    assert.match(tool.content, /^\[工具执行失败\] /);
+    assert.match(tool.content, /boom/);
+    // The client sees exactly the same text.
+    const update = r.updates.find((u) => u.sessionUpdate === "tool_call_update");
+    assert.equal(update.content[0].content.text, tool.content);
+
+    const prefixed = { ...guardedWrite, run: async () => ({ output: "Error: 已存在", isError: true }) };
+    const r2 = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], { toolList: [prefixed] });
+    assert.equal(r2.session.messages.find((m) => m.role === "tool").content, "Error: 已存在");
+
+    const already = { ...guardedWrite, run: async () => ({ output: "[工具执行失败] 又一次", isError: true }) };
+    const r3 = await turn([finish("tool_calls", [callDelta("write_file", '{"path":"x","content":"y"}')]), answer], { toolList: [already] });
+    assert.equal(r3.session.messages.find((m) => m.role === "tool").content, "[工具执行失败] 又一次");
+  });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
       rounds = [kind === "idle" ? "idle" : "reasoning-forever"];

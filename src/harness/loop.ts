@@ -355,18 +355,25 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   try {
     signal.throwIfAborted();
     const result = await tool.run(args, { conn, session, signal });
-    const output = truncate(result.output);
+    // M1: mark failures visibly for the model. Built-in tools prefix errors
+    // with "Error:", but MCP tools can return `isError` with arbitrary text
+    // ("boom", "no such table") that the model would otherwise read as a
+    // successful result. One exit feeds both the client and the history, so the
+    // wording can't drift between the two.
+    const raw = truncate(result.output) || "(无输出)";
+    const output =
+      result.isError && !/^(Error:|\[工具执行失败\])/.test(raw) ? `[工具执行失败] ${raw}` : raw;
     await safeSessionUpdate(conn, {
       sessionId: session.id,
       update: {
         sessionUpdate: "tool_call_update",
         toolCallId,
         status: result.isError ? "failed" : "completed",
-        content: [{ type: "content", content: { type: "text", text: output || "(无输出)" } }],
+        content: [{ type: "content", content: { type: "text", text: output } }],
         ...(result.raw ? { rawOutput: result.raw } : {}),
       },
     });
-    await pushToolResult(session, toolCallId, output || "(无输出)");
+    await pushToolResult(session, toolCallId, output);
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=${result.isError ? "failed" : "completed"} ` +
