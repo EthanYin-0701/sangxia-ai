@@ -225,3 +225,17 @@
 - 因此按 plan §10 的前置门槛：**只做 10a**，压缩留到确有 `context_length_exceeded` 或明显变慢时再做。届时阈值建议按模型实际窗口设（不要用 128k 默认，实测已稳定跑到 182k）。
 
 ## 实施计划：plan/harness_hardening_plan.md（2026-09-15；步骤 1–9 + 10a 已完成，见上两节）
+
+## maxTokens（输出上限）调参与按模型覆盖（2026-09-15）
+
+- 症状：使用中频繁出现 `[输出被截断]`。实测证据（`~/Library/Logs/JetBrains/IntelliJIdea2026.2/*.log`）：1375 次真实请求中 **18 次 `finishReason=length`**，`completion_tokens` 精确等于 8191/8192 → 是本地 `provider.maxTokens: 8192` 卡住，不是后端限制。
+- 根因：`max_tokens` 是**单次回复**的上限，由「reasoning + 正文 + 工具调用参数」**共用**。三次有字符计数的截断：`reasoningChars=28987/contentChars=0`（8K 全烧在思考上、正文一个字没出 → 表现为「模型响应为空」）、`reasoningChars=20134/contentChars=15/toolArgumentChars=7793`、`reasoningChars=108/contentChars=8/toolArgumentChars=18844`（写 1.9 万字符文件的参数就约 5k tokens）。撞顶时本次响应的工具调用被整体拒绝，回合以 `max_tokens` 结束。
+- 代码改动（commit `b750b59`）：`provider.models[].maxTokens` 可按模型覆盖全局（`OpenAIProvider` 构造时 `modelConfig?.maxTokens ?? cfg.maxTokens`）；`LLMProvider.maxTokens` 暴露给 harness，截断提示改为 `[输出被截断] 模型达到输出 Token 上限（maxTokens=32768）。该额度由「思考过程 + 正文 + 工具参数」共用…`，并新增 `logger.warn(... maxTokens= textChars= reasoningChars= toolCalls=)`。
+- 本机配置：`zhente.config.json` 的 `maxTokens` 8192 → **32768**（全局 + `deepseek-flash` 各一份，便于以后给 pro 单独调大）。该文件被 gitignore，不进仓库。
+- 取值依据：`max_tokens` 常被计入上下文预算（`prompt + max_tokens ≤ 窗口`）。实测**最大 prompt 182,506 tokens 且从未溢出**，故 32768 在窗口 ≥256K 时安全；**不要**用文档上限 393,216（长会话会被 400 顶掉）。若确认窗口 ≥256K 且很少跑到 180k+ prompt，可提到 65536（对齐推理模型默认输出）；`reasoning_effort=max`→128K 那一档需要额外支持 `reasoning_effort` 参数（当前未实现，属可选扩展）。
+- 调大不额外花钱（按实际输出计费），只放宽单轮最坏延迟。
+
+## 待办：Harness 加固 plan 剩余项
+
+- 10b/10c 上下文压缩：按实测证据**挂起**（同上文"观测结论"节）。重启前先看有无新的 `context_length_exceeded` 证据，不要用 128k 之类的默认窗口猜阈值。
+- `reasoning_effort` / `extraBody` 透传（本轮派生的可选项）：若想把思考预算与输出预算分开控制（如 `reasoning_effort=max` 换取 128K 默认输出，或反向压低思考开销），需要在 provider 请求体里透传该参数。当前实现只发 `max_tokens`。

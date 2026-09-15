@@ -83,4 +83,5 @@ scripts/       冒烟测试脚本（*.mjs）
 - 图片/音频输入、多模式（`session/set_mode`）。
 - MCP 连接按会话回收（当前进程退出时统一关闭，受 ACP 0.4.5 无会话结束事件限制）。
 - TUI v2：`/resume`（session/load 续持久化会话）、权限弹窗内实时 bash 输出（客户端 createTerminal，terminal:true）、多行输入。
+- `reasoning_effort` / 请求体透传：当前 provider 只发 `max_tokens`，无法单独控制思考预算（DeepSeek 的 `reasoning_effort=max` → 默认输出 128K 那一档因此用不上）。
 - 上下文压缩（`plan/harness_hardening_plan.md` 步骤 10b/10c）：`harness/context.ts` 已备好 `estimateTokens` / `shouldCompact`，但**按实测证据挂起**（真实请求最大 182k prompt tokens / 789 消息、0 次 `context_length_exceeded`，见 `.zhente/memory.md`）；重启前先看有没有新的溢出证据，不要用 128k 之类的默认窗口猜阈值。
