@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-ZhenTe（eye-zhen-te）是一个基于 Node.js/TypeScript 的 ACP（Agent Client Protocol）编程 AI agent：通过 stdio 上的 JSON-RPC 与 Zed 等 ACP 客户端通信，自带完整工具 harness（流式输出 → 工具调用 → 权限确认 → 执行 → 回喂 → 收敛），LLM 后端走任意 OpenAI 兼容 `/chat/completions` 端点，可通过 ACP `session/new` 接入 MCP servers，并支持本地技能（Skills）渐进式加载。
+ZhenTe（eye-zhen-te）是一个基于 Node.js/TypeScript 的 ACP（Agent Client Protocol）编程 AI agent：通过 stdio 上的 JSON-RPC 与 Zed 等 ACP 客户端通信，自带完整工具 harness（流式输出 → 工具调用 → 权限确认 → 执行 → 回喂 → 收敛），LLM 后端走任意 OpenAI 兼容 `/chat/completions` 端点，可通过 ACP `session/new` 接入 MCP servers，支持本地技能（Skills）渐进式加载，以及由本地配置驱动、不依赖 ACP 客户端的生命周期钩子（Hooks）。
 
 ## 技术栈
 
@@ -22,6 +22,7 @@ npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
 npm run smoke:mcp     # MCP 工具接入冒烟
 npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
 npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
+npm run smoke:hooks   # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，71 项断言）
 npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
 scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/zhente/skills（--dry-run/--force/--skill/--target）
 ```
@@ -37,6 +38,10 @@ src/
                头尾截断 truncate.ts、prompt token 估算 context.ts
   llm/         LLMProvider 接口（types.ts）+ OpenAI（openai.ts）/ mock（mock.ts）+ factory.ts
   mcp/         MCP client（client.ts）
+  hooks/       生命周期钩子：types.ts（事件/信封/决策类型）、paths.ts（D15 路径基准
+               解析 + 加载期 fail-fast）、exec.ts（单条 hook 进程：spawn/进程组超时
+               kill/容错解析/exit 2）、index.ts（HookRegistry：matcher/串行链式/合并
+               决策/项目级 hooks.json + onError 与超时钳制）
   skills/      技能发现与 use_skill（index.ts）
   tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts
   tui/         终端 UI（`zhente tui`）：index.ts 主循环 / bridge.ts 进程内 ACP 配对
@@ -81,6 +86,14 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 13. **工具超时纪律**：工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，`tool.timeoutMs` / 调用参数（bash 的 `timeout`）优先；deadline 必须 **race** 工具 promise，只 abort signal 不够（不理会 signal 的工具会永久 await）。超时按 `deadline.signal.aborted && !signal.aborted` 判定为失败 tool result，用户取消优先级更高（语义不得混）。
 14. **LLM 重试边界**：provider 只重试**首个 delta 之前**的瞬时失败（网络/408/409/429/5xx），尊重 `Retry-After`，可被 signal 打断；已流出内容、`StreamTimeoutError`、参数类错误一律不重试。SDK `maxRetries: 0` 保持不动。
 
+15. **Hook 纪律**：`src/hooks/` 的四条不变式，改动前先读 `plan/hooks_support.md` 的 §7/§10-D14/§10-D15。
+    - `pre_tool_use` 必须插在 `tool_call` 通知与 `session/request_permission` **之前**，且 `title`/`locations`/`rawInput`/权限弹窗全部用**可能被改写后的最终参数** —— "人批准的就是实际执行的"（D1/M1）；`updatedInput` 是整体替换，替换后必须**重新过 JSON Schema**，非法即不执行。
+    - `ask` 必须**无条件强制弹窗**（`ignoreRemembered: true` + 绕过 `needsPermission`/`permissionMode` 两个门控）：auto 模式与 `needsPermission:false` 的只读工具上都要弹，否则对企业承诺的硬约束是假的（D14）。`deny`/`ask` 都必须回填 tool result，否则触发 `tool_calls` 配对 400（D2/D13）。
+    - **命令路径的解析基准 = 声明它的那份配置所在目录**（配置级 = 配置文件目录，项目级 = 项目根），与 hook 进程的 `cwd`（= session cwd）解耦。**绝不要把基准改成 session cwd** —— 那等于让被打开的仓库决定执行哪个文件（D15 / review H2）；路径形态的命令在加载期解析并校验存在性，缺失直接 fail fast。
+    - hook 失败**绝不能影响 turn 收敛**（异常全捕获 + warn 日志，`onError` 只约束"失败"路径，不改写显式 deny）；`hooks.enabled` 与 `projectFile.enabled` 默认 **false**；项目级条目的 `onError`/`timeoutMs` 只能更严不能放宽（L3）。
+    - 项目级 hooks 文件（`.zhente/hooks.json`）在**会话建立时**加载（基准是 session cwd），配置级在 `loadConfig` 阶段解析路径。
+
+
 ## 已知扩展点（勿破坏预留接口）
 
 - Anthropic 原生 provider（接口已就绪，未实现）。
@@ -88,4 +101,5 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 - MCP 连接按会话回收（当前进程退出时统一关闭，受 ACP 0.4.5 无会话结束事件限制）。
 - TUI v2：`/resume`（session/load 续持久化会话）、权限弹窗内实时 bash 输出（客户端 createTerminal，terminal:true）、多行输入。
 - `reasoning_effort` / 请求体透传：当前 provider 只发 `max_tokens`，无法单独控制思考预算（DeepSeek 的 `reasoning_effort=max` → 默认输出 128K 那一档因此用不上）。
+- Hook v2（实现见 `src/hooks/`，v1 已落地 6 个事件）：会话级 `session_end`（等 ACP 有会话结束事件或 TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。子代理每步工具调用走父循环的 `executeToolCall`，hook 自动生效，但不产生会话级事件（D6）。
 - 上下文压缩（`plan/harness_hardening_plan.md` 步骤 10b/10c）：`harness/context.ts` 已备好 `estimateTokens` / `shouldCompact`，但**按实测证据挂起**（真实请求最大 182k prompt tokens / 789 消息、0 次 `context_length_exceeded`，见 `.zhente/memory.md`）；重启前先看有没有新的溢出证据，不要用 128k 之类的默认窗口猜阈值。

@@ -164,6 +164,8 @@ export function runHookProcess(
     let outBytes = 0;
     let errBytes = 0;
     let killTimer: NodeJS.Timeout | undefined;
+    /** 兜底定时器（unref 过）：管道不关时也能收尾。 */
+    const extraTimers: (NodeJS.Timeout | undefined)[] = [];
 
     const child = spawn(entry.command, {
       shell: opts.shell ?? true,
@@ -192,6 +194,9 @@ export function runHookProcess(
     const onAbort = () => {
       cancelled = true;
       killTree("SIGKILL");
+      // 兜底：万一有子孙进程脱离了进程组、管道迟迟不关（`close` 不触发），
+      // 也必须让调用方拿到结论 —— hook 不允许卡住 turn。
+      extraTimers.push(setTimeout(() => finish(cancelledResult()), KILL_GRACE_MS).unref?.());
     };
 
     const timer = setTimeout(() => {
@@ -199,11 +204,16 @@ export function runHookProcess(
       killTree("SIGTERM");
       // 宽限后强杀：hook 可能自己忽略 SIGTERM。
       killTimer = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
+      // 同上：`close` 不是硬保证，超时必须自己兜底收尾。
+      extraTimers.push(
+        setTimeout(() => finish(failure(`hook 超时（${opts.timeoutMs}ms）已终止`)), KILL_GRACE_MS + 1000).unref?.(),
+      );
     }, opts.timeoutMs);
 
     const cleanup = () => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      for (const t of extraTimers) if (t !== undefined) clearTimeout(t);
       opts.signal?.removeEventListener("abort", onAbort);
     };
 

@@ -10,7 +10,7 @@
 //   8  post_tool_use additionalContext (success + failure), deny ignored
 //   9  user_prompt_submit deny ⇒ refusal, no LLM call, no user message
 //  10  turn_end gets stop_reason (incl. cancelled), init turn is audited
-//  11  timeout ⇒ killed, onError decides, turn not stuck
+//  11  timeout ⇒ killed, onError decides, turn not stuck; cancel kills a running hook
 //  12  matcher only fires for matching tools
 //  13  tool_calls/tool pairing stays valid after denials (no 400 shape)
 //  14  auto + ask ⇒ still prompts (D14)
@@ -571,6 +571,33 @@ await withAgent(
     rounds = [{ toolCalls: [{ name: "bash", arguments: { command: `echo ok > "${ctx.dir}/slow2-sentinel"` } }] }, { content: "好" }];
     await ctx.prompt("跑命令");
     ok(ctx.read("slow2-sentinel") === null, "fail-closed 生效，工具没有执行");
+  },
+);
+
+// 11c) cancelling the turn kills a hanging hook immediately.
+await withAgent(
+  "cancel-hook",
+  {
+    hooks: {
+      enabled: true,
+      timeoutMs: 60_000,
+      events: { pre_tool_use: [{ name: "very-slow", matcher: "^bash$", command: "sh __DIR__/hang.sh" }] },
+    },
+    hookFiles: (dir) => ({ "hang.sh": `#!/bin/sh\ncat > /dev/null\nsleep 30\necho ran > "${dir}/hang-finished"\n` }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[11c] 取消时立刻杀掉正在跑的 hook");
+    rounds = [{ toolCalls: [{ name: "bash", arguments: { command: `echo ok > "${ctx.dir}/cancel-sentinel"` } }] }];
+    const startedAt = Date.now();
+    const pending = ctx.prompt("跑一个很慢的 hook");
+    await new Promise((r) => setTimeout(r, 200));
+    await ctx.conn.cancel({ sessionId: ctx.sessionId });
+    const res = await pending;
+    const elapsed = Date.now() - startedAt;
+    ok(res.stopReason === "cancelled", `取消返回 cancelled（实际 ${res.stopReason}）`);
+    ok(elapsed < 3000, `取消立即生效（${elapsed}ms），没有被 hook 的超时拖住`);
+    ok(ctx.read("cancel-sentinel") === null && ctx.read("hang-finished") === null, "工具没执行，hook 也被杀掉了");
   },
 );
 

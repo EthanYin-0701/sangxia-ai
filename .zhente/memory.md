@@ -42,13 +42,43 @@
 - 核心思路：工具层实现 `spawn_subagent`，进程内开独立 LLM 上下文；ACP 协议层零改动；子代理无权限通道，未授权变更工具默认拒绝。
 - 实现时建议：先独立轻量循环，验证后再把 runTurn 抽成 runToolLoop 复用；跑完冒烟记得更新 AGENTS.md 目录约定与扩展点。
 
-## 待办：Hook（生命周期钩子）支持（设计文档已写，未实现）
+## Hook（生命周期钩子）支持（已实现，2026-09-21）
 
-- 设计文档：`plan/hooks_support.md`（v1 六个事件：session_start / user_prompt_submit / pre_tool_use / post_tool_use / turn_end / session_end）。
+- 设计文档：`plan/hooks_support.md`（v1 六个事件：session_start / user_prompt_submit / pre_tool_use / post_tool_use / turn_end / session_end）；实现于 `src/hooks/{types,paths,exec,index}.ts`，验收 `npm run smoke:hooks`（71 项断言）。
 - 核心机制：外部命令 + stdin JSON（统一信封，含 `tool_name`/`tool_input`/`cwd`/`session_id`），stdout 决策 JSON（`decision: allow|deny|ask`、`updatedInput`、`additionalContext`），`exit 2` 等价 deny；协议对齐 Claude Code Hooks 便于复用已有脚本。
 - 关键设计决策：`pre_tool_use` 插在**权限确认之前**（保证“人类批准的就是实际执行的”）；`allow` 不跳过 `request_permission`（hook 是追加策略层，不是绕过口）；hook 的 deny 必须回填 tool result，否则触发 tool_calls 配对 400；`hooks.enabled` 默认 **false**（升级零行为变化）；项目级 `.zhente/hooks.json` 默认关闭（供应链风险）。
-- 落地清单（§8）：新增 `src/hooks/{types,exec,index}.ts`；改 `config.ts`（hooks schema）、`agent.ts`（四个会话级事件 + context 注入）、`harness/loop.ts`（工具前后）、`harness/permissions.ts`（`ignoreRemembered` 支持 `ask`）、`session.ts`（`hookContext`）；新增 `npm run smoke:hooks`（13 组断言）。
+- 落地清单（§8）：新增 `src/hooks/{types,paths,exec,index}.ts`；改 `config.ts`（hooks schema + 加载期路径解析 + `configPath`/`configDir` 透出）、`agent.ts`（四个会话级事件 + context 注入）、`harness/loop.ts`（工具前后 + `ask` 独立分支）、`harness/permissions.ts`（`ignoreRemembered`）、`session.ts`（`hooks`/`hookContext`/`turnIterations`）；新增 `npm run smoke:hooks`。
 - 与既有扩展点关系：hook 由本地配置驱动、与 ACP 客户端无关 —— TUI 下也能用（与 MCP 相反）；子代理的工具调用同样经过 hook，但不产生会话级事件。
+
+### 2026-09-15 按 review 定案的两项（H1 / H2）
+
+- 依据 `plan/hooks_support-review-high.md`（同目录还有 -medium / -low 两份 review），已在 `plan/hooks_support.md` 定案并写入 §3/§4/§5/§6/§7/§8/§9/§10/§11/附录 A：
+  - **D14 `ask` = 无条件强制弹窗**（选了 review 的方案 A，否掉 B“auto 下降级为 deny”与 C“收窄为仅 confirm + needsPermission:true 有效”）：`executeToolCall` 走独立分支，绕过 `if (tool.needsPermission && session.permissionMode !== "auto")` 两个条件直接 `ensurePermission(..., { ignoreRemembered: true })` —— 所以 **auto 模式与 `needsPermission:false` 的只读工具上 `ask` 都会弹窗**（只加 `ignoreRemembered` 选项而不动门控条件，会让 auto 下 `ask` 静默变 allow，企业“硬约束”承诺是假的）。代价：auto/Full Access 不再等于“绝不弹窗”，README 需写明。
+  - **D15 相对路径 `command` 的解析基准 = 声明它的那份配置**（配置级 → 配置文件目录，项目级 → 项目根），**不是 session cwd**；进程 `cwd` 仍是 session cwd（两者解耦）。因为 D4 只封住了“项目文件声明 hooks”，而全局配置里写 `.zhente/hooks/x.sh` + hook cwd = session cwd 会让被打开仓库决定执行哪个文件。配套：路径形态判定（`./ ../ / ~` 或含 `/` 或脚本后缀）+ 加载期解析并校验存在性 fail fast（否则退化成“调用即失败 + onError 默认 allow”静默失效）、示例改绝对路径/`${HOME}`、README 规定配置级 hook 用绝对路径。
+  - §11 冒烟补 4 条：`auto + ask`、`needsPermission:false + ask`、相对路径基准（陷阱脚本对照）、路径形态命令不存在 ⇒ 加载期报错。
+
+### 实施记录（2026-09-21，commits cb6daf5 / 508f479）
+
+- 落地范围：v1 六个事件全部实现；`hooks.enabled` 与 `hooks.projectFile.enabled` 默认 false；配置级 hook 的路径形态命令在 `loadConfig` 阶段按**配置文件目录**解析并校验存在性（fail fast），项目级在**会话建立时**按 session cwd 解析（`createHookRegistry(config, { cwd })`，注册表挂在 `session.hooks`）。
+- 实现时对 review 的取舍（都已写进代码注释，改动前先看）：
+  - **M1 采纳**：`pre_tool_use` 插在 `tool_call` announce **之前**，`title`/`locations`/`rawInput`/权限弹窗标题全部用最终参数；so "人看到/批准的 = 执行的"。
+  - **M3 采纳**：`turn_end` 改为"`prompt()` 每条退出路径恰好一次"（含 `cancelled during initialization`、`user_prompt_submit` deny），payload 带 `turn_kind: "main" | "init"`；初始化子 turn 的 `runTurn` 也传 hooks 并单独记一次 `turn_end`（其 stopReason 不再被丢弃）。`iterations` 来自 `session.turnIterations`（loop 每轮写入）。
+  - **M4 采纳**：`exit 0` + 空 stdout 一律 `allow`（不受 `onError` 影响）；`onError` 只覆盖"stdout 非空但解析不出决策"、超时、信号、其它非 0 退出码。
+  - **M5 采纳**：hook 进程 `detached: true` 起进程组，超时/取消 `kill(-pid, SIGTERM)` → 宽限 2s → `SIGKILL`（与 `tools/bash.ts` 同一套；`shell:true` 下只杀 `/bin/sh` 会留下孙进程）。
+  - **M6 采纳**：顶层 `decision` 兼容 Claude Code 旧式 `approve`/`block`；**字段存在但取值未知 ⇒ 按执行失败处理（onError）**，绝不静默 allow。
+  - **M7 采纳**：`user_prompt_submit` 在 `maybeInitializeProject` **之前**，且 `updatedPrompt` 是后续所有逻辑（含目录探测）看到的文本；deny 时 `initializationChecked` 不置位（留给下一条合法 prompt）。
+  - **M2 部分采纳**：`systemPrompt()` 统一读 `session.hookContext`（newSession 与项目初始化重建都带上）；`loadSession` 走"改写恢复出的 system 消息 + `persistHistoryReset`"（JSONL 是 append-only，改已有消息必须整段重写），无 system 消息时 warn 并忽略。
+  - **L1 采纳**：post_tool_use 的 `additionalContext` 有独立预算（单条 20k / 合计 40k 字符，不进 `MAX_TOOL_OUTPUT` 的挤压），且先发工具自身结果的 `tool_call_update`、追加后再补一条，保证 UI 与历史/模型一致（慢 hook 不拖住 UI）。
+  - **L2 采纳**：解析器在"整体 parse / 逐行"之外补了"从后往前找最后一个平衡大括号块"，多行 pretty-print（`jq` 默认输出）也能解析；README 仍建议带噪声时用 `jq -c`。
+  - **L3 采纳**：项目级条目方向化钳制 —— `timeoutMs = min(项目值, 配置级值)`，`onError` 只允许从 allow 收紧到 deny。
+  - **L5 采纳（与 plan 文本不同，故意）**：`ZHENTE_PROJECT_DIR` = **session cwd**（与 Claude Code 的 `CLAUDE_PROJECT_DIR` 语义一致，避免"名字叫 PROJECT_DIR 却不是项目目录"）；ZhenTe 进程启动目录另给 `ZHENTE_AGENT_CWD`。plan §6.3 里写的是 `process.cwd()`。
+  - **L6 采纳**：README 与配置示例都给了 MCP 工具的 matcher 写法（`^mcp__router__execute_terminal_command$`）。
+- 两处与 plan 文本不同的实现决定：
+  1. `updatedInput` 非法时按 **§11-5（不执行 + 失败 tool result）** 实现，而不是 §5.2 的"该 hook 失效 + 告警"（后者会退回用旧参数执行，语义更危险）；冒烟 #5 断言的是"不执行"。
+  2. `deny` / 非法改写两条路径的 `tool_call`(failed) 通知里**带上了 content**（与模型看到同一文本），便于客户端显示原因；既有的参数校验失败路径未改（保持原样）。
+- 其它：hook 失败只记 warn（`logger`，session 归属走现有 ALS）；stdout 不整体进日志（可能含代码/密钥），只记解析结果与长度；`session_end` 在 `agent.shutdown()` 汇总执行，2s 硬上限（`unref` 的定时器），超时放弃。
+- 回归：`npm run typecheck` + `smoke` / `smoke:openai` / `smoke:mcp` / `smoke:skill` / `smoke:tui` / `smoke:reliability` / `smoke:hooks` 全绿（hooks 默认关闭，对既有行为零影响；`scripts/smoke-reliability.mjs` 里手搓的配置对象补了 `hooks: { enabled: false }`）。
+- 待办（v2，接口已留）：会话级 `session_end`（等 ACP 有会话结束事件/TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。
 
 ## 已修复：tool_calls 历史不一致导致 400
 
@@ -239,3 +269,44 @@
 
 - 10b/10c 上下文压缩：按实测证据**挂起**（同上文"观测结论"节）。重启前先看有无新的 `context_length_exceeded` 证据，不要用 128k 之类的默认窗口猜阈值。
 - `reasoning_effort` / `extraBody` 透传（本轮派生的可选项）：若想把思考预算与输出预算分开控制（如 `reasoning_effort=max` 换取 128K 默认输出，或反向压低思考开销），需要在 provider 请求体里透传该参数。当前实现只发 `max_tokens`。
+
+## 技能：deepseek-usage（余额 + 本地 token 用量，2026-09-20）
+
+- 位置 `skills/deepseek-usage/`（`SKILL.md` + `scripts/deepseek-usage.mjs`，零依赖，Node ≥ 20）。`skills/` 是默认技能目录且在 `skills.dirs` 里，**新会话才生效**。
+- `balance`：官方 `GET <base>/user/balance`（DeepSeek 唯一公开的账户级接口）。凭证顺序 `--api-key` → `$DEEPSEEK_API_KEY` → `$OPENAI_API_KEY`（本项目配置用这个）→ 配置 `provider.apiKey`；只打印来源、绝不打印 key；base 结尾 `/v1` 时自动回退到不带 `/v1` 的端点；401 / 超时 / 非 JSON 有专门报错。
+- `usage`：**官方没有账户级用量 API**，改为聚合本地日志里 `LLM request end … usage={…}` 行的 token，按日期与模型汇总。来源顺序 `--log` → `$ZHENTE_LOG_DIR`/`$ZHENTE_LOG_FILE` → `~/.config/zhente/logs` → 兜底 JetBrains IDE 日志（按 mtime 取最近 15 个，跨平台根目录）。去重键 = agent 时间戳 + 剥掉 IDE 前缀的整行，所以同一行同时出现在 `zhente-acp.log` 和 `idea*.log` 只算一次（实测 21 条而非 41 条）。
+- 关键前提写进了 SKILL.md：只有 `provider.streamIncludeUsage=true` 的请求才带 usage，否则日志里是 `usage=undefined`（只能统计请求数）。报告会显式提示"无 usage 记录"的条数。
+- 刻意未做：成本换算（DeepSeek 定价区分缓存命中，日志里没有该信息 → 误导风险）、余额快照/差额（需状态文件，用户未要求）。需要就去 https://platform.deepseek.com 核对。
+- 校验：`discoverSkills` 能发现（frontmatter 块标量正常解析进目录）；`balance` 实测返回 CNY 48.05；`usage` 实测 4MB 日志 0.07s、IDE 兜底 0.12s；非法参数统一 `error: …` + exit 2；`npm run typecheck` 通过。
+- Code review 修复（三处，均实测复现后再改）：
+  1. `resolveBaseURL` 空串绕过默认值——`"" ?? "https://api.deepseek.com"` 返回 `""`，`balanceEndpoints("")` 生成相对 URL `/user/balance` → `fetch` 抛 `TypeError: Invalid URL`（只在「无配置文件 且 无 `$DEEPSEEK_BASE_URL`」时命中，正是默认值该生效的场景）。现在每一级都用 `.trim() || undefined` 归一化空串，并加 `^https?://` 校验，非法就 `error: base URL 必须是 http(s) 绝对地址` + exit 2。
+  2. IDE 日志兜底的 `statSync(file)` 调了两次（`.isFile()` 与 `.mtimeMs`），两次之间文件被删会抛出 catch 覆盖不到的异常；改为只 stat 一次存 `stats`。
+  3. `--json` 输出漏了 `unreadableFiles`：`scanLogFile` 写进 `state.unreadable` 后只有人类可读分支会渲染，JSON 消费方无法察觉有文件读不到。已补（实测 chmod 000 的文件出现在两个输出里）。
+- 顺带保留的行为：`--base-url https://api.deepseek.com/v1` 也返回 200（`/v1/user/balance` 可用），`/v1` 回退分支目前用不到但无害。
+- 待办（若要扩展）：`--price-in/--price-out` 成本估算、`balance --compare`（存上次余额算消耗）、把 usage 统计做成 ZhenTe 的一个内置命令而不是技能。
+
+## 技能跨项目共享：install-skills.sh（2026-09-20）
+
+- 需求：把 `skills/deepseek-usage` 给其他项目的 ZhenTe session 用。技能发现是**按 session cwd** 扫描的，与 agent 安装位置无关（全局 npm link 的 `eye-zhen-te@0.1.0` 仍是同一份代码），所以三条路：① 拷进目标项目 `<cwd>/skills`（默认目录，零配置）；② 装到全局 `~/.config/zhente/skills`（默认目录之一，**只对未设置 `skills.dirs` 的项目生效**）；③ 目标项目设 `skills.dirs` 并把自己那份目录列进去。**符号链接不可用**（`discoverSkills` 用 `ent.isDirectory()` 过滤，symlink 被跳过）。
+- 实测确认的发现语义（`discoverSkills`）：`skills.dirs=[]` → `<cwd>/skills` + `~/.config/zhente/skills` 都扫；`skills.dirs=["skills"]` → **只**扫这一个（全局技能消失）；`["skills", "<HOME>/.config/zhente/skills"]` → 两个都扫。
+- 新增 `scripts/install-skills.sh`（`--dry-run`/`--force`/`--skill NAME`/`--target DIR`，env `ZHENTE_SKILLS_DIR`）：把 `skills/*/`（须有 SKILL.md）拷到目标全局目录，已存在的同名技能默认跳过、`--force` 才覆盖；结尾打印三条「装了还看不见」的检查项（`skills.dirs` 覆盖 / 需新开会话 / `skills.enabled`）。**退出码：所有错误一律 `exit 1`**（`die()` 就是 `exit 1`，含未知参数、`--skill` 找不到、`--skill` 缺 SKILL.md）；只有 `-h/--help` 是 `exit 0`。别按「参数错误 → 2」的通用直觉写检查脚本。（`skills/deepseek-usage/scripts/deepseek-usage.mjs` 的「非法参数 `exit 2`、`--help` `exit 0`」是**另一个脚本**的约定，两者不要混写。）
+- **bash 坑（踩过并修）**：`echo "… $dest（要覆盖加 --force）"` 里 `$dest` 紧挨全角括号，bash 会把 `（` 的字节并进变量名 → `dest<乱码>: unbound variable`（只在幂等分支触发，首跑不报）。规则：`$var` 后面紧跟非 ASCII 字符时一律写 `${var}`。已全文件扫过并修正。
+- 脚本侧的跨项目防护：`resolveBaseURL` 现在返回 `{base, source}`，`balance` 会打印「端点（base URL 来自 config …/provider.baseURL）」；若 base 来自**配置文件**且 host 不是 `*.deepseek.com`，向 stderr 打一行 warning 提示改用 `--base-url` / `$DEEPSEEK_BASE_URL`（否则会静默拿别的厂商端点去查余额 → 404/401）。`--json` 增加 `baseUrlSource`。推荐跨项目姿势：`DEEPSEEK_API_KEY=… DEEPSEEK_BASE_URL=https://api.deepseek.com`（优先级高于配置文件，不会被别的项目盖掉）。
+- SKILL.md：定位脚本改为候选路径循环（`<cwd>/skills` → `<cwd>/.claude/skills` → `$ZHENTE_CONFIG` 同级 → `~/.config/zhente/skills`），不再用 `find .`（全局安装时它在 cwd 里找不到）；新增"跨项目使用"章节说明配置发现/日志发现/账户共享三点；排查表补 404-借用了别项目 baseURL 一行。
+- 顺手更新 AGENTS.md：`scripts/` 目录说明、技能章节补共享方式、常用命令加 `scripts/install-skills.sh`。
+- 二轮 review 修复（三处，均先复现/实测再改）：
+  1. `install-skills.sh` 的 `--skill <name>` 指向缺 SKILL.md 的目录时**静默成功**：SKILL.md 检查排在 `$ONLY` 过滤**之前**，坏目录走"跳过"分支（skipped=1），末尾 `installed=0 且 skipped=0` 的 die 条件不再成立 → 打印"安装 0 个，跳过 1 个"、exit 0。实测复现（exit=0）。修法：`$ONLY` 过滤提到 SKILL.md 检查之前，并在命中 ONLY 但缺 SKILL.md 时直接 `die "技能 'X' 存在（路径）但缺少 SKILL.md，无法安装"`（exit 1）。附带好处：指定单个技能时不再打印无关目录的"跳过"噪声。
+  2. `usage` 的 total 用 `??` 回落：`total_tokens ?? prompt+completion` 在 `total_tokens: 0`（占位/异常响应）时照抄 0。抽出 `usageTotal(usage)` 统一成 `num(usage.total_tokens || prompt+completion)`，两处调用点（addUsage 与 state.total 的 mergeBucket 入参）都换掉——单一实现避免漂移。夹具验证：4 条 usage（150 / 0 / 缺字段 / 全 0）合计 450，修复前为 300。
+  3. `createReadStream` 外层 `catch { return; }` 是死代码且会静默丢文件：实测确认 ENOENT / EACCES / EISDIR 都由**异步 error 事件**触发、在 `for await` 里被外层 try 捕获（EACCES 用例正是走这条路记录进 `state.unreadable` 的），只有非法 encoding 之类才同步抛出（encoding 是字面量 "utf8"，不可达）。改成把捕获到的错误也记入 `state.unreadable`，不再无声 return。
+- **bash 坑（第二次踩，same root cause）**：新加的 `die "技能 '$ONLY' 存在（$src）但缺少 SKILL.md"` 里 `$src）` 的全角括号再次被并进变量名。规则重申：`$var` 紧跟非 ASCII 字符一律写 `${var}`；可用 `perl -ne 'print if /\$[a-zA-Z_][a-zA-Z0-9_]*[^\x00-\x7F]/'` 全文件扫（macOS 的 grep 没有 `-P`）。
+- 用例矩阵实测（install-skills.sh）：`--skill` 有效+force→0；`--skill` 缺 SKILL.md→1（含明确报错）；`--skill` 不存在→1；`--skill` 已存在不加 force→0 且提示"已存在，未覆盖"；dry-run→0；未知参数→1；全量（有/无坏目录）→0。
+
+## 踩坑：长文档用 edit_file 连改可能被写成"拼接文件"（2026-09-21，根因未定）
+
+- 现象：同一 session 内用 `edit_file` 连续改 `plan/hooks_support.md`（长文档，user 用 `@` 引用过、很可能在编辑器里打开）时，**两次**出现文件变成「前半截（在某行中途被截断）+ 紧接着整篇全文」的拼接内容（1087 行 / 86KB，`## 1. 背景与问题`、`修订` 标记各有两份），`edit_file` 因 `old_string` 不再唯一而报错，实际是被污染了。
+- 复现尝试（都正常，未能复现）：随后用 `edit_file` 单次改同一文件、新建 3 行探针文件改一行（走的是客户端 `writeTextFile` 路径）→ 内容均正确。因此根因未定，**怀疑**是编辑器文档缓冲与客户端写盘之间的竞态（`src/tools/fs-tools.ts` 的 `writeText` 优先走 `clientCaps.writeTextFile`，即写盘经过 ACP 客户端，而不是 agent 进程直接落盘）。
+- **恢复手段（本次有效，但有前提——先读下面两条限制）**：`plan/` 在 `.gitignore` 里，git 救不了。思路是从该 session 的 JSONL 恢复原文——取首个 `read_file` 的 tool result（`~/.config/zhente/sessions/<id>.jsonl`，用 python 解析取 `message.role == "tool"` 且以文档首行开头的 `content`），再把该 session 里所有 `edit_file` 的 `old_string`/`new_string`（在 assistant 消息的 `tool_calls[].arguments` 里）按顺序重放（每条先断言 `old_string` 唯一，出现 0 或 >1 次立即中止——0 次说明重建基线已不对）。之后用 `bash`（python/`cp`）直接落盘，不要再走 `edit_file`。
+  - **前提 A（不是"必然完整"）**：tool result 在落盘前经过 `truncateMiddle(s, MAX_TOOL_OUTPUT)`（`src/harness/loop.ts:446`，`MAX_TOOL_OUTPUT = 100_000` 字符，`:18`），JSONL 里存的是**截断后**的内容——文件本身 ≥100K 字符时重建结果会**静默缺中间段**；另外 `read_file` 带 `line`/`limit` 时只存切片（`src/tools/fs-tools.ts:31-35`），必须用**不带 line/limit 的首次读取**。本次的 tool result 是 **22,913 字符**（33,380 字节），远低于 100,000 字符阈值，故侥幸完整——注意别拿「污染后 86KB」当参照（那是重复拼接后的字节数）。
+  - **前提 B（重建后必须校验）**：① `content` 里不含截断标记 `…(输出过长，已省略中间`（`src/harness/truncate.ts:16` 的 `truncationMarker`）；② 长度与预期一致（重放后可 `wc -c` 比对，若原文曾是 `read_file` 的完整输出则两者应当相等）；③ 重放结束时最后一条 `edit_file` 也成功匹配。任一不满足 ⇒ **不要**用这份重建结果覆盖磁盘文件。
+  - 不满足前提 A 时改用**编辑器 Local History**（IDEA 右键文件 → Local History → Show History；底层存在 `~/Library/Caches/JetBrains/<IDE><版本>/LocalHistory/`，本机已确认多个 IDE 都有该目录）/ macOS Time Machine 恢复；这两条才是"无条件完整"的来源。
+- 纪律：改这类长文档前先 `cp` 到 `/tmp` 备份；改完用 `wc -l` + 每个 `## 标题` 的 `grep -c`（应恰好 1）校验，别等下一处 `edit_file` 报"出现 2 次"才发现。

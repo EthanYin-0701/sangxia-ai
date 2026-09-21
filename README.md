@@ -74,6 +74,30 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
   "skills": {
     "enabled": true,                       // 是否启用技能层
     "dirs": []                             // 额外技能目录；空=默认 <cwd>/skills 与 ~/.config/zhente/skills
+  },
+  "hooks": {                               // 生命周期钩子（默认关闭），见「Hook（生命周期钩子）」
+    "enabled": false,                      // 总开关：升级后行为完全不变，显式开启才生效
+    "timeoutMs": 60000,                    // 单条 hook 的默认超时
+    "onError": "allow",                    // 超时/崩溃/输出不可解析时："allow"（默认）| "deny"（fail-closed）
+    "shell": null,                         // null = 平台默认（/bin/sh -c）；可指定 "/bin/bash"
+    "projectFile": {                       // 项目级 hooks（随仓库分发的 .zhente/hooks.json）
+      "enabled": false,                    // 默认关闭：打开一个仓库不应执行它的任意命令（供应链风险）
+      "path": ".zhente/hooks.json"
+    },
+    "events": {                            // 事件名与 Claude Code 基本对齐（见下）
+      // 配置级 hook 一律写绝对路径或 ${HOME}/…：相对路径的解析基准是**本配置文件
+      // 所在目录**（不是 session cwd），写错位置会在加载期直接报错（fail fast）
+      "session_start": [],
+      "user_prompt_submit": [],
+      "pre_tool_use": [
+        // { "name": "guard-writes", "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/zhente/hooks/guard-writes.sh" },
+        // { "name": "guard-bash", "matcher": "^bash$", "command": "bash ${HOME}/.config/zhente/hooks/guard-bash.sh", "onError": "deny" },
+        // MCP 工具用注册名（带前缀）：{ "name": "guard-mcp", "matcher": "^mcp__router__execute_terminal_command$", "command": "…" }
+      ],
+      "post_tool_use": [],
+      "turn_end": [],
+      "session_end": []
+    }
   }
 }
 ```
@@ -184,6 +208,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 | MCP 工具 | 接入 `session/new` 传入的 MCP servers（stdio/http/sse），命名 `mcp__<server>__<tool>` | 默认需权限 |
 | 流式输出 | 正文 + 思考(reasoning) 增量流（`agent_message_chunk` / `agent_thought_chunk`） | — |
 | 权限控制 | 变更类工具执行前 `session/request_permission`（可"总是允许/拒绝"并记忆） | — |
+| 生命周期钩子 | `hooks.events.*` 声明外部命令，在 session/prompt/工具/turn 点位拦截、改写参数、注入上下文、审计（见「Hook（生命周期钩子）」） | 默认关闭；`deny`/`ask` 在 auto 模式下同样生效 |
 | LLM 后端 | 任意 OpenAI 兼容 `/chat/completions`（`openai` / `mock` provider），JSON 配置 | 可换 baseURL/model |
 | 取消 | `session/cancel` 中断进行中的 turn | — |
 | 终端界面 | `zhente tui`：同进程 ACP 配对的聊天式 TUI（流式/工具行/权限弹窗/斜杠命令） | 见「终端界面（TUI）」 |
@@ -233,6 +258,119 @@ description: 一句话说明何时用它（会进 system prompt 清单）
 - **发现目录**：默认 `<cwd>/skills` 与 `~/.config/zhente/skills`（同名时项目优先）；可用 `config.skills.dirs` 覆盖/追加（相对路径按会话 cwd 解析）。
 - **开关**：`config.skills.enabled`。
 
+## Hook（生命周期钩子）
+
+Hook 让你用**外部命令**在固定点位介入 agent 生命周期——策略拦截、参数改写、把 lint/测试结果回喂模型、审计每一次工具执行——不需要改 ZhenTe 代码，也不依赖 ACP 客户端（**TUI 下同样可用**，与 MCP 相反）。
+
+三个定位要点：
+
+- **Hook 不是工具**：不暴露给模型，模型看不见也调不动。
+- **Hook 不是权限的替代**：`allow` 只表示"hook 没意见"，**不会**跳过 `session/request_permission`；只有 `deny` 是强制的。
+- **Hook 失败不影响 turn 收敛**：任何异常都被捕获，最坏是"少一次拦截 + 一条 warn 日志"；需要 fail-closed 就显式配 `onError: "deny"`。
+
+### 事件与插入点
+
+| 事件 | 触发点 | 可否阻塞 | `matcher` |
+|---|---|---|---|
+| `session_start` | `session/new` / `session/load` 建立会话后 | 否（只注入上下文） | — |
+| `user_prompt_submit` | 提交 prompt 后、进入 turn 前（含项目初始化之前） | **是**（deny ⇒ `refusal`，不进历史、不调模型） | — |
+| `pre_tool_use` | 参数校验通过后、**权限确认之前** | **是** | 工具名（正则） |
+| `post_tool_use` | 工具执行返回（或超时/抛错）后 | 否（只能追加上下文） | 工具名（正则） |
+| `turn_end` | 每次 prompt 的每条退出路径（含取消、初始化子 turn） | 否 | — |
+| `session_end` | 进程退出（`shutdown`，2s 硬上限） | 否 | — |
+
+`pre_tool_use` 在权限确认**之前**、也在 `tool_call` 通知之前：因此客户端显示的标题、`rawInput`、以及**人类在弹窗里批准的参数**与真正执行的参数三者一致——不存在"人批准了 A、实际跑了 B"。`post_tool_use` 覆盖成功、超时与抛错路径（失败也要能审计）。
+
+### 协议：stdin 信封 → stdout 决策 + 退出码
+
+每个 hook 进程启动后，stdin 收到**一个 JSON 对象 + `\n`** 然后 EOF：
+
+```jsonc
+{
+  "hook_event_name": "pre_tool_use",
+  "session_id": "…", "cwd": "/path/to/project",
+  "permission_mode": "confirm", "model_id": "deepseek-v4-flash",
+  "hook_name": "guard-writes", "timestamp": "2026-01-01T00:00:00.000Z",
+  // 事件附加字段：pre/post_tool_use: tool_name/tool_call_id/tool_kind/tool_input/tool_title
+  //               （post 另有 tool_output/tool_error/tool_elapsed_ms）
+  //   user_prompt_submit: prompt    session_start: source/mcp_servers/skills
+  //   turn_end: stop_reason/iterations/elapsed_ms/turn_kind（main|init）  session_end: reason
+  "tool_input": { "path": "src/a.ts" }
+}
+```
+
+stdout 输出决策 JSON（允许有噪声，解析器会逐行找）：先
+
+```jsonc
+{ "decision": "allow" | "deny" | "ask", "reason": "…",
+  "hookSpecificOutput": {
+    "updatedInput": { /* pre_tool_use：**整体替换**参数，不是补丁 */ },
+    "updatedPrompt": "…",              // 仅 user_prompt_submit
+    "additionalContext": "…"           // session_start / post_tool_use：注入上下文
+  } }
+```
+
+退出码语义：
+
+| 退出码 | 语义 |
+|---|---|
+| `0` | 采用 stdout 决策；**空 stdout = allow**（纯审计型 hook 的正常形态） |
+| `2` | **阻塞** ⇒ `deny`，原因取 stdout 的 `reason` 或 stderr 末尾 500 字符（优先于 `onError`） |
+| 其它非 0 / 超时 / 被杀 | 执行失败，按 `onError`（默认 allow）处理 |
+
+最简单的一条拦截脚本只要几行：
+
+```sh
+#!/bin/sh
+input=$(cat)
+case "$input" in *'"tool_name":"bash"'*'"rm -rf /"'*) echo "禁止删除根目录" >&2; exit 2;; esac
+exit 0
+```
+
+### 决策语义
+
+- **`deny`**：`pre_tool_use` 直接回一个失败的 tool result（`Error: 被 hook <name> 拒绝：<reason>`，不弹权限、不执行，且必须回填历史以保持 `tool_calls` 配对）；`user_prompt_submit` 则向客户端说明原因并返回 `refusal`。
+- **`ask`**（仅 `pre_tool_use`）：**无条件**强制弹窗 —— 忽略"总是允许/总是拒绝"记忆，且**不会被 `permissionMode: "auto"` 与 `needsPermission: false` 短路**。也就是说：**Full Access / auto 模式下 `ask` 照样弹窗，只读工具（`read_file` / `grep` …，用于"读取敏感路径强制复核"）上同样弹窗**。auto 只是"平时别问我"的偏好，跳不过用户自己配置的策略层；唯一的退出方式是改配置（关掉该 hook 或 `hooks.enabled`），而不是切到 Full Access。
+- **`updatedInput`** 是**完整替换**（需要只改一个字段就自己读 `tool_input` 再原样带回其余字段），替换后会**重新过 JSON Schema 校验**；非法则本次工具调用**不执行**并回失败结果——绝不让被污染的输入进入执行。
+- 同一事件多条 hook **串行**执行：`updatedInput` 链式（后一条看到前一条的结果），`additionalContext` 全部拼接；`deny` > `ask` > `allow`。
+
+### 安全说明（务必读）
+
+- **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到直接启动报错。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.zhente/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
+- hook 进程的运行时 `cwd` 仍是 **session cwd**（脚本里的 `git status` / `npm` 语义不变）。因此**不要在全局配置里写依赖仓库的裸命令**（`"npm run lint"` 会跑被打开仓库的 `package.json` scripts 与 `node_modules/.bin`）；要跑就写绝对解释器 + 绝对脚本：`"bash ${HOME}/.config/zhente/hooks/lint.sh"`。
+- **项目级 hooks（`.zhente/hooks.json`）默认关闭**：该文件随仓库分发，开启等于"打开仓库就执行任意命令"；显式 `projectFile.enabled: true` 才加载（开启时会 warn 一次），且项目级条目的 `onError` / `timeoutMs` 只能**更严**不能放宽。
+- hook 是**本地用户自己配置的、权限等同你 shell 的非沙箱进程**：它能看到模型文本、工具参数与输出（可能含代码/密钥）；不要把 payload POST 到不可信地址。stdout 不整体进日志（只记解析结果与长度），stderr 截断后进日志。
+- **hook 策略是"深度防御"，不是沙箱**：基于工具参数字符串的规则天然可绕过（禁止写 `.env` 的规则挡不住 `bash -c 'echo … > .env'`）。要真正隔离请用 OS 级机制；能拦刀就同时配 `guard-writes` + `guard-bash` 两条 matcher。
+
+### 环境变量（stdin 之外的第二通道）
+
+`ZHENTE_HOOK_EVENT`、`ZHENTE_SESSION_ID`、`ZHENTE_CWD`、`ZHENTE_PERMISSION_MODE`、`ZHENTE_PROJECT_DIR`（= 项目根 / session cwd）、`ZHENTE_AGENT_CWD`（ZhenTe 进程启动目录）。
+
+### 与 Claude Code Hooks 的对应
+
+事件名改为 snake_case（`PreToolUse`→`pre_tool_use`、`Stop`→`turn_end`），输入字段、`exit 2` 语义一致；决策读取兼容 `hookSpecificOutput.permissionDecision` 与旧式顶层 `decision: "approve" / "block"`（未知取值按失败处理，绝不静默放行）。已有脚本**大概率**能直接跑（差异：本设计的顶层字段是 `decision`，另有 `updatedPrompt`；`UserPromptSubmit` 在 Claude Code 里不支持改写 prompt）。
+
+### 最小示例
+
+```sh
+#!/bin/sh
+# ~/.config/zhente/hooks/guard-writes.sh
+# 配置: { "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/zhente/hooks/guard-writes.sh" }
+payload=$(cat)
+path=$(printf '%s' "$payload" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tool_input?.path??""))')
+case "$path" in *.env|*.env.*|*id_rsa*|*.pem) echo "禁止写入敏感文件: $path" >&2; exit 2 ;; esac
+exit 0
+```
+
+```sh
+#!/bin/sh
+# ~/.config/zhente/hooks/ts-check.sh（post_tool_use，matcher ^edit_file$，timeoutMs 120000）
+out=$(npm run -s typecheck 2>&1) || {
+  node -e 'console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"[typecheck 失败]\n"+process.argv[1]}}))' "$out"
+}
+exit 0
+```
+
 ## 架构
 
 ```
@@ -248,7 +386,8 @@ description: 一句话说明何时用它（会进 system prompt 清单）
    harness/loop.ts  ──►  LLMProvider (llm/*)      OpenAI 兼容 / mock
         │            └─►  ToolRegistry(每会话)     内置(tools/*) + MCP(mcp/*) + use_skill(skills/*)
         │            └─►  permissions.ts           session/request_permission
-   Session (src/session.ts)       ← 每会话历史 / cwd / 权限记忆 / 取消 / MCP 连接 / 技能
+        │            └─►  hooks/*.ts               外部命令钩子（pre/post_tool_use 等，见「Hook」）
+   Session (src/session.ts)       ← 每会话历史 / cwd / 权限记忆 / 取消 / MCP 连接 / 技能 / hooks
 ```
 
 - **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存为单个文件；`ZHENTE_LOG_DIR` 可按 session 分文件，见下；`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。TUI 模式下 stdout 是渲染目标而非协议通道，因此启动时会 `logger.configure({ stderr: false, … })` 把日志只写进文件。
@@ -289,8 +428,10 @@ npm run typecheck   # 仅类型检查
 npm run build       # 编译到 dist/
 npm run smoke        # ACP 握手 + 工具 + 权限流冒烟（mock provider）
 npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器）
-npm run smoke:mcp    # MCP 工具 + 技能冒烟
+npm run smoke:mcp    # MCP 工具接入冒烟
+npm run smoke:skill  # 技能层冒烟（发现/目录注入/use_skill 加载）
 npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
+npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，71 项断言）
 npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 ```
 
@@ -300,5 +441,6 @@ npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 - 图片/音频输入（`initialize` 里 `promptCapabilities.image/audio` 均为 false）。
 - MCP 连接的按会话回收（当前在进程退出时统一关闭；ACP 0.4.5 无会话结束事件）。
 - TUI v2：`/resume`（`session/load` 续持久化会话）、权限弹窗内的实时 `bash` 输出（客户端 `createTerminal`）、多行输入。
+- Hook v2：会话级 `session_end`（等 ACP 有会话结束事件）、`pre_compact` / `subagent_*`、`turn_end` 的 `decision: "continue"`（要求模型再跑一轮）、结构化注入（图片/文件引用）、可选审计文件（`hooks.auditFile`）。
 
 > 权限模式（`session/set_mode`）与模型选择（`session/set_model`）已实现，见上文「配置」。
