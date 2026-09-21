@@ -23,6 +23,7 @@ npm run smoke:mcp     # MCP 工具接入冒烟
 npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
 npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
 npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
+scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/zhente/skills（--dry-run/--force/--skill/--target）
 ```
 
 ## 目录约定
@@ -47,13 +48,16 @@ src/
   persistence.ts  会话持久化：JSONL 事件流（~/.config/zhente/sessions/<id>.jsonl），persistSession 唯一写入口
   project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载
 doc/uml/       时序图（prompt-turn）
-scripts/       冒烟测试脚本（*.mjs）
+scripts/       冒烟测试脚本（*.mjs）+ install-skills.sh（把 skills/ 装到全局技能目录）
+               install-skills.sh 需注意：bash 里 `$var` 紧挨全角括号会被吞进变量名，一律写 `${var}
 .claude/skills/ 本地安装的第三方技能（Claude Code 布局；analyze 来自 jet-desk，见 .zhente/memory.md）
+skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 token 用量）
 ```
 
 ## 技能（Skills）
 
 - 发现目录：配置 `skills.dirs`（相对路径按 session cwd 解析）优先；未配置时回退 `<cwd>/skills` + `~/.config/zhente/skills`。同名先到先得（项目技能盖过全局）。
+- **共享技能给其他项目**：把技能装进默认目录 `<项目>/skills`（零配置）或全局 `~/.config/zhente/skills`（用 `scripts/install-skills.sh`）。全局目录只对**未设置 `skills.dirs`** 的项目生效——`skills.dirs` 非空会替换默认列表，此时必须把全局目录显式列进去（按顺序，靠后的被靠前的同名技能盖过）。技能不跟随 Agent 安装位置，只按 session cwd 扫描。装完需新开会话。
 - `SKILL.md` 只需 frontmatter 的 `name` / `description`；`description` 支持 YAML 块标量（`>-` / `|`），Claude Code 技能的长描述可直接用。
 - 目录（name+description）只在 `newSession` 时扫描一次并注入 system prompt，`use_skill` 工具仅在发现到技能时才暴露——**安装技能后需要新会话才生效**。
 - `use_skill` 只加载 SKILL.md 正文；Claude 专属的 `allowed-tools` / `$ARGUMENTS` / `argument-hint` 不解析（正文里按需自解释）。技能内引用的相对路径（如 `.claude/skills/<name>/references/*.md`）按 session cwd 解析，安装时要保证路径与 cwd 匹配。
