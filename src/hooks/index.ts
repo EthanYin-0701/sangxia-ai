@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { interpolateEnv, type HooksConfig } from "../config.js";
 import { logger } from "../logger.js";
 import { runHookProcess } from "./exec.js";
-import { assertValidHookEntries, resolveHookCommands } from "./paths.js";
+import { assertKnownHookEvents, assertValidHookEntries, resolveHookCommands } from "./paths.js";
 import { emptyOutcome, HOOK_EVENTS, type HookEntry, type HookEvent, type HookOutcome, type HookPayload } from "./types.js";
 import { truncateMiddle } from "../harness/truncate.js";
 
@@ -58,6 +58,19 @@ export function hookEnv(payload: HookPayload): NodeJS.ProcessEnv {
   };
 }
 
+/**
+ * `matcher` 作用在哪个 payload 字段上（缺省 = 该事件的 matcher 无效，构造时 warn）。
+ *
+ * - 工具事件：`tool_name`（工具注册名，MCP 工具为 `mcp__<server>__<tool>`）。
+ * - `session_start`：`source`（`startup` | `resume`），与 codex 的 `SessionStart`
+ *   matcher 语义一致。
+ */
+const MATCHER_FIELDS: Partial<Record<HookEvent, string>> = {
+  pre_tool_use: "tool_name",
+  post_tool_use: "tool_name",
+  session_start: "source",
+};
+
 interface CompiledEntry {
   entry: HookEntry;
   matcher?: RegExp;
@@ -93,14 +106,14 @@ export class HookRegistry {
       ]),
     ) as Record<HookEvent, CompiledEntry[]>;
 
-    // 非工具事件上的 matcher 是配置笔误：忽略它（见 run()），但提示一次，
+    // 其它事件上的 matcher 是配置笔误：忽略它（见 run()），但提示一次，
     // 否则一条写错位置的 matcher 会让 hook 静默不执行。
     for (const event of HOOK_EVENTS) {
-      if (event === "pre_tool_use" || event === "post_tool_use") continue;
+      if (MATCHER_FIELDS[event] !== undefined) continue;
       for (const { entry } of this.#entries[event]) {
         if (entry.matcher !== undefined) {
           logger.warn(
-            `hook ${event} "${entry.name ?? entry.command}" 配置了 matcher，但该事件不是工具事件 —— matcher 被忽略`,
+            `hook ${event} "${entry.name ?? entry.command}" 配置了 matcher，但该事件没有可匹配的字段 —— matcher 被忽略`,
           );
         }
       }
@@ -121,12 +134,13 @@ export class HookRegistry {
     const outcome = emptyOutcome();
     if (!this.has(event)) return outcome;
     const startedAt = Date.now();
-    // `matcher` 只对工具事件有意义；其它事件上配了也忽略（构造时已 warn 一次），
-    // 否则一条写错位置的 matcher 会让 hook 静默不执行。
-    const isToolEvent = event === "pre_tool_use" || event === "post_tool_use";
-    const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+    // `matcher` 只对**有可匹配字段**的事件有意义（工具名 / session_start 的 source）；
+    // 其它事件上配了也忽略（构造时已 warn 一次），否则一条写错位置的 matcher 会让
+    // hook 静默不执行。
+    const matchField = MATCHER_FIELDS[event];
+    const matchValue = matchField === undefined ? "" : String(payload[matchField] ?? "");
     const selected = this.#entries[event].filter(
-      ({ matcher }) => !isToolEvent || !matcher || matcher.test(toolName),
+      ({ matcher }) => matchField === undefined || !matcher || matcher.test(matchValue),
     );
     let effectiveInput =
       event === "pre_tool_use" && payload.tool_input && typeof payload.tool_input === "object"
@@ -251,6 +265,9 @@ function loadProjectEntries(
     throw new Error(`项目级 hooks 文件无法解析 (${path}): ${e instanceof Error ? e.message : String(e)}`);
   }
   const data = interpolateEnv(raw) as { events?: Record<string, unknown> };
+  if (data?.events && typeof data.events === "object") {
+    assertKnownHookEvents(data.events as Record<string, unknown>, `项目级 hooks 文件 ${path}`);
+  }
   const out: Partial<Record<HookEvent, HookEntry[]>> = {};
   let count = 0;
   for (const event of HOOK_EVENTS) {

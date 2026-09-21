@@ -90,7 +90,7 @@ export class ZhenTeAgent implements Agent {
         this.#config.provider.model,
       );
       await this.prepareSession(session);
-      await this.runSessionStart(session, "new");
+      await this.runSessionStart(session, "startup");
       session.messages.push({ role: "system", content: await this.systemPrompt(session) });
       this.#sessions.set(id, session);
       await persistSession(session);
@@ -115,7 +115,7 @@ export class ZhenTeAgent implements Agent {
       session.messages = saved.messages;
       session.startedToolCalls = saved.startedToolCalls ?? new Set();
       this.#sessions.set(session.id, session);
-      await this.runSessionStart(session, "load");
+      await this.runSessionStart(session, "resume");
       // M2: a restored session has no systemPrompt() call, so session_start
       // context goes into the restored system message and is persisted with a
       // full-history replacement (an append-only log can't rewrite a message).
@@ -249,8 +249,13 @@ export class ZhenTeAgent implements Agent {
     );
   }
 
-  /** Fire `session_start` and collect its injected context (best-effort). */
-  private async runSessionStart(session: Session, source: "new" | "load"): Promise<void> {
+  /**
+   * Fire `session_start` and collect its injected context (best-effort).
+   *
+   * `source` 用 codex 的词汇表（`startup` = 新会话，`resume` = `session/load`），
+   * 这样 `matcher: "startup|resume"` 这类配置可以照抄。
+   */
+  private async runSessionStart(session: Session, source: "startup" | "resume"): Promise<void> {
     if (!session.hooks.has("session_start")) return;
     const outcome = await session.hooks.run(
       "session_start",

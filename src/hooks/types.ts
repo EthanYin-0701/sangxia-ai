@@ -26,8 +26,10 @@ export interface HookEntry {
   /** 经 shell 执行。路径形态的命令已在加载期解析成绝对路径（D15）。 */
   command: string;
   /**
-   * 仅 `pre_tool_use` / `post_tool_use` 生效：JS 正则，作用于**工具注册名**。
-   * MCP 工具必须带前缀，如 `^mcp__router__execute_terminal_command$`。
+   * 事件级过滤器（JS 正则），只对**有可匹配字段**的事件有意义：
+   * `pre_tool_use` / `post_tool_use` 作用于工具注册名（MCP 工具必须带前缀，如
+   * `^mcp__router__execute_terminal_command$`）；`session_start` 作用于 `source`
+   * （`startup|resume`，与 codex 的 `SessionStart` matcher 一致）。
    */
   matcher?: string;
   /** 覆盖全局 `hooks.timeoutMs`。 */
