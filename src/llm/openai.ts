@@ -26,7 +26,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly model: string;
   readonly #client: OpenAI;
   readonly #temperature: number;
-  readonly #maxTokens: number;
+  readonly #maxTokens: number | undefined;
   readonly #requestTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #totalTimeoutMs: number;
@@ -96,7 +96,7 @@ export class OpenAIProvider implements LLMProvider {
     return this.#lastUsage;
   }
 
-  get maxTokens(): number {
+  get maxTokens(): number | undefined {
     return this.#maxTokens;
   }
 
@@ -130,9 +130,12 @@ export class OpenAIProvider implements LLMProvider {
         model: this.model,
         messages: toOpenAIMessages(messages),
         temperature: this.#temperature,
-        max_tokens: this.#maxTokens,
         stream: true,
       };
+      // Omitted entirely when unset, rather than sending a hardcoded value:
+      // the backend's own default (e.g. DeepSeek thinking mode's 64K) is
+      // often larger than anything we'd want to hardcode here.
+      if (this.#maxTokens !== undefined) request.max_tokens = this.#maxTokens;
       if (this.#includeUsage) request.stream_options = { include_usage: true };
       if (tools.length > 0) {
         request.tools = tools.map((t) => ({

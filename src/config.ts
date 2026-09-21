@@ -44,7 +44,14 @@ const providerSchema = z
       .min(1)
       .optional(),
     temperature: z.number().min(0).max(2).default(0),
-    maxTokens: z.number().int().positive().default(8192),
+    /**
+     * Output budget sent as `max_tokens`. Left unset by default so the request
+     * simply omits the field and the backend's own default applies — DeepSeek's
+     * thinking-mode default (64K, 128K at `reasoning_effort=max`) is already
+     * larger than any fixed value we'd want to hardcode here, and picking one
+     * only risks truncating output the backend would otherwise have produced.
+     */
+    maxTokens: z.number().int().positive().optional(),
     requestTimeoutMs: z.number().int().positive().default(120_000),
     streamIdleTimeoutMs: z.number().int().positive().default(60_000),
     streamTotalTimeoutMs: z.number().int().positive().default(120_000),

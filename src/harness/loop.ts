@@ -270,15 +270,20 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       if (finishReason === "length") {
         // Name the actual budget: `max_tokens` is a single pool shared by
         // reasoning + visible text + tool-call arguments, so "which limit am I
-        // hitting" is the first thing worth knowing.
-        const budget = provider.maxTokens ? `（maxTokens=${provider.maxTokens}）` : "";
+        // hitting" is the first thing worth knowing. When maxTokens isn't
+        // configured we never sent the field at all — the backend's own
+        // default applied (e.g. DeepSeek thinking mode: 64K, 128K at
+        // reasoning_effort=max) — so say that instead of a bare "unknown".
+        const budget = provider.maxTokens
+          ? `（maxTokens=${provider.maxTokens}）`
+          : "（未设置 provider.maxTokens，使用服务端默认额度；DeepSeek 思考模式默认约 64K，reasoning_effort=max 时约 128K）";
         logger.warn(
-          `turn ${session.id} 输出被截断 finishReason=length maxTokens=${provider.maxTokens ?? "unknown"} ` +
+          `turn ${session.id} 输出被截断 finishReason=length maxTokens=${provider.maxTokens ?? "server-default"} ` +
             `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length}`,
         );
         await notice(
           `[输出被截断] 模型达到输出 Token 上限${budget}。该额度由「思考过程 + 正文 + 工具参数」共用，` +
-            `请调大 provider.maxTokens（或按模型在 provider.models[].maxTokens 单独设置），也可以缩小任务后继续。`,
+            `可显式设置 provider.maxTokens（或按模型在 provider.models[].maxTokens 单独设置）提高上限，也可以缩小任务后继续。`,
         );
         return "max_tokens";
       }

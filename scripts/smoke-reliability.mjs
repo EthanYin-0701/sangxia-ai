@@ -558,6 +558,32 @@ try {
     for await (const _ of perModel.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) { /* consume */ }
     assert.equal(requests[0].max_tokens, 32768);
   });
+  await check("unset maxTokens omits max_tokens entirely, letting the backend default apply", async () => {
+    const { OpenAIProvider } = await import("../dist/llm/openai.js");
+    const unset = { ...cfg };
+    delete unset.maxTokens;
+    const provider = new OpenAIProvider(unset);
+    assert.equal(provider.maxTokens, undefined);
+    rounds = [answer];
+    requests = [];
+    for await (const _ of provider.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) { /* consume */ }
+    assert.ok(!("max_tokens" in requests[0]), "max_tokens must not be sent when unconfigured");
+
+    // Truncation notice must describe "server default", not a bare "unknown".
+    rounds = [finish("length", [])];
+    const session = new Session(randomUUID(), dir, [], caps, "confirm", "test");
+    session.messages = [{ role: "user", content: "test" }];
+    session.abort = new AbortController();
+    const updates = [];
+    const conn = { async sessionUpdate(p) { updates.push(p.update); } };
+    const stopReason = await runTurn({ conn, session, provider: new OpenAIProvider(unset),
+      tools: new ToolRegistry([]), signal: session.abort.signal,
+      config: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null } });
+    assert.equal(stopReason, "max_tokens");
+    const text = updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map((u) => u.content.text).join("");
+    assert.match(text, /使用服务端默认额度/);
+    assert.ok(!text.includes("maxTokens=unknown"));
+  });
   await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
     for (const kind of ["idle", "total", "cancel"]) {
       rounds = [kind === "idle" ? "idle" : "reasoning-forever"];
