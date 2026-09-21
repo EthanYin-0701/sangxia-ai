@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import { assertValidHookEntries, resolveHookCommands } from "./hooks/paths.js";
+import { HOOK_EVENTS } from "./hooks/types.js";
+import { logger } from "./logger.js";
 
 /**
  * Configuration loading & validation.
@@ -164,21 +167,84 @@ const skillsSchema = z
   })
   .default({});
 
+/**
+ * 生命周期钩子（hooks）配置 —— 见 `plan/hooks_support.md` §4。
+ *
+ * 默认**关闭**（升级零行为变化）。所有 hook 都是本地用户自己配置的外部命令：
+ * 权限等同用户 shell，因此脚本自身不做沙箱；安全默认是"不配就不跑"。
+ */
+const hookEntrySchema = z.object({
+  /** 日志标识，缺省用 command。 */
+  name: z.string().optional(),
+  /** 经 shell 执行。路径形态的命令在加载期解析成绝对路径（相对**配置文件目录**）。 */
+  command: z.string().min(1),
+  /** 仅工具事件：作用于工具注册名的 JS 正则（MCP 工具为 `mcp__<server>__<tool>`）。 */
+  matcher: z.string().optional(),
+  /** 覆盖全局 `hooks.timeoutMs`。 */
+  timeoutMs: z.number().int().positive().optional(),
+  /** 覆盖全局 `hooks.onError`。 */
+  onError: z.enum(["allow", "deny"]).optional(),
+});
+
+const hooksSchema = z
+  .object({
+    /** 总开关，默认关闭。 */
+    enabled: z.boolean().default(false),
+    /** 单条 hook 默认超时。 */
+    timeoutMs: z.number().int().positive().default(60_000),
+    /** 超时 / 崩溃 / 输出不可解析时的全局默认："allow"（放行）或 "deny"（fail-closed）。 */
+    onError: z.enum(["allow", "deny"]).default("allow"),
+    /** null = 平台默认（`shell: true`）；可指定 "/bin/bash"。 */
+    shell: z.string().nullable().default(null),
+    /**
+     * 项目级 hooks（`.zhente/hooks.json`）默认关闭：该文件随仓库分发 = 打开仓库就
+     * 执行任意命令（供应链风险）。开启后其相对路径命令以**项目根**为基准，
+     * 且不能放宽 `onError` / 超时上限（只允许更严）。
+     */
+    projectFile: z
+      .object({
+        enabled: z.boolean().default(false),
+        path: z.string().default(".zhente/hooks.json"),
+      })
+      .default({}),
+    events: z
+      .object({
+        session_start: z.array(hookEntrySchema).default([]),
+        user_prompt_submit: z.array(hookEntrySchema).default([]),
+        pre_tool_use: z.array(hookEntrySchema).default([]),
+        post_tool_use: z.array(hookEntrySchema).default([]),
+        turn_end: z.array(hookEntrySchema).default([]),
+        session_end: z.array(hookEntrySchema).default([]),
+      })
+      .default({}),
+  })
+  .default({});
+
 const configSchema = z.object({
   provider: providerSchema,
   agent: agentSchema.default({}),
   mcp: mcpSchema,
   skills: skillsSchema,
+  hooks: hooksSchema,
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type AgentConfig = z.infer<typeof agentSchema>;
 export type McpConfig = z.infer<typeof mcpSchema>;
 export type SkillsConfig = z.infer<typeof skillsSchema>;
+export type HooksConfig = z.infer<typeof hooksSchema>;
+export type HookEntryConfig = z.infer<typeof hookEntrySchema>;
 export type Config = z.infer<typeof configSchema>;
 
+/** `loadConfig` 的返回值：配置本体 + 实际使用的配置文件路径。 */
+export interface LoadedConfig extends Config {
+  /** 实际使用的配置文件绝对路径（hooks 相对路径的解析基准 = 它的目录）。 */
+  configPath: string;
+  configDir: string;
+}
+
 /** Recursively replace `${VAR}` occurrences in string values with env vars. */
-function interpolateEnv(value: unknown): unknown {
+export function interpolateEnv(value: unknown): unknown {
   if (typeof value === "string") {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
       const v = process.env[name];
@@ -226,7 +292,34 @@ function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
   return null;
 }
 
-export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
+/**
+ * hooks 的加载期处理（§4-6 / §10-D15）：正则与取值校验，路径形态的 `command`
+ * 按**配置文件所在目录**解析成绝对路径并校验存在性（不存在直接 fail fast，
+ * 否则会退化成"每次调用都失败 + `onError` 默认 allow"）。
+ *
+ * `hooks.enabled: false`（默认）时不做任何检查 —— 未启用的段不影响加载。
+ */
+function prepareHooks(hooks: HooksConfig, configPath: string): void {
+  if (!hooks.enabled) return;
+  const configDir = dirname(configPath);
+  let count = 0;
+  for (const event of HOOK_EVENTS) {
+    const where = `${configPath} → hooks.events.${event}`;
+    assertValidHookEntries(hooks.events[event], where);
+    hooks.events[event] = resolveHookCommands(hooks.events[event], configDir, where);
+    count += hooks.events[event].length;
+  }
+  if (count === 0) {
+    logger.warn(`hooks.enabled=true 但未配置任何事件（${configPath}）`);
+  } else {
+    logger.info(
+      `hooks 已启用: ${count} 条配置级 hook · timeout=${hooks.timeoutMs}ms onError=${hooks.onError} · ` +
+        `相对路径基准=${configDir} · projectFile=${hooks.projectFile.enabled ? hooks.projectFile.path : "关闭"}`,
+    );
+  }
+}
+
+export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig {
   const path = resolveConfigPath(argv);
   // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 ZHENTE_BASE_URL /
   //   ZHENTE_API_KEY / ZHENTE_MODEL 组合 provider 配置，实现 headless 零配置直跑
@@ -254,8 +347,10 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): Config {
   }
 
   const config = parsed.data;
+  // hooks：正则/取值校验 + 路径形态命令的加载期解析与存在性检查（D15）。
+  prepareHooks(config.hooks, path);
   // CLI 参数 / 环境变量可以覆盖配置文件里的权限模式（便于 IDE 侧按 agent 配置切换）。
   const override = permissionModeOverride(argv);
   if (override) config.agent.permissionMode = override;
-  return config;
+  return Object.assign(config, { configPath: path, configDir: dirname(path) });
 }

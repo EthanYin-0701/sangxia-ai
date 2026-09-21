@@ -393,6 +393,7 @@ try {
       agent: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null },
       mcp: { enabled: false, connectTimeoutMs: 1000 },
       skills: { enabled: false, dirs: [] },
+      hooks: { enabled: false },
     };
     const agent = new ZhenTeAgent({
       async sessionUpdate() {},
@@ -483,6 +484,7 @@ try {
       agent: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null },
       mcp: { enabled: false, connectTimeoutMs: 1000 },
       skills: { enabled: false, dirs: [] },
+      hooks: { enabled: false },
     };
     const agent = new ZhenTeAgent({
       async sessionUpdate() {},

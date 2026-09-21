@@ -24,12 +24,14 @@ import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
 import { runTurn } from "./harness/loop.js";
 import { type Tool, ToolRegistry } from "./harness/tool.js";
+import { createHookRegistry, hookPayload } from "./hooks/index.js";
+import type { HookOutcome } from "./hooks/types.js";
 import { createProvider } from "./llm/factory.js";
 import type { LLMProvider } from "./llm/types.js";
 import { logger } from "./logger.js";
 import { connectMcpServer } from "./mcp/client.js";
 import { loadProjectMemory, missingProjectMemory } from "./project-memory.js";
-import { loadSession as loadPersistedSession, persistSession } from "./persistence.js";
+import { loadSession as loadPersistedSession, persistHistoryReset, persistSession } from "./persistence.js";
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
@@ -88,7 +90,8 @@ export class ZhenTeAgent implements Agent {
         this.#config.provider.model,
       );
       await this.prepareSession(session);
-      session.messages.push({ role: "system", content: await this.systemPrompt(params.cwd, session.skills) });
+      await this.runSessionStart(session, "new");
+      session.messages.push({ role: "system", content: await this.systemPrompt(session) });
       this.#sessions.set(id, session);
       await persistSession(session);
       logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
@@ -112,9 +115,22 @@ export class ZhenTeAgent implements Agent {
       session.messages = saved.messages;
       session.startedToolCalls = saved.startedToolCalls ?? new Set();
       this.#sessions.set(session.id, session);
+      await this.runSessionStart(session, "load");
+      // M2: a restored session has no systemPrompt() call, so session_start
+      // context goes into the restored system message and is persisted with a
+      // full-history replacement (an append-only log can't rewrite a message).
+      if (session.hookContext.length > 0) {
+        const system = session.messages.find((message) => message.role === "system");
+        if (system) {
+          system.content = [system.content, ...session.hookContext].filter(Boolean).join("\n\n");
+          await persistHistoryReset(session);
+        } else {
+          logger.warn(`session ${session.id}: session_start 注入了上下文，但恢复的历史没有 system 消息可承载，已忽略`);
+        }
+      }
       logger.info(
         `loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length} ` +
-          `startedToolCalls=${session.startedToolCalls.size}`,
+          `startedToolCalls=${session.startedToolCalls.size} hookContext=${session.hookContext.length}`,
       );
       return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
     });
@@ -170,6 +186,9 @@ export class ZhenTeAgent implements Agent {
   }
 
   private async prepareSession(session: Session): Promise<void> {
+    // Lifecycle hooks for this cwd (config-level commands were path-resolved in
+    // loadConfig; the optional project-level file is read here, per session).
+    session.hooks = createHookRegistry(this.#config.hooks, { cwd: session.cwd });
 
     // Discover skills for this cwd. Only their name+description catalog goes into
     // the prompt; bodies load on demand via the `use_skill` tool.
@@ -210,12 +229,72 @@ export class ZhenTeAgent implements Agent {
     );
   }
 
-  private async systemPrompt(cwd: string, skills: Session["skills"], memoryCwd = cwd): Promise<string> {
+  /**
+   * Assemble the system message.
+   *
+   * `session.hookContext` is appended here (not spliced into a string at
+   * newSession time) so *every* rebuild carries it — including the rebuild after
+   * project initialization overwrites the system message (review M2).
+   */
+  private async systemPrompt(session: Session, memoryCwd = session.cwd): Promise<string> {
     const memory = await loadProjectMemory(memoryCwd).catch((e) => {
       logger.warn(`项目记忆读取失败: ${e instanceof Error ? e.message : String(e)}`);
       return "";
     });
-    return (this.#config.agent.systemPrompt ?? defaultSystemPrompt(cwd)) + skillCatalogPrompt(skills) + memory;
+    return (
+      (this.#config.agent.systemPrompt ?? defaultSystemPrompt(session.cwd)) +
+      (session.hookContext.length > 0 ? `\n\n${session.hookContext.join("\n\n")}` : "") +
+      skillCatalogPrompt(session.skills) +
+      memory
+    );
+  }
+
+  /** Fire `session_start` and collect its injected context (best-effort). */
+  private async runSessionStart(session: Session, source: "new" | "load"): Promise<void> {
+    if (!session.hooks.has("session_start")) return;
+    const outcome = await session.hooks.run(
+      "session_start",
+      hookPayload(session, "session_start", {
+        source,
+        mcp_servers: session.mcpServers.map((server) => server.name),
+        skills: session.skills.map((skill) => skill.name),
+      }),
+    );
+    if (outcome.additionalContext.length > 0) {
+      session.hookContext.push(...outcome.additionalContext);
+      logger.info(`session ${session.id} session_start 注入上下文 ${outcome.additionalContext.length} 段`);
+    }
+    logHookErrors("session_start", session.id, outcome);
+  }
+
+  /** Fire `turn_end` (best-effort) — called on every `prompt()` exit path. */
+  private async runTurnEnd(
+    session: Session,
+    stopReason: string,
+    elapsedMs: number,
+    turnKind: "main" | "init",
+  ): Promise<void> {
+    if (!session.hooks.has("turn_end")) return;
+    const outcome = await session.hooks.run(
+      "turn_end",
+      hookPayload(session, "turn_end", {
+        stop_reason: stopReason,
+        iterations: session.turnIterations,
+        elapsed_ms: elapsedMs,
+        turn_kind: turnKind,
+      }),
+    );
+    logHookErrors("turn_end", session.id, outcome);
+  }
+
+  /** Fire `session_end` for one session; caller bounds the total wait. */
+  private async runSessionEnd(session: Session): Promise<void> {
+    if (!session.hooks.has("session_end")) return;
+    const outcome = await session.hooks.run(
+      "session_end",
+      hookPayload(session, "session_end", { reason: "shutdown" }),
+    );
+    logHookErrors("session_end", session.id, outcome);
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -246,22 +325,64 @@ export class ZhenTeAgent implements Agent {
       // The claim happens outside `withSession` so the invariant doesn't rely on
       // AsyncLocalStorage running its callback synchronously.
       return await logger.withSession(params.sessionId, async () => {
-        const text = promptToText(params.prompt);
-        await this.maybeInitializeProject(session, text, abort.signal);
-        session.messages.push({ role: "user", content: text });
-        await persistSession(session);
-        if (abort.signal.aborted) {
-          logger.info(`prompt ${params.sessionId} cancelled during initialization`);
-          return { stopReason: "cancelled" };
+        const turnStartedAt = Date.now();
+        let text = promptToText(params.prompt);
+        let stopReason: PromptResponse["stopReason"];
+
+        // user_prompt_submit fires *before* maybeInitializeProject (review M7):
+        // a prompt that is going to be denied must not first drive a
+        // 12-iteration initialization turn (permission prompts, LLM spend,
+        // files written). The rewritten prompt is what every later step sees.
+        let deniedByHook: HookOutcome | null = null;
+        if (session.hooks.has("user_prompt_submit")) {
+          const outcome = await session.hooks.run(
+            "user_prompt_submit",
+            hookPayload(session, "user_prompt_submit", { prompt: text }),
+            { signal: abort.signal },
+          );
+          if (outcome.decision === "deny") {
+            deniedByHook = outcome;
+          } else if (outcome.updatedPrompt !== undefined && outcome.updatedPrompt !== text) {
+            logger.info(
+              `prompt ${params.sessionId} 被 hook "${outcome.hookName ?? "?"}" 改写 ` +
+                `(${text.length} → ${outcome.updatedPrompt.length} 字符)`,
+            );
+            text = outcome.updatedPrompt;
+          }
+          logHookErrors("user_prompt_submit", params.sessionId, outcome);
         }
-        const stopReason = await runTurn({
-          conn: this.#conn,
-          session,
-          provider: this.providerFor(session.modelId),
-          tools: session.tools,
-          config: this.#config.agent,
-          signal: abort.signal,
-        });
+
+        if (deniedByHook) {
+          const label = deniedByHook.hookName ?? "hook";
+          const message = deniedByHook.reason?.trim()
+            ? `被 hook ${label} 拒绝：${deniedByHook.reason}`
+            : `被 hook ${label} 拒绝`;
+          logger.warn(`prompt ${params.sessionId} 被 hook 拒绝: ${deniedByHook.reason ?? "(无原因)"}`);
+          await this.notice(session, `[提示被拦截] ${message}`);
+          stopReason = "refusal";
+        } else {
+          await this.maybeInitializeProject(session, text, abort.signal);
+          session.messages.push({ role: "user", content: text });
+          await persistSession(session);
+          if (abort.signal.aborted) {
+            logger.info(`prompt ${params.sessionId} cancelled during initialization`);
+            stopReason = "cancelled";
+          } else {
+            stopReason = await runTurn({
+              conn: this.#conn,
+              session,
+              provider: this.providerFor(session.modelId),
+              tools: session.tools,
+              config: this.#config.agent,
+              signal: abort.signal,
+              hooks: session.hooks,
+            });
+          }
+        }
+
+        // M3: every exit path of prompt() reports exactly one turn_end —
+        // including "cancelled during initialization" and "denied by hook".
+        await this.runTurnEnd(session, stopReason, Date.now() - turnStartedAt, "main");
         await persistSession(session);
         logger.info(`prompt ${params.sessionId} → ${stopReason}`);
         return { stopReason };
@@ -334,21 +455,26 @@ export class ZhenTeAgent implements Agent {
       ].join("\n"),
     });
     await persistSession(session);
+    const initStartedAt = Date.now();
     try {
-      await runTurn({
+      const initStopReason = await runTurn({
         conn: this.#conn,
         session,
         provider: this.providerFor(session.modelId),
         tools: new ToolRegistry(this.#builtinTools.filter((tool) => ["read_file", "list_dir", "glob", "grep", "write_file"].includes(tool.name))),
         config: { ...this.#config.agent, maxIterations: Math.min(this.#config.agent.maxIterations, 12) },
         signal,
+        hooks: session.hooks,
       });
+      // M3: the initialization sub-turn is a real turn — audit it separately
+      // (its write_file calls would otherwise never show up in turn_end).
+      await this.runTurnEnd(session, initStopReason, Date.now() - initStartedAt, "init");
     } finally {
       if (previousWritePermission) session.permissions.set("write_file", previousWritePermission);
       else session.permissions.delete("write_file");
     }
     const system = session.messages.find((message) => message.role === "system");
-    if (system) system.content = await this.systemPrompt(session.cwd, session.skills, initRoot);
+    if (system) system.content = await this.systemPrompt(session, initRoot);
     await persistSession(session);
     logger.info(`项目记忆初始化完成 ${session.id}`);
   }
@@ -385,12 +511,43 @@ export class ZhenTeAgent implements Agent {
   }
 
   /**
-   * Close every session's MCP connections. ACP 0.4.5 has no session-end event,
-   * so this runs once on process exit (see index.ts) rather than per session.
+   * Fire `session_end` (best-effort, ≤2s total) and close every session's MCP
+   * connections. ACP 0.4.5 has no session-end event, so this runs once on
+   * process exit (see index.ts) rather than per session.
    */
   async shutdown(): Promise<void> {
-    for (const session of this.#sessions.values()) session.abort?.abort();
-    await Promise.all([...this.#sessions.values()].map((s) => s.dispose()));
+    const sessions = [...this.#sessions.values()];
+    for (const session of sessions) session.abort?.abort();
+    // Hard cap: a hanging hook must never hold the process open (plan §3).
+    await Promise.race([
+      Promise.all(sessions.map((session) => this.runSessionEnd(session))),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, SESSION_END_TIMEOUT_MS).unref?.();
+      }),
+    ]);
+    await Promise.all(sessions.map((s) => s.dispose()));
+  }
+
+  /** Surface a plain text notice to the client (best-effort). */
+  private async notice(session: Session, message: string): Promise<void> {
+    try {
+      await this.#conn.sessionUpdate({
+        sessionId: session.id,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${message}` } },
+      });
+    } catch (e) {
+      logger.warn(`sessionUpdate 发送失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/** `session_end` 的硬上限：超时放弃，绝不拖住进程退出。 */
+const SESSION_END_TIMEOUT_MS = 2000;
+
+/** 把 hook 执行失败集中记一条日志（hook 失败绝不影响 turn 收敛）。 */
+function logHookErrors(event: string, sessionId: string, outcome: HookOutcome): void {
+  if (outcome.errors.length > 0) {
+    logger.warn(`hook ${event} 有 ${outcome.errors.length} 条失败记录 (session=${sessionId}): ${outcome.errors.join("; ")}`);
   }
 }
 

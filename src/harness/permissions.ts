@@ -8,6 +8,11 @@ import type { Tool } from "./tool.js";
  *
  * Uses the ACP `session/request_permission` method. If the turn was cancelled
  * mid-request, either the client response or the turn signal can reject it.
+ *
+ * `opts.ignoreRemembered` (D14) makes a remembered "always allow/reject" count
+ * for nothing this once — that is what a hook's `ask` decision means ("记忆不算
+ * 数，这次必须问"). The user's answer may still be written back to the memory
+ * map (unless they chose `allow_once` / `reject_once`).
  */
 export async function ensurePermission(
   conn: AgentSideConnection,
@@ -17,9 +22,10 @@ export async function ensurePermission(
   title: string,
   rawInput: Record<string, unknown>,
   signal?: AbortSignal,
+  opts: { ignoreRemembered?: boolean } = {},
 ): Promise<PermissionDecision> {
   if (signal?.aborted) return "reject";
-  const remembered = session.permissions.get(tool.name);
+  const remembered = opts.ignoreRemembered ? undefined : session.permissions.get(tool.name);
   if (remembered) return remembered;
 
   let onAbort: (() => void) | undefined;

@@ -1,5 +1,6 @@
 import type { McpServer } from "@zed-industries/agent-client-protocol";
 import { ToolRegistry } from "./harness/tool.js";
+import { HookRegistry } from "./hooks/index.js";
 import type { ChatMessage } from "./llm/types.js";
 import type { McpConnection } from "./mcp/client.js";
 import type { Skill } from "./skills/index.js";
@@ -66,6 +67,23 @@ export class Session {
 
   /** Prevent repeatedly asking about project initialization in one session. */
   initializationChecked = false;
+
+  /**
+   * Lifecycle hooks for this session: config-level (paths resolved in
+   * `loadConfig`) + optional project-level file. `HookRegistry.empty` when
+   * hooks are disabled — `has()` is then a constant false, zero overhead.
+   */
+  hooks: HookRegistry = HookRegistry.empty;
+
+  /**
+   * Text injected by the `session_start` hook (`additionalContext`). Read by
+   * `systemPrompt()` so *any* rebuild of the system message carries it
+   * (newSession, and the rebuild after project initialization).
+   */
+  hookContext: string[] = [];
+
+  /** Iterations of the most recent turn — reported to `turn_end` hooks. */
+  turnIterations = 0;
 
   constructor(
     id: string,

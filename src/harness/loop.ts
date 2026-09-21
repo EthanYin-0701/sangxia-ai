@@ -1,12 +1,14 @@
 import type { AgentSideConnection, PromptResponse } from "@zed-industries/agent-client-protocol";
 import type { AgentConfig } from "../config.js";
+import { hookPayload, type HookRegistry } from "../hooks/index.js";
+import type { HookOutcome } from "../hooks/types.js";
 import { ProviderError } from "../llm/types.js";
 import type { ChatMessage, LLMProvider, ToolCallRequest } from "../llm/types.js";
 import { logger } from "../logger.js";
 import type { Session } from "../session.js";
 import { persistHistoryReset, persistSession, persistToolEvent } from "../persistence.js";
 import { ensurePermission } from "./permissions.js";
-import type { ToolRegistry } from "./tool.js";
+import type { Tool, ToolRegistry } from "./tool.js";
 import { ToolTimeoutError } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
 import { validateToolArguments } from "./validation.js";
@@ -17,6 +19,13 @@ export type StopReason = PromptResponse["stopReason"];
 
 /** Max characters of a tool result surfaced to the client / fed back to the model. */
 const MAX_TOOL_OUTPUT = 100_000;
+
+/**
+ * Separate budget for `post_tool_use` injected context (review L1): a build log
+ * already near `MAX_TOOL_OUTPUT` must not squeeze out the hook's feedback,
+ * which is exactly the valuable part in that scenario.
+ */
+const MAX_HOOK_CONTEXT = 40_000;
 
 /** Fallback tool deadline when the config doesn't specify one (agent.toolTimeoutMs). */
 const DEFAULT_TOOL_TIMEOUT_MS = 300_000;
@@ -125,6 +134,11 @@ export interface RunTurnOptions {
   tools: ToolRegistry;
   config: AgentConfig;
   signal: AbortSignal;
+  /**
+   * Lifecycle hooks for this session (plan/hooks_support.md). Omitted/`empty`
+   * registry means every hook point is a no-op.
+   */
+  hooks?: HookRegistry;
 }
 
 /**
@@ -168,6 +182,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   }
 
   for (let iter = 0; iter < config.maxIterations; iter++) {
+    // Reported to `turn_end` hooks (agent.ts reads it after runTurn returns).
+    session.turnIterations = iter + 1;
     if (signal.aborted) return "cancelled";
     if (!session.historyWarned && session.messages.length >= config.historyWarningMessages) {
       session.historyWarned = true; // once per session, not once per iteration
@@ -375,7 +391,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
 }
 
 async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Promise<void> {
-  const { conn, session, tools, config, signal } = opts;
+  const { conn, session, tools, config, signal, hooks } = opts;
   const toolCallId = call.id;
   const tool = tools.get(call.name);
   const startedAt = Date.now();
@@ -410,6 +426,78 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     return;
   }
 
+  // pre_tool_use runs **before** the announce and before the permission prompt
+  // (plan §3 / D1, review M1): the title, locations, `rawInput` shown to the
+  // client *and* the parameters the human approves are all derived from the
+  // final (possibly hook-rewritten) arguments — "人批准的就是实际执行的".
+  // Invalid arguments never reach a hook (they already failed above).
+  let askReason: string | undefined;
+  let askHookName: string | undefined;
+  if (hooks?.has("pre_tool_use")) {
+    const outcome = await hooks.run(
+      "pre_tool_use",
+      hookPayload(session, "pre_tool_use", {
+        tool_name: tool.name,
+        tool_call_id: toolCallId,
+        tool_kind: tool.kind,
+        tool_input: args,
+        tool_title: safeTitle(tool, args),
+      }),
+      { signal },
+    );
+    if (outcome.decision === "deny") {
+      const message = hookDenyMessage(hookLabel(outcome, call.name), outcome);
+      logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} 被 hook 拒绝: ${outcome.reason ?? ""}`);
+      await safeSessionUpdate(conn, {
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId,
+          title: safeTitle(tool, args),
+          kind: tool.kind,
+          status: "failed",
+          rawInput: args,
+          // D13: the client shows the same text the model receives.
+          content: [{ type: "content", content: { type: "text", text: `Error: ${message}` } }],
+        },
+      });
+      await pushToolResult(session, toolCallId, `Error: ${message}`);
+      return;
+    }
+    if (outcome.decision === "ask") {
+      askHookName = outcome.hookName;
+      askReason = outcome.reason;
+    }
+    if (outcome.updatedInput) {
+      // A rewritten input is a *replacement*, so it must pass the same schema
+      // check again. Never let a polluted input reach execution (plan §5.2).
+      const rewrittenError = validateToolArguments(tool, outcome.updatedInput);
+      if (rewrittenError) {
+        logger.warn(`hook "${outcome.hookName ?? "?"}" 改写的 tool_input 非法 (${tool.name}): ${rewrittenError}`);
+        await safeSessionUpdate(conn, {
+          sessionId: session.id,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: safeTitle(tool, args),
+            kind: tool.kind,
+            status: "failed",
+            rawInput: outcome.updatedInput,
+            content: [{ type: "content", content: { type: "text", text: `Error: hook 改写的参数不合法，未执行该工具: ${rewrittenError}` } }],
+          },
+        });
+        await pushToolResult(
+          session,
+          toolCallId,
+          `Error: hook "${outcome.hookName ?? "?"}" 改写的参数不合法，未执行该工具: ${rewrittenError}`,
+        );
+        return;
+      }
+      args = outcome.updatedInput;
+      logger.info(`tool_call ${session.id} id=${toolCallId} 参数被 hook 改写 (${outcome.hookName ?? "?"})`);
+    }
+  }
+
   const title = safeTitle(tool, args);
   const locations = safeLocations(tool, args, session);
 
@@ -428,11 +516,28 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     },
   });
 
-  // Permission gate for mutating tools.
-  if (tool.needsPermission && session.permissionMode !== "auto") {
+  // Permission gate for mutating tools — plus the D14 `ask` branch, which
+  // deliberately bypasses both conditions of the gate below:
+  //   - `permissionMode: "auto"` must still prompt (auto is "don't ask me by
+  //     default", it cannot silently swallow a hook's explicit "ask me");
+  //   - `needsPermission: false` read-only tools (read_file/grep/…) must prompt
+  //     too, which is what "读取敏感路径强制复核" is built on;
+  //   - `ignoreRemembered` makes a previous "always allow/reject" count for
+  //     nothing this once (the user's answer may still be remembered).
+  const forcedAsk = askHookName !== undefined;
+  if (forcedAsk || (tool.needsPermission && session.permissionMode !== "auto")) {
     let decision: PermissionDecision = "reject";
     try {
-      decision = await ensurePermission(conn, session, tool, toolCallId, title, args, signal);
+      decision = await ensurePermission(
+        conn,
+        session,
+        tool,
+        toolCallId,
+        forcedAsk && askReason ? `${title}｜hook ${askHookName} 要求确认：${askReason}` : title,
+        args,
+        signal,
+        { ignoreRemembered: forcedAsk },
+      );
     } catch (e) {
       logger.error(`工具 ${tool.name} 权限确认失败，按拒绝处理: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -487,6 +592,10 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     const raw = truncate(result.output) || "(无输出)";
     const output =
       result.isError && !/^(Error:|\[工具执行失败\])/.test(raw) ? `[工具执行失败] ${raw}` : raw;
+    const elapsedMs = Date.now() - startedAt;
+    // Give the client the tool's own result first (review L1: a 120s typecheck
+    // hook must not delay "the tool finished"), then append hook context and
+    // send a second update so UI, history and model see the same text.
     await safeSessionUpdate(conn, {
       sessionId: session.id,
       update: {
@@ -497,12 +606,17 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
         ...(result.raw ? { rawOutput: result.raw } : {}),
       },
     });
-    await pushToolResult(session, toolCallId, output);
+    const finalOutput = await applyPostToolUse(opts, tool, toolCallId, args, {
+      output,
+      isError: Boolean(result.isError),
+      elapsedMs,
+    });
+    await pushToolResult(session, toolCallId, finalOutput);
     await finishTool(toolCallId, result.isError ? "failed" : "completed");
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=${result.isError ? "failed" : "completed"} ` +
-        `outputChars=${output.length} elapsedMs=${Date.now() - startedAt}`,
+        `outputChars=${finalOutput.length} elapsedMs=${Date.now() - startedAt}`,
     );
   } catch (e) {
     // User cancellation wins over the deadline: the two must not be confused.
@@ -517,15 +631,25 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     if (deadline.signal.aborted) {
       const msg = `工具执行超时（${effectiveTimeout}ms）已终止；可缩小任务范围或显式设置 timeout 后重试`;
       logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} timeoutMs=${effectiveTimeout}`);
-      await emitToolUpdate(conn, session, toolCallId, "failed", `Error: ${msg}`);
-      await pushToolResult(session, toolCallId, `Error: ${msg}`);
+      const output = await applyPostToolUse(opts, tool, toolCallId, args, {
+        output: `Error: ${msg}`,
+        isError: true,
+        elapsedMs: Date.now() - startedAt,
+      });
+      await emitToolUpdate(conn, session, toolCallId, "failed", output);
+      await pushToolResult(session, toolCallId, output);
       await finishTool(toolCallId, "failed");
       return;
     }
     const msg = e instanceof Error ? e.message : String(e);
     logger.error(`工具 ${tool.name} 执行异常:`, e);
-    await emitToolUpdate(conn, session, toolCallId, "failed", msg);
-    await pushToolResult(session, toolCallId, `Error: ${msg}`);
+    const output = await applyPostToolUse(opts, tool, toolCallId, args, {
+      output: `Error: ${msg}`,
+      isError: true,
+      elapsedMs: Date.now() - startedAt,
+    });
+    await emitToolUpdate(conn, session, toolCallId, "failed", output);
+    await pushToolResult(session, toolCallId, output);
     await finishTool(toolCallId, "failed");
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
@@ -535,6 +659,65 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     clearTimeout(timer);
     toolSignal.dispose();
   }
+}
+
+/**
+ * `post_tool_use` for one **executed** tool call: fold the hooks'
+ * `additionalContext` into the tool result text.
+ *
+ * Denials are ignored here (plan §7.2 — post hooks cannot block); the tool's
+ * own result must still reach history. Called from the success path *and* from
+ * the timeout/exception paths, so "failed also gets audited" holds. The result
+ * text lives in its own budget (review L1) so a huge tool output can't squeeze
+ * the hook feedback out.
+ */
+async function applyPostToolUse(
+  opts: RunTurnOptions,
+  tool: Tool,
+  toolCallId: string,
+  args: Record<string, unknown>,
+  result: { output: string; isError: boolean; elapsedMs: number },
+): Promise<string> {
+  const { hooks, session, conn, signal } = opts;
+  if (!hooks?.has("post_tool_use") || signal.aborted) return result.output;
+  const outcome = await hooks.run(
+    "post_tool_use",
+    hookPayload(session, "post_tool_use", {
+      tool_name: tool.name,
+      tool_call_id: toolCallId,
+      tool_kind: tool.kind,
+      tool_input: args,
+      tool_title: safeTitle(tool, args),
+      tool_output: truncate(result.output),
+      tool_error: result.isError,
+      tool_elapsed_ms: result.elapsedMs,
+    }),
+    { signal },
+  );
+  if (outcome.additionalContext.length === 0) return result.output;
+  const context = truncateMiddle(outcome.additionalContext.join("\n\n"), MAX_HOOK_CONTEXT);
+  const finalOutput = `${result.output}\n\n${context}`;
+  // Second update so the client shows what the model actually received (L1).
+  await safeSessionUpdate(conn, {
+    sessionId: session.id,
+    update: {
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: result.isError ? "failed" : "completed",
+      content: [{ type: "content", content: { type: "text", text: finalOutput } }],
+    },
+  });
+  return finalOutput;
+}
+
+function hookLabel(outcome: HookOutcome, fallback: string): string {
+  return outcome.hookName ?? fallback;
+}
+
+/** Tool-result text for a hook denial (D13: `Error:` prefix ⇒ isError semantics). */
+function hookDenyMessage(label: string, outcome: HookOutcome): string {
+  const reason = outcome.reason?.trim();
+  return reason ? `被 hook ${label} 拒绝：${reason}` : `被 hook ${label} 拒绝`;
 }
 
 /**
