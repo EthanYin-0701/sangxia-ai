@@ -17,6 +17,9 @@
 //  15  needsPermission:false (read_file) + ask ⇒ still prompts (D14)
 //  16  relative command resolves against the *config file* dir, not session cwd (D15)
 //  17  path-like command that does not exist ⇒ fail fast at startup (D15)
+//  18  project-level hooks file is off by default
+//  19  project-level hooks: project-root base + clamping
+//  20  session/load injects session_start context into the restored system message
 //
 // Run: npm run build && node scripts/smoke-hooks.mjs
 
@@ -152,7 +155,13 @@ async function withAgent(name, opts, drive) {
 
   const child = spawn("node", [join(root, "dist/index.js"), "--config", configPath], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ZHENTE_LOG_DIR: join(dir, "logs"), ZHENTE_LOG_FILE: "" },
+    env: {
+      ...process.env,
+      ZHENTE_LOG_DIR: join(dir, "logs"),
+      ZHENTE_LOG_FILE: "",
+      // 不要把冒烟会话写进用户真实的 ~/.config/zhente/sessions
+      ZHENTE_SESSION_DIR: join(dir, "sessions"),
+    },
   });
   children.push(child);
   let stderr = "";
@@ -845,6 +854,41 @@ await withAgent(
   },
 );
 
+// 20) session/load: session_start context is injected into the restored history (M2).
+await withAgent(
+  "load-session",
+  {
+    hooks: {
+      enabled: true,
+      events: { session_start: [{ name: "ctx", command: "sh __DIR__/ctx.sh" }] },
+    },
+    hookFiles: () => ({
+      "ctx.sh": `#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '{"hookSpecificOutput":{"additionalContext":"LOAD-CTX"}}'\n`,
+    }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[20] session/load 的 session_start 注入（M2）");
+    rounds = [{ content: "第一轮结束" }];
+    await ctx.prompt("第一轮");
+    ok(
+      llmRequests[0].messages.some((m) => m.role === "system" && String(m.content).includes("LOAD-CTX")),
+      "新会话的 system prompt 带 session_start 注入的上下文",
+    );
+
+    await ctx.conn.loadSession({ sessionId: ctx.sessionId, cwd: ctx.cwd, mcpServers: [] });
+    ok(ctx.logs().includes("session_start 注入上下文"), "loadSession 同样触发 session_start");
+
+    rounds = [{ content: "恢复后的回复" }];
+    const res = await ctx.prompt("恢复后继续");
+    ok(res.stopReason === "end_turn", "恢复的会话可以继续对话");
+    const system = llmRequests.at(-1).messages.find((m) => m.role === "system");
+    ok(String(system?.content).includes("LOAD-CTX"), "恢复出的 system 消息带上注入的上下文");
+    ok(String(system?.content).includes("测试项目"), "原有 system 内容没有被破坏");
+  },
+);
+
+clearTimeout(failTimer);
 for (const res of heldOpen) res.destroy();
 server.close();
 console.error(`\nHOOK SMOKE OK ✅ (${checks} 项断言)`);

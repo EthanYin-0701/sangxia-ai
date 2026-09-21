@@ -44,7 +44,7 @@
 
 ## Hook（生命周期钩子）支持（已实现，2026-09-21）
 
-- 设计文档：`plan/hooks_support.md`（v1 六个事件：session_start / user_prompt_submit / pre_tool_use / post_tool_use / turn_end / session_end）；实现于 `src/hooks/{types,paths,exec,index}.ts`，验收 `npm run smoke:hooks`（71 项断言）。
+- 设计文档：`plan/hooks_support.md`（v1 六个事件：session_start / user_prompt_submit / pre_tool_use / post_tool_use / turn_end / session_end）；实现于 `src/hooks/{types,paths,exec,index}.ts`，验收 `npm run smoke:hooks`（76 项断言）。
 - 核心机制：外部命令 + stdin JSON（统一信封，含 `tool_name`/`tool_input`/`cwd`/`session_id`），stdout 决策 JSON（`decision: allow|deny|ask`、`updatedInput`、`additionalContext`），`exit 2` 等价 deny；协议对齐 Claude Code Hooks 便于复用已有脚本。
 - 关键设计决策：`pre_tool_use` 插在**权限确认之前**（保证“人类批准的就是实际执行的”）；`allow` 不跳过 `request_permission`（hook 是追加策略层，不是绕过口）；hook 的 deny 必须回填 tool result，否则触发 tool_calls 配对 400；`hooks.enabled` 默认 **false**（升级零行为变化）；项目级 `.zhente/hooks.json` 默认关闭（供应链风险）。
 - 落地清单（§8）：新增 `src/hooks/{types,paths,exec,index}.ts`；改 `config.ts`（hooks schema + 加载期路径解析 + `configPath`/`configDir` 透出）、`agent.ts`（四个会话级事件 + context 注入）、`harness/loop.ts`（工具前后 + `ask` 独立分支）、`harness/permissions.ts`（`ignoreRemembered`）、`session.ts`（`hooks`/`hookContext`/`turnIterations`）；新增 `npm run smoke:hooks`。
@@ -77,6 +77,7 @@
   1. `updatedInput` 非法时按 **§11-5（不执行 + 失败 tool result）** 实现，而不是 §5.2 的"该 hook 失效 + 告警"（后者会退回用旧参数执行，语义更危险）；冒烟 #5 断言的是"不执行"。
   2. `deny` / 非法改写两条路径的 `tool_call`(failed) 通知里**带上了 content**（与模型看到同一文本），便于客户端显示原因；既有的参数校验失败路径未改（保持原样）。
 - 其它：hook 失败只记 warn（`logger`，session 归属走现有 ALS）；stdout 不整体进日志（可能含代码/密钥），只记解析结果与长度；`session_end` 在 `agent.shutdown()` 汇总执行，2s 硬上限（`unref` 的定时器），超时放弃。
+- 冒烟隔离：`scripts/smoke-hooks.mjs` 给每个场景设置 `ZHENTE_SESSION_DIR=<临时目录>`（+ `ZHENTE_LOG_DIR`），不再往用户真实的 `~/.config/zhente/sessions` 写测试会话。历史遗留的测试会话已按 `meta.cwd` 里的 `/var/folders/…zhente-…` 标记清理（其余既有 `.json` 旧快照属用户数据，未动）。
 - 回归：`npm run typecheck` + `smoke` / `smoke:openai` / `smoke:mcp` / `smoke:skill` / `smoke:tui` / `smoke:reliability` / `smoke:hooks` 全绿（hooks 默认关闭，对既有行为零影响；`scripts/smoke-reliability.mjs` 里手搓的配置对象补了 `hooks: { enabled: false }`）。
 - 待办（v2，接口已留）：会话级 `session_end`（等 ACP 有会话结束事件/TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。
 

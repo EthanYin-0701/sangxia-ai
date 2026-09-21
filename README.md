@@ -431,7 +431,7 @@ npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器�
 npm run smoke:mcp    # MCP 工具接入冒烟
 npm run smoke:skill  # 技能层冒烟（发现/目录注入/use_skill 加载）
 npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
-npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，71 项断言）
+npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，76 项断言）
 npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 ```
 
