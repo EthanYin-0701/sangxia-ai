@@ -580,9 +580,16 @@ await withAgent(
   {
     hooks: {
       enabled: true,
-      events: { pre_tool_use: [{ name: "only-bash", matcher: "^bash$", command: "sh __DIR__/m.sh" }] },
+      events: {
+        pre_tool_use: [{ name: "only-bash", matcher: "^bash$", command: "sh __DIR__/m.sh" }],
+        // 非工具事件上的 matcher 按“忽略 + warn 一次”处理，不能因此静默不执行
+        turn_end: [{ name: "audit", matcher: "^bash$", command: "sh __DIR__/m2.sh" }],
+      },
     },
-    hookFiles: (dir) => ({ "m.sh": `#!/bin/sh\n${dumpPayload(dir, "matched")}exit 0\n` }),
+    hookFiles: (dir) => ({
+      "m.sh": `#!/bin/sh\n${dumpPayload(dir, "matched")}exit 0\n`,
+      "m2.sh": `#!/bin/sh\ncat > /dev/null\necho ran > "${dir}/turn-end-sentinel"\n`,
+    }),
     permissionMode: "auto",
   },
   async (ctx) => {
@@ -594,6 +601,8 @@ await withAgent(
     rounds = [{ toolCalls: [{ name: "bash", arguments: { command: "echo hi" } }] }, { content: "好" }];
     await ctx.prompt("跑命令");
     ok(ctx.readJsonl("matched.jsonl")?.[0]?.tool_name === "bash", "匹配的工具会触发 hook");
+    ok(ctx.read("turn-end-sentinel") !== null, "非工具事件上的 matcher 被忽略（hook 仍然执行）");
+    ok(ctx.logs().includes("matcher 被忽略"), "非工具事件的 matcher 有 warn 提示");
   },
 );
 

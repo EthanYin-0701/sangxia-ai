@@ -92,6 +92,19 @@ export class HookRegistry {
         })),
       ]),
     ) as Record<HookEvent, CompiledEntry[]>;
+
+    // 非工具事件上的 matcher 是配置笔误：忽略它（见 run()），但提示一次，
+    // 否则一条写错位置的 matcher 会让 hook 静默不执行。
+    for (const event of HOOK_EVENTS) {
+      if (event === "pre_tool_use" || event === "post_tool_use") continue;
+      for (const { entry } of this.#entries[event]) {
+        if (entry.matcher !== undefined) {
+          logger.warn(
+            `hook ${event} "${entry.name ?? entry.command}" 配置了 matcher，但该事件不是工具事件 —— matcher 被忽略`,
+          );
+        }
+      }
+    }
   }
 
   /** 该事件是否有任何 hook；false 时调用方直接跳过，零开销。 */
@@ -108,8 +121,13 @@ export class HookRegistry {
     const outcome = emptyOutcome();
     if (!this.has(event)) return outcome;
     const startedAt = Date.now();
+    // `matcher` 只对工具事件有意义；其它事件上配了也忽略（构造时已 warn 一次），
+    // 否则一条写错位置的 matcher 会让 hook 静默不执行。
+    const isToolEvent = event === "pre_tool_use" || event === "post_tool_use";
     const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
-    const selected = this.#entries[event].filter(({ matcher }) => !matcher || matcher.test(toolName));
+    const selected = this.#entries[event].filter(
+      ({ matcher }) => !isToolEvent || !matcher || matcher.test(toolName),
+    );
     let effectiveInput =
       event === "pre_tool_use" && payload.tool_input && typeof payload.tool_input === "object"
         ? (payload.tool_input as Record<string, unknown>)

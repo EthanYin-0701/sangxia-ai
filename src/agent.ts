@@ -326,6 +326,9 @@ export class ZhenTeAgent implements Agent {
       // AsyncLocalStorage running its callback synchronously.
       return await logger.withSession(params.sessionId, async () => {
         const turnStartedAt = Date.now();
+        // A denied prompt runs no iteration; resetting keeps turn_end honest
+        // (the field is written by the harness loop of the *last* turn).
+        session.turnIterations = 0;
         let text = promptToText(params.prompt);
         let stopReason: PromptResponse["stopReason"];
 
