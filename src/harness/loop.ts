@@ -156,6 +156,10 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   // provider's reported `prompt_tokens` from the previous request so the next
   // estimate can be calibrated instead of drifting.
   let lastEstimate: number | null = null;
+  let toolCallsThisTurn = 0;
+  let wrapUpWarned = false;
+  /** How many iterations before the cap to inject the wrap-up prompt. */
+  const WRAP_UP_MARGIN = 3;
 
   /** Surface a message to the client *and* into the history in one place. */
   const notice = async (message: string) => {
@@ -185,6 +189,24 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     // Reported to `turn_end` hooks (agent.ts reads it after runTurn returns).
     session.turnIterations = iter + 1;
     if (signal.aborted) return "cancelled";
+
+    // P0-B: inject a wrap-up prompt when approaching the iteration cap so the
+    // model can finish gracefully instead of being hard-cut mid-edit.
+    if (
+      !wrapUpWarned &&
+      config.maxIterations > WRAP_UP_MARGIN &&
+      iter === config.maxIterations - WRAP_UP_MARGIN
+    ) {
+      wrapUpWarned = true;
+      session.messages.push({
+        role: "user",
+        content:
+          `[系统提示] 本轮还剩 ${WRAP_UP_MARGIN} 次模型调用。请进入收尾：不要开始新的大改动；` +
+          `把已完成/未完成事项更新到 update_plan；如有未验证或未提交的改动请说明；最后用一段话汇报进度。`,
+      });
+      await persistSession(session);
+    }
+
     if (!session.historyWarned && session.messages.length >= config.historyWarningMessages) {
       session.historyWarned = true; // once per session, not once per iteration
       // H3①: a logger.warn only reaches stderr/log files — neither the user nor
@@ -378,14 +400,23 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
         return "cancelled";
       }
       await executeToolCall(call, opts);
+      toolCallsThisTurn++;
     }
     if (signal.aborted) return "cancelled";
     // Loop again so the model can react to the tool results.
   }
 
+  // P0-A: surface the cap to the client *and* write it into the history so
+  // the next "继续" turn can see that it was truncated (saves 4 re-orientation
+  // iterations the model would otherwise spend rediscovering context).
   logger.warn(
     `达到 maxIterations=${config.maxIterations}，提前结束 ` +
-      `(elapsedMs=${Date.now() - startedAt}, messages=${session.messages.length})`,
+      `(elapsedMs=${Date.now() - startedAt}, messages=${session.messages.length}, toolCalls=${toolCallsThisTurn})`,
+  );
+  await notice(
+    `[已达迭代上限] 本轮已进行 ${config.maxIterations} 次模型调用、${toolCallsThisTurn} 次工具调用` +
+      `（agent.maxIterations=${config.maxIterations}），任务可能未完成。` +
+      `回复「继续」可从当前进度接着做；如任务较大，可在配置里调高 agent.maxIterations。`,
   );
   return "max_turn_requests";
 }
