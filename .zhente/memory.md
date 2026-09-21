@@ -83,6 +83,8 @@
 - `hooks.events` 里的事件名写错（如驼峰 `sessionStart`）现在**加载期直接报错**（`assertKnownHookEvents`，配置文件与项目级 hooks 文件两处都用），不再静默不跑。
 - 冒烟卫生：`scripts/smoke-hooks.mjs` 每个场景一个**假 HOME**（`HOME=<tmp>`），其它 5 个会 spawn zhente 的冒烟脚本也加了 `HOME=<tmp>` —— 分层加载后它们会读到开发机真实的 `~/.config/zhente/config.json`。
 - 用户实机配置：`~/.config/zhente/config.json`（hooks-only，jbcontext hook，`matcher: "startup|resume"`，`timeoutMs: 2000`，裸 `jbcontext` 依赖 PATH）。端到端验证过：真实 session 启动时日志出现 `hook session_start "jbcontext-index" exit=0`，`~/.jbcontext/logs/jbcontext.log` mtime 前进（jbcontext 真被拉起）。
+- 用户级长期指令（2026-09-21，需求 = 把 codex `~/.codex/AGENTS.md` 里那段 jbcontext 语义搜索指令搬进 ZhenTe）：新增 `~/.config/zhente/AGENTS.md`，由 `loadUserMemory()` 加载，**所有项目、每次 new/load session** 都进 system prompt；顺序 = 默认 prompt → hook 注入 → 技能目录 → **用户级指令 → 项目记忆**（项目更具体，冲突时靠后的为准，与 codex 的全局→项目一致）。刻意不自动创建、不参与项目初始化补齐。`userMemoryDir()` 在调用时求值（模块加载时算会冻住启动 HOME）。冒烟：`smoke:reliability` 新增一条端到端断言（假 HOME 里的全局指令 + 项目 AGENTS.md/memory 都在 system prompt 里且顺序正确）。
+- 实机文件：`~/.config/zhente/AGENTS.md`（语义搜索优先于 grep、何时不用、查询写法、jbcontext 不可用时忽略本节）。验证：真实 HOME 下 session 的 system prompt 含该块（≈1.2K 字符），全局 jbcontext hook 同时照跑。
 - 回归：`npm run typecheck` + `smoke` / `smoke:openai` / `smoke:mcp` / `smoke:skill` / `smoke:tui` / `smoke:reliability` / `smoke:hooks` 全绿（hooks 默认关闭，对既有行为零影响；`scripts/smoke-reliability.mjs` 里手搓的配置对象补了 `hooks: { enabled: false }`）。
 - 待办（v2，接口已留）：会话级 `session_end`（等 ACP 有会话结束事件/TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。
 

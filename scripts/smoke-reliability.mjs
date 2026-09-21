@@ -813,6 +813,43 @@ try {
       }
     }
   });
+  await check("user-level instructions (~/.config/zhente/AGENTS.md) load before project memory", async () => {
+    const project = join(dir, "memory-project");
+    const home = join(dir, "memory-home");
+    await mkdir(join(project, ".zhente"), { recursive: true });
+    await mkdir(join(home, ".config", "zhente"), { recursive: true });
+    await writeFile(join(project, "AGENTS.md"), "PROJECT-AGENTS");
+    await writeFile(join(project, ".zhente", "memory.md"), "PROJECT-MEMORY");
+    await writeFile(join(home, ".config", "zhente", "AGENTS.md"), "USER-MEMORY");
+    const path = join(project, "config.json");
+    await writeFile(path, JSON.stringify({ provider: cfg, agent: { permissionMode: "auto" }, mcp: { enabled: false }, skills: { enabled: false } }));
+    rounds = [answer];
+    requests = [];
+    const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, HOME: home, ZHENTE_LOG_DIR: join(dir, "memory-logs"), ZHENTE_SESSION_DIR: join(dir, "memory-sessions") },
+    });
+    const exit = new Promise((r) => child.once("exit", r));
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    const conn = new ClientSideConnection(() => ({
+      async sessionUpdate() {},
+      async requestPermission() { return { outcome: { outcome: "selected", optionId: "allow_once" } }; },
+    }), ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)));
+    try {
+      await conn.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
+      const s = await conn.newSession({ cwd: project, mcpServers: [] });
+      await conn.prompt({ sessionId: s.sessionId, prompt: [{ type: "text", text: "hi" }] });
+      const system = String(requests.at(-1)?.messages?.find((m) => m.role === "system")?.content ?? "");
+      assert.ok(system.includes("USER-MEMORY"), "全局指令进 system prompt");
+      assert.ok(system.includes("PROJECT-AGENTS") && system.includes("PROJECT-MEMORY"), "项目记忆照旧加载");
+      assert.ok(system.indexOf("USER-MEMORY") < system.indexOf("PROJECT-AGENTS"), "顺序 = 全局 → 项目");
+    } finally {
+      clearTimeout(timeout);
+      child.kill("SIGKILL");
+      await exit;
+    }
+  });
+
   await check("prompt size is estimated (and calibrated with usage) before each request", async () => {
     const { estimateText, estimateTokens, calibrateEstimate, shouldCompact } = await import("../dist/harness/context.js");
     assert.equal(estimateTokens([], []), 0);

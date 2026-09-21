@@ -30,7 +30,7 @@ import { createProvider } from "./llm/factory.js";
 import type { LLMProvider } from "./llm/types.js";
 import { logger } from "./logger.js";
 import { connectMcpServer } from "./mcp/client.js";
-import { loadProjectMemory, missingProjectMemory } from "./project-memory.js";
+import { loadProjectMemory, loadUserMemory, missingProjectMemory } from "./project-memory.js";
 import { loadSession as loadPersistedSession, persistHistoryReset, persistSession } from "./persistence.js";
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
@@ -237,15 +237,24 @@ export class ZhenTeAgent implements Agent {
    * project initialization overwrites the system message (review M2).
    */
   private async systemPrompt(session: Session, memoryCwd = session.cwd): Promise<string> {
-    const memory = await loadProjectMemory(memoryCwd).catch((e) => {
-      logger.warn(`项目记忆读取失败: ${e instanceof Error ? e.message : String(e)}`);
-      return "";
-    });
+    // 用户级指令（~/.config/zhente/AGENTS.md）先、项目记忆后：后者更具体，
+    // 冲突时靠后的说法"更近"，与 codex（全局 AGENTS.md → 项目 AGENTS.md）一致。
+    const [userMemory, projectMemory] = await Promise.all([
+      loadUserMemory().catch((e) => {
+        logger.warn(`用户级指令读取失败: ${e instanceof Error ? e.message : String(e)}`);
+        return "";
+      }),
+      loadProjectMemory(memoryCwd).catch((e) => {
+        logger.warn(`项目记忆读取失败: ${e instanceof Error ? e.message : String(e)}`);
+        return "";
+      }),
+    ]);
     return (
       (this.#config.agent.systemPrompt ?? defaultSystemPrompt(session.cwd)) +
       (session.hookContext.length > 0 ? `\n\n${session.hookContext.join("\n\n")}` : "") +
       skillCatalogPrompt(session.skills) +
-      memory
+      userMemory +
+      projectMemory
     );
   }
 

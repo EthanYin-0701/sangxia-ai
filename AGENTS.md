@@ -53,7 +53,7 @@ src/
   index.ts     入口（stdio JSON-RPC；argv[0]==="tui" 时转 TUI 分支）
   logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 ZHENTE_LOG_FILE 单文件或 ZHENTE_LOG_DIR 按 session 分文件；logger.configure 支持运行时改 stderr/level/dir，TUI 用它把日志只进文件）
   persistence.ts  会话持久化：JSONL 事件流（~/.config/zhente/sessions/<id>.jsonl），persistSession 唯一写入口
-  project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载
+  project-memory.ts  AGENTS.md / .zhente/memory.md 的发现与加载（+ 用户级 ~/.config/zhente/AGENTS.md）
 doc/uml/       时序图（prompt-turn）
 scripts/       冒烟测试脚本（*.mjs）+ install-skills.sh（把 skills/ 装到全局技能目录）
                install-skills.sh 需注意：bash 里 `$var` 紧挨全角括号会被吞进变量名，一律写 `${var}
@@ -77,7 +77,7 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 3. **日志纪律**：stdout 是 ACP 协议通道，任何调试/日志输出必须走 stderr 或 `ZHENTE_LOG_FILE`/`ZHENTE_LOG_DIR`，严禁污染 stdout。日志时间戳含本地时区 UTC 偏移；宿主时区不对时用 `ZHENTE_LOG_TIMEZONE` 修正。`ZHENTE_LOG_DIR` 按 session 分文件（`<sessionId>.log` + `global.log`），session 归属用 `AsyncLocalStorage` 实现（`logger.withSession`，见 agent.ts 的 newSession/loadSession/prompt/cancel 包裹），多 session 并发也不串文件。
 4. **配置与密钥**：`zhente.config.json` 已被 gitignore，不要提交；密钥用 `${ENV_VAR}` 引用，避免落盘。
 5. **产物与生成文件**：`dist/`、`node_modules/` 为构建产物，不手改、不提交。
-6. **记忆维护**：跨 session 的项目背景、重要决策、待办事项写入 `.zhente/memory.md`（每次 session 自动加载）；涉及架构/决策/未完成事项时，任务完成后更新。
+6. **记忆维护**：跨 session 的项目背景、重要决策、待办事项写入 `.zhente/memory.md`（每次 session 自动加载）；涉及架构/决策/未完成事项时，任务完成后更新。**用户级**（对所有项目成立）的工作方式约定写 `~/.config/zhente/AGENTS.md`，由 `loadUserMemory()` 加载，顺序在项目记忆**之前**；该文件不被自动创建/补齐（是用户自己的文件）。
 7. **新增 LLM 后端**：实现 `LLMProvider` 接口，在 `llm/factory.ts` 注册即可。
 8. **权限模型**：变更类工具（write/edit/bash/MCP 工具）执行前走 `session/request_permission`；读类工具免权限；`update_plan`/`use_skill` 免权限。
    所有工具先过 JSON object / JSON Schema 校验；非法参数不得进入权限确认，截断响应中的工具调用一律拒绝执行，并补齐失败 tool result。
