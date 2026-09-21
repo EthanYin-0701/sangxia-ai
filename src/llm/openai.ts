@@ -28,6 +28,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly #temperature: number;
   readonly #maxTokens: number | undefined;
   readonly #requestTimeoutMs: number;
+  readonly #firstChunkTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #totalTimeoutMs: number;
   readonly #includeUsage: boolean;
@@ -43,6 +44,7 @@ export class OpenAIProvider implements LLMProvider {
     const modelConfig = cfg.models?.find((m) => m.modelId === cfg.model);
     this.#maxTokens = modelConfig?.maxTokens ?? cfg.maxTokens;
     this.#requestTimeoutMs = cfg.requestTimeoutMs;
+    this.#firstChunkTimeoutMs = modelConfig?.firstChunkTimeoutMs ?? cfg.firstChunkTimeoutMs;
     this.#idleTimeoutMs = modelConfig?.streamIdleTimeoutMs ?? cfg.streamIdleTimeoutMs;
     this.#totalTimeoutMs = modelConfig?.streamTotalTimeoutMs ?? cfg.streamTotalTimeoutMs;
     this.#includeUsage = cfg.streamIncludeUsage;
@@ -64,9 +66,15 @@ export class OpenAIProvider implements LLMProvider {
    *
    * Deliberately not retried:
    *  - user cancellation (`signal.aborted`),
-   *  - our own idle/total watchdogs (retrying would multiply the wait),
+   *  - our own idle/total watchdogs *after* the first chunk (retrying would
+   *    multiply the wait), and the total watchdog at any point,
    *  - anything after a delta was yielded (a retry would repeat output),
    *  - non-transient errors (4xx other than 408/409/429).
+   *
+   * A timeout **before the first chunk** (`StreamTimeoutError("first-chunk")`)
+   * is the exception: nothing has streamed yet, so it's exactly as safe to
+   * retry as a 5xx — and on a busy DeepSeek endpoint it usually just means
+   * the server was still queueing (see `firstChunkTimeoutMs`).
    */
   async *streamChat(params: StreamChatParams): AsyncIterable<StreamEvent> {
     const { signal } = params;
@@ -78,7 +86,7 @@ export class OpenAIProvider implements LLMProvider {
       } catch (error) {
         const reason = signal.aborted ? (signal.reason ?? new Error("aborted")) : null;
         if (reason) throw reason;
-        if (error instanceof StreamTimeoutError) throw error;
+        if (error instanceof StreamTimeoutError && error.kind !== "first-chunk") throw error;
         if (state.yieldedAnything || attempt > this.#retries || !isRetryable(error)) throw toProviderError(error);
         const delayMs = retryDelayMs(error, attempt, this.#retryBaseDelayMs);
         logger.warn(
@@ -119,12 +127,20 @@ export class OpenAIProvider implements LLMProvider {
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) onAbort();
     const totalTimer = setTimeout(() => controller.abort(new StreamTimeoutError("total", this.#totalTimeoutMs)), this.#totalTimeoutMs);
+    // Covers connection setup + any server-side queueing, up until the first
+    // chunk. Separate from the idle timer below: a busy DeepSeek endpoint
+    // sends SSE `: keep-alive` comment lines while queueing, and those never
+    // reach us as a chunk (the SDK drops comment lines before they'd reset an
+    // idle timer) — so this phase needs its own, much longer, deadline.
+    let firstChunkTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+      () => controller.abort(new StreamTimeoutError("first-chunk", this.#firstChunkTimeoutMs)),
+      this.#firstChunkTimeoutMs,
+    );
     let idleTimer: ReturnType<typeof setTimeout>;
     const resetIdle = () => {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => controller.abort(new StreamTimeoutError("idle", this.#idleTimeoutMs)), this.#idleTimeoutMs);
     };
-    resetIdle();
     try {
       controller.signal.throwIfAborted();
       logger.info(`LLM request start model=${this.model} messages=${messages.length} tools=${tools.length}`);
@@ -157,6 +173,10 @@ export class OpenAIProvider implements LLMProvider {
 
       for await (const chunk of stream) {
         controller.signal.throwIfAborted();
+        if (firstChunkTimer) {
+          clearTimeout(firstChunkTimer);
+          firstChunkTimer = undefined;
+        }
         resetIdle();
         lastChunkAt = Date.now();
         chunks++;
@@ -245,6 +265,7 @@ export class OpenAIProvider implements LLMProvider {
       throw error;
     } finally {
       clearTimeout(totalTimer);
+      clearTimeout(firstChunkTimer);
       clearTimeout(idleTimer!);
       signal.removeEventListener("abort", onAbort);
       controller.abort();
@@ -259,8 +280,9 @@ export class OpenAIProvider implements LLMProvider {
 }
 
 export class StreamTimeoutError extends Error {
-  constructor(readonly kind: "idle" | "total", timeoutMs: number) {
-    super(`模型流${kind === "idle" ? "空闲" : "总时长"}超时 (${timeoutMs}ms)`);
+  constructor(readonly kind: "first-chunk" | "idle" | "total", timeoutMs: number) {
+    const label = kind === "first-chunk" ? "首个响应前等待" : kind === "idle" ? "空闲" : "总时长";
+    super(`模型流${label}超时 (${timeoutMs}ms)`);
     this.name = "StreamTimeoutError";
   }
 }
@@ -273,6 +295,9 @@ interface AttemptState {
 
 /** Retryable: transient transport failures and the usual "try again" statuses. */
 function isRetryable(error: unknown): boolean {
+  // Nothing has streamed yet at this point, so a first-chunk timeout is as
+  // safe to retry as a 5xx (see streamChat's doc comment).
+  if (error instanceof StreamTimeoutError) return error.kind === "first-chunk";
   if (error instanceof APIUserAbortError) return false;
   if (error instanceof APIConnectionTimeoutError || error instanceof APIConnectionError) return true;
   if (error instanceof APIError) {

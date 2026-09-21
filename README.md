@@ -40,8 +40,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "apiKey": "${OPENAI_API_KEY}",
     "model": "gpt-4o",
     "models": [                           // 可选：在支持 ACP model selector 的 IDE 中显示
-      // 每个模型可用 maxTokens / streamIdleTimeoutMs / streamTotalTimeoutMs /
-      // streamRetries / streamRetryBaseDelayMs 覆盖同名全局值（未设置则继承）
+      // 每个模型可用 maxTokens / firstChunkTimeoutMs / streamIdleTimeoutMs /
+      // streamTotalTimeoutMs / streamRetries / streamRetryBaseDelayMs
+      // 覆盖同名全局值（未设置则继承）
       { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型", "maxTokens": 32768 }
     ],
     "temperature": 0,
@@ -49,7 +50,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
                                            // 不设置时不发送 max_tokens，交给后端自己的默认值
                                            // （如 DeepSeek 思考模式默认 64K，reasoning_effort=max 时 128K）
     "requestTimeoutMs": 120000,           // SDK 请求超时（毫秒）
-    "streamIdleTimeoutMs": 60000,         // 等待首个/后续 chunk 的空闲上限
+    "firstChunkTimeoutMs": 600000,        // 首个流式 chunk 前的等待上限（连接建立 + 服务端排队）；
+                                           // 默认 10 分钟，对齐 DeepSeek 高负载时的服务端断连窗口
+    "streamIdleTimeoutMs": 60000,         // 首个 chunk 之后，chunk 之间的空闲上限
     "streamTotalTimeoutMs": 120000,       // 整次请求含 SSE 消费的总时长上限
     "streamRetries": 2,                   // 仅在“首个 delta 之前”失败时重试（网络抖动/429/5xx）
     "streamRetryBaseDelayMs": 500,        // 重试退避基数（指数增长，上限 8s；尊重 Retry-After）
@@ -85,7 +88,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 ### 兼容的端点
 
-流式请求同时受空闲和总时长上限约束；`provider.models` 中的每个模型可用同名 `streamIdleTimeoutMs` / `streamTotalTimeoutMs`（以及 `streamRetries` / `streamRetryBaseDelayMs`）覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示空闲/总时长原因，ACP 返回 `refusal`；用户取消返回 `cancelled`。
+流式请求受三个独立上限约束：`firstChunkTimeoutMs`（首个 chunk 前，覆盖连接建立 + 服务端排队）、`streamIdleTimeoutMs`（首个 chunk 之后，chunk 之间的空闲上限）、`streamTotalTimeoutMs`（整次请求的总时长）；`provider.models` 中的每个模型都可用同名字段（以及 `streamRetries` / `streamRetryBaseDelayMs`）覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示首 chunk/空闲/总时长原因，ACP 返回 `refusal`（首 chunk 超时除外，见下）；用户取消返回 `cancelled`。
+
+`firstChunkTimeoutMs` 单独拆分是因为它和 `streamIdleTimeoutMs` 的语义不同：高负载的 DeepSeek 端点排队时会持续发送 SSE 注释行 `: keep-alive`，而 openai SDK 会在产生 chunk 之前就丢弃注释行——也就是说这段等待对 ZhenTe 完全不可见，无法用"空闲"计时去衡量。旧版用同一个 60s 空闲上限覆盖这段等待，在生产日志里观测到过 14 次首 chunk 等待超过 30 秒（最长 66.9 秒），若换成更短的空闲阈值本会被直接杀掉且不重试。现在这段等待由 `firstChunkTimeoutMs`（默认 10 分钟，对齐 DeepSeek 服务端"10 分钟未开始推理即断连"的窗口）单独承担，而且——因为这个阶段还没有任何内容流出——**允许重试**（走 `streamRetries` 同一套指数退避），不像空闲/总时长超时那样直接终止为 `refusal`。等待期间 TUI/ACP 的"思考"提示会每 20 秒刷新一次已等待时长，避免长时间排队被误认为卡死。
 
 **关于 `maxTokens`（输出上限）**：这是**单次回复**的输出上限，由「思考过程（reasoning）+ 正文 + 工具调用参数」**共用**，并且很多后端会把它计入上下文预算（`prompt_tokens + max_tokens ≤ 上下文窗口`，超了直接 400）。因此：
 

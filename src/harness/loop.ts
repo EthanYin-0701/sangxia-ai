@@ -22,6 +22,14 @@ const MAX_TOOL_OUTPUT = 100_000;
 const DEFAULT_TOOL_TIMEOUT_MS = 300_000;
 
 /**
+ * How often to refresh the "still waiting" thought while no delta has
+ * arrived yet. A busy DeepSeek endpoint can queue for minutes (see
+ * `firstChunkTimeoutMs`); without this, the one-shot "（模型处理中…）" notice
+ * looks identical whether the wait is 2s or 8 minutes, which reads as hung.
+ */
+const WAIT_NOTICE_INTERVAL_MS = 20_000;
+
+/**
  * Repair a message history that an interrupted turn left inconsistent.
  *
  * OpenAI-compatible endpoints reject any assistant message whose `tool_calls`
@@ -200,12 +208,30 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     let reasoning = "";
     let rawFinishReason: string | null | undefined;
 
+    // Keep refreshing the "still waiting" thought with elapsed time until the
+    // first event arrives, so a long server-side queue (see
+    // firstChunkTimeoutMs) reads as "still going", not "stuck".
+    const waitStartedAt = Date.now();
+    let firstEventSeen = false;
+    const waitNoticeTimer = setInterval(() => {
+      if (firstEventSeen) return;
+      const waitedS = Math.round((Date.now() - waitStartedAt) / 1000);
+      void safeSessionUpdate(conn, {
+        sessionId: session.id,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: `（模型处理中，已等待 ${waitedS}s，可能是服务端排队，最长约 10 分钟…）` },
+        },
+      });
+    }, WAIT_NOTICE_INTERVAL_MS);
+
     try {
       for await (const ev of provider.streamChat({
         messages: session.messages,
         tools: schemas,
         signal,
       })) {
+        firstEventSeen = true;
         if (signal.aborted) return "cancelled";
         switch (ev.type) {
           case "text-delta":
@@ -243,6 +269,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n[错误] 调用模型失败: ${msg}` } },
       });
       return "refusal";
+    } finally {
+      clearInterval(waitNoticeTimer);
     }
 
     logger.info(

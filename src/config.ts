@@ -28,6 +28,7 @@ const providerSchema = z
           modelId: z.string().min(1),
           name: z.string().min(1),
           description: z.string().optional(),
+          firstChunkTimeoutMs: z.number().int().positive().optional(),
           streamIdleTimeoutMs: z.number().int().positive().optional(),
           streamTotalTimeoutMs: z.number().int().positive().optional(),
           streamRetries: z.number().int().min(0).max(5).optional(),
@@ -53,6 +54,18 @@ const providerSchema = z
      */
     maxTokens: z.number().int().positive().optional(),
     requestTimeoutMs: z.number().int().positive().default(120_000),
+    /**
+     * Deadline for the wait **before the first streamed delta** — covers
+     * connection setup and any server-side queueing. Kept separate from
+     * `streamIdleTimeoutMs` (the gap *between* chunks once streaming has
+     * started) because a busy DeepSeek endpoint sends SSE `: keep-alive`
+     * comment lines while queueing, which the SDK drops without producing a
+     * chunk — so under the old single idle timer, ZhenTe would kill (and
+     * never retry) a request the server was still going to answer. DeepSeek
+     * itself only gives up after 10 minutes of no inference started, so the
+     * default here matches that.
+     */
+    firstChunkTimeoutMs: z.number().int().positive().default(600_000),
     streamIdleTimeoutMs: z.number().int().positive().default(60_000),
     streamTotalTimeoutMs: z.number().int().positive().default(120_000),
     /**

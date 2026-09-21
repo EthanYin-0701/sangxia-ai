@@ -46,6 +46,25 @@ const server = createServer(async (req, res) => {
   res.writeHead(200, { "content-type": "text/event-stream" });
   res.flushHeaders();
   if (round === "idle") return;
+  if (round === "one-chunk-then-silent") {
+    // Emits exactly one chunk (so firstChunkTimer is satisfied), then the
+    // connection just sits open — only the *idle* watchdog can catch this.
+    send({ content: "x" });
+    return;
+  }
+  if (round === "keep-alive-then-answer") {
+    // Mimics a busy DeepSeek endpoint: raw SSE comment lines while queueing
+    // (the openai SDK drops these before they'd ever become a `chunk`), then
+    // a normal answer once "inference starts".
+    interval = setInterval(() => res.write(": keep-alive\n\n"), 15);
+    setTimeout(() => {
+      clearInterval(interval);
+      send({ content: "完成" });
+      send({}, "stop");
+      res.end("data: [DONE]\n\n");
+    }, 150);
+    return;
+  }
   if (round === "reasoning-forever") {
     interval = setInterval(() => send({ reasoning_content: "private reasoning" }), 10);
     return;
@@ -64,7 +83,7 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const cfg = {
   type: "openai", baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKey: "test",
   model: "test", temperature: 0, maxTokens: 100, requestTimeoutMs: 2000,
-  streamIdleTimeoutMs: 1000, streamTotalTimeoutMs: 2000, streamIncludeUsage: true,
+  firstChunkTimeoutMs: 5000, streamIdleTimeoutMs: 1000, streamTotalTimeoutMs: 2000, streamIncludeUsage: true,
 };
 const finish = (reason, deltas = []) => ({ finish: reason, deltas });
 const callDelta = (name, args, id = "call-test") => ({ tool_calls: [{ index: 0, id, function: { name, arguments: args } }] });
@@ -661,12 +680,27 @@ try {
     assert.match(text, /使用服务端默认额度/);
     assert.ok(!text.includes("maxTokens=unknown"));
   });
-  await check("idle/total watchdogs and user abort close the HTTP stream", async () => {
-    for (const kind of ["idle", "total", "cancel"]) {
-      rounds = [kind === "idle" ? "idle" : "reasoning-forever"];
+  await check("first-chunk/idle/total watchdogs and user abort close the HTTP stream", async () => {
+    for (const kind of ["first-chunk", "idle", "total", "cancel"]) {
+      // "idle" round: connection opens, nothing is ever sent — exercises the
+      // pre-first-chunk wait. "one-chunk-then-silent": one chunk arrives (so
+      // firstChunkTimer is satisfied), then silence — only the idle-between-
+      // chunks watchdog can catch this one.
+      rounds = [kind === "first-chunk" ? "idle" : kind === "idle" ? "one-chunk-then-silent" : "reasoning-forever"];
       const controller = new AbortController();
-      const provider = new OpenAIProvider({ ...cfg,
-        models: [{ modelId: "test", name: "test", streamIdleTimeoutMs: kind === "idle" ? 100 : 1000, streamTotalTimeoutMs: kind === "total" ? 150 : 2000 }] });
+      const provider = new OpenAIProvider({
+        ...cfg,
+        // A first-chunk timeout is retryable (see isRetryable); with only one
+        // queued round this test wants the single-attempt failure, not a
+        // retry consuming an empty `rounds` queue into an accidental success.
+        ...(kind === "first-chunk" ? { streamRetries: 0 } : {}),
+        models: [{
+          modelId: "test", name: "test",
+          firstChunkTimeoutMs: kind === "first-chunk" ? 100 : 5000,
+          streamIdleTimeoutMs: kind === "idle" ? 100 : 1000,
+          streamTotalTimeoutMs: kind === "total" ? 150 : 2000,
+        }],
+      });
       const before = closed;
       const timer = kind === "cancel" ? setTimeout(() => controller.abort(new Error("user-cancel")), 100) : null;
       try {
@@ -678,6 +712,32 @@ try {
         assert.ok(closed > before, "server must observe stream abort");
       } finally { clearTimeout(timer); }
     }
+  });
+  await check("SSE keep-alive comments during the pre-first-chunk wait don't trip the idle watchdog", async () => {
+    // A busy DeepSeek endpoint sends `: keep-alive` while queueing; the SDK
+    // drops these before they'd become a `chunk`. A short idle timeout must
+    // NOT fire during that window — only firstChunkTimeoutMs governs it.
+    rounds = ["keep-alive-then-answer"];
+    const provider = new OpenAIProvider({ ...cfg, streamIdleTimeoutMs: 50, models: [{ modelId: "test", name: "test", firstChunkTimeoutMs: 5000 }] });
+    let sawText = false;
+    for await (const ev of provider.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) {
+      if (ev.type === "text-delta") sawText = true;
+    }
+    assert.ok(sawText, "keep-alive comments must not starve the request before the first real chunk arrives");
+  });
+  await check("a first-chunk timeout is retried (nothing streamed yet → safe, unlike idle/total)", async () => {
+    rounds = ["idle", answer]; // first attempt never responds; second attempt succeeds
+    requests = [];
+    const provider = new OpenAIProvider({
+      ...cfg, streamRetries: 1, streamRetryBaseDelayMs: 5,
+      models: [{ modelId: "test", name: "test", firstChunkTimeoutMs: 50 }],
+    });
+    let finishReason = null;
+    for await (const ev of provider.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) {
+      if (ev.type === "done") finishReason = ev.finishReason;
+    }
+    assert.equal(requests.length, 2, "must retry after a first-chunk timeout");
+    assert.equal(finishReason, "stop");
   });
   await check("dispose aborts an active tool before closing MCP connections", async () => {
     const tool = { ...guardedWrite, run: async (_args, { session, signal }) => {

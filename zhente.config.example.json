@@ -9,8 +9,9 @@
         "modelId": "gpt-4o",
         "name": "GPT-4o",
         "description": "默认模型"
-        // 可按模型覆盖 maxTokens / streamIdleTimeoutMs / streamTotalTimeoutMs /
-        // streamRetries / streamRetryBaseDelayMs；未设置时用 provider 下的同名全局值
+        // 可按模型覆盖 maxTokens / firstChunkTimeoutMs / streamIdleTimeoutMs /
+        // streamTotalTimeoutMs / streamRetries / streamRetryBaseDelayMs；
+        // 未设置时用 provider 下的同名全局值
         // "maxTokens": 32768
       }
     ],
@@ -18,6 +19,9 @@
     // 不设置时不发送 max_tokens，交给后端自己的默认值（DeepSeek 思考模式默认 64K）
     // "maxTokens": 32768,
     "requestTimeoutMs": 120000,
+    // 首个流式 chunk 前的等待上限（连接建立 + 服务端排队）；默认 10 分钟，
+    // 对齐 DeepSeek 高负载时"10 分钟未开始推理即断连"的窗口
+    "firstChunkTimeoutMs": 600000,
     "streamIdleTimeoutMs": 60000,
     "streamTotalTimeoutMs": 120000,
     "streamRetries": 2,
