@@ -56,7 +56,14 @@ const providerSchema = z
      */
     streamRetries: z.number().int().min(0).max(5).default(2),
     streamRetryBaseDelayMs: z.number().int().positive().default(500),
-    streamIncludeUsage: z.boolean().default(false),
+    /**
+     * Ask the backend for a `usage` block on the final SSE chunk. DeepSeek
+     * always includes it regardless of this flag; other OpenAI-compatible
+     * backends that don't support it simply ignore the request option. Default
+     * on because usage (in particular `prompt_cache_hit_tokens`) is otherwise
+     * invisible and cost on DeepSeek is dominated by prompt tokens.
+     */
+    streamIncludeUsage: z.boolean().default(true),
     extraHeaders: z.record(z.string()).optional(),
   })
   .superRefine((cfg, ctx) => {

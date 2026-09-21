@@ -680,6 +680,29 @@ try {
     assert.ok(!log.includes("private reasoning"));
     assert.ok(!log.includes('{"path":'));
   });
+  await check("cache hit/miss usage is extracted and logged as cacheHitRatio", async () => {
+    const withCache = {
+      ...answer,
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, prompt_cache_hit_tokens: 8, prompt_cache_miss_tokens: 2 },
+    };
+    await turn([withCache]);
+    let log = await readFile(join(dir, "logs", "global.log"), "utf8");
+    assert.match(log, /"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":2/);
+    assert.match(log, /cacheHitRatio=0\.80/);
+
+    // No cache fields reported → falls back to "n/a" rather than a stale/misleading number.
+    await turn([{ ...answer, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }]);
+    log = await readFile(join(dir, "logs", "global.log"), "utf8");
+    assert.match(log, /cacheHitRatio=n\/a/);
+
+    // `prompt_tokens_details.cached_tokens` (non-DeepSeek shape) is accepted too.
+    await turn([{ ...answer, usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, prompt_tokens_details: { cached_tokens: 4 } } }]);
+    const { OpenAIProvider: Provider } = await import("../dist/llm/openai.js");
+    const provider = new Provider(cfg);
+    rounds = [{ ...answer, usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, prompt_tokens_details: { cached_tokens: 4 } } }];
+    for await (const _ of provider.streamChat({ messages: [], tools: [], signal: new AbortController().signal })) { /* consume */ }
+    assert.equal(provider.lastUsage.prompt_cache_hit_tokens, 4);
+  });
   console.error(`RELIABILITY SMOKE OK (${checks} groups)`);
 } finally {
   server.closeAllConnections();

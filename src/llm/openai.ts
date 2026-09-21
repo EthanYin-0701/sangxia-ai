@@ -34,6 +34,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly #retries: number;
   readonly #retryBaseDelayMs: number;
   #lastPromptTokens: number | null = null;
+  #lastUsage: Record<string, number> | null = null;
 
   constructor(cfg: ProviderConfig) {
     this.model = cfg.model;
@@ -89,6 +90,10 @@ export class OpenAIProvider implements LLMProvider {
 
   get lastPromptTokens(): number | null {
     return this.#lastPromptTokens;
+  }
+
+  get lastUsage(): Record<string, number> | null {
+    return this.#lastUsage;
   }
 
   get maxTokens(): number {
@@ -152,12 +157,25 @@ export class OpenAIProvider implements LLMProvider {
         chunks++;
         if (chunk.usage) {
           usage = {};
-          for (const key of ["prompt_tokens", "completion_tokens", "total_tokens"]) {
+          for (const key of [
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+          ]) {
             if (typeof chunk.usage[key] === "number") usage[key] = chunk.usage[key];
           }
           const reasoningTokens = chunk.usage.completion_tokens_details?.reasoning_tokens;
           if (typeof reasoningTokens === "number") usage.reasoning_tokens = reasoningTokens;
+          // DeepSeek names the hit count directly; other OpenAI-compatible
+          // backends expose the same number as `prompt_tokens_details.cached_tokens`.
+          const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens;
+          if (usage.prompt_cache_hit_tokens === undefined && typeof cachedTokens === "number") {
+            usage.prompt_cache_hit_tokens = cachedTokens;
+          }
           if (typeof usage.prompt_tokens === "number") this.#lastPromptTokens = usage.prompt_tokens;
+          this.#lastUsage = usage;
         }
         if (firstChunkAt === null) {
           firstChunkAt = Date.now();

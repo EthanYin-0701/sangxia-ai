@@ -71,6 +71,15 @@ export interface LLMProvider {
    * (see `harness/context.ts`).
    */
   readonly lastPromptTokens?: number | null;
+
+  /**
+   * Full usage record from the most recent request that reported one (e.g.
+   * `prompt_tokens`, `completion_tokens`, `prompt_cache_hit_tokens`,
+   * `prompt_cache_miss_tokens`). Providers that never see usage leave this
+   * `null`. Surfaced so the harness can log cache-hit ratio without every
+   * caller re-deriving it from raw chunks.
+   */
+  readonly lastUsage?: Record<string, number> | null;
   /**
    * Stream a single assistant completion. Implementations must:
    *  - yield `text-delta` for visible content as it arrives,

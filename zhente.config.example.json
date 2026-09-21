@@ -21,7 +21,7 @@
     "streamTotalTimeoutMs": 120000,
     "streamRetries": 2,
     "streamRetryBaseDelayMs": 500,
-    "streamIncludeUsage": false,
+    "streamIncludeUsage": true,
     "extraHeaders": {}
   },
   "agent": {

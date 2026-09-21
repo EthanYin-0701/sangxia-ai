@@ -244,7 +244,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     logger.info(
       `turn ${session.id} iteration=${iter + 1} completed ` +
         `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length} ` +
-        `finishReason=${finishReason ?? "none"} rawFinishReason=${JSON.stringify(rawFinishReason)}`,
+        `finishReason=${finishReason ?? "none"} rawFinishReason=${JSON.stringify(rawFinishReason)} ` +
+        `cacheHitRatio=${cacheHitRatio(provider.lastUsage)}`,
     );
     if (text.length === 0 && toolCalls.length === 0) {
       logger.warn(`turn ${session.id} 模型返回空的可见内容（可能只有 reasoning 或被服务端过滤）`);
@@ -546,6 +547,20 @@ async function emitToolUpdate(
 
 function truncate(s: string): string {
   return truncateMiddle(s, MAX_TOOL_OUTPUT);
+}
+
+/**
+ * `prompt_cache_hit_tokens / (hit + miss)` as a 2-decimal string, or `n/a`
+ * when the backend didn't report cache usage for this request. Cost on
+ * DeepSeek is dominated by prompt tokens and the cache/miss price gap is 50x
+ * (see plan/deepseek_first_improvements.md §2.3), so this is the single
+ * number worth surfacing per turn.
+ */
+function cacheHitRatio(usage: Record<string, number> | null | undefined): string {
+  const hit = usage?.prompt_cache_hit_tokens;
+  const miss = usage?.prompt_cache_miss_tokens;
+  if (typeof hit !== "number" || typeof miss !== "number" || hit + miss <= 0) return "n/a";
+  return (hit / (hit + miss)).toFixed(2);
 }
 
 function safeTitle(tool: { title(a: unknown): string; name: string }, args: unknown): string {

@@ -51,7 +51,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "streamTotalTimeoutMs": 120000,       // 整次请求含 SSE 消费的总时长上限
     "streamRetries": 2,                   // 仅在“首个 delta 之前”失败时重试（网络抖动/429/5xx）
     "streamRetryBaseDelayMs": 500,        // 重试退避基数（指数增长，上限 8s；尊重 Retry-After）
-    "streamIncludeUsage": false,          // 兼容端点可开启 stream_options.include_usage
+    "streamIncludeUsage": true,            // 请求 stream_options.include_usage；不支持的端点会忽略该字段
     "extraHeaders": {}                     // 可选附加请求头
   },
   "agent": {
@@ -103,6 +103,8 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 `bash` 本地回退路径用独立进程组启动 shell，超时或取消时 `SIGKILL` **整个进程组**，避免 `npm run …` 之类的孙进程继续存活（POSIX 语义；Windows 上回退为只杀直接子进程）。客户端终端路径同样受 `timeout` 约束，超时会调用 `terminal.kill()`，但其尾部输出的保真度取决于客户端实现。
 
 **Prompt 规模估算**：每次请求前会按启发式（ASCII 约 4 字符/token、非 ASCII 约 1.5 字符/token，加每消息开销与工具 schema）估算 prompt token 数并写日志（`estimatedPromptTokens=… rawEstimate=… lastPromptTokens=…`）。若后端返回 `usage.prompt_tokens`（需 `streamIncludeUsage: true`），下一次估算会用实测值与上次估算的比值做校准（比例夹在 0.5×–2× 之间，防单次异常值）。**这只是启发式，仅用于阈值判断和排障，不参与发送内容**。
+
+**缓存命中率**：若后端在 `usage` 里报告 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（DeepSeek 始终会，其他端点可能以 `prompt_tokens_details.cached_tokens` 表达同一个数），每轮结束的日志行会带上 `cacheHitRatio=`（无数据时为 `n/a`）。DeepSeek 的未命中价是命中价的 50 倍，这是判断成本是否正常的第一手数据。
 
 工具输出超过上限时**头尾各保留**（中间用 `…(输出过长，已省略中间 N 字符，共 M 字符…)` 标记），因为构建/测试的报错几乎总在尾部。
 
