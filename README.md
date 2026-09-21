@@ -32,6 +32,13 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 解析顺序：`--config <path>` → `$ZHENTE_CONFIG` → `./zhente.config.json` → `~/.config/zhente/config.json`。
 字符串值支持 `${ENV_VAR}` 环境变量插值，密钥不必落盘。
 
+**配置分层（D16）**：`~/.config/zhente/config.json` 是**全局 base**，永远先加载，上面这份主配置作为 **overlay** 叠加（深合并，overlay 胜；只有 `hooks.events.*` 是**数组追加**，base 先、overlay 后）。于是：
+
+- 项目里只需要写"和全局不一样的东西"（例如只写 `provider`），全局的 `hooks` 照样生效；
+- **全局 hook 不能被某个项目配置静默删掉** —— 唯一关掉方式是显式 `"hooks": { "enabled": false }`（这是有意的：否则打开一个带 `zhente.config.json` 的仓库就能悄悄卸掉你的守卫 hook）；
+- 反过来，全局配置写错（未知事件名、路径形态命令不存在等）会让**所有**项目启动失败 —— 这是 fail fast 的代价，报错信息里会指名具体文件与条目；
+- 项目里没有任何配置文件时，全局配置可以独立当配置用（`provider` + `hooks` 都写它即可）。
+
 ```jsonc
 {
   "provider": {
@@ -272,12 +279,14 @@ Hook 让你用**外部命令**在固定点位介入 agent 生命周期——策�
 
 | 事件 | 触发点 | 可否阻塞 | `matcher` |
 |---|---|---|---|
-| `session_start` | `session/new` / `session/load` 建立会话后 | 否（只注入上下文） | — |
+| `session_start` | `session/new` / `session/load` 建立会话后 | 否（只注入上下文） | `source`（`startup`\|`resume`） |
 | `user_prompt_submit` | 提交 prompt 后、进入 turn 前（含项目初始化之前） | **是**（deny ⇒ `refusal`，不进历史、不调模型） | — |
 | `pre_tool_use` | 参数校验通过后、**权限确认之前** | **是** | 工具名（正则） |
 | `post_tool_use` | 工具执行返回（或超时/抛错）后 | 否（只能追加上下文） | 工具名（正则） |
 | `turn_end` | 每次 prompt 的每条退出路径（含取消、初始化子 turn） | 否 | — |
 | `session_end` | 进程退出（`shutdown`，2s 硬上限） | 否 | — |
+
+`matcher` 是事件级过滤器（JS 正则）：工具事件作用于**工具注册名**，`session_start` 作用于 `source`（`startup` = `session/new`，`resume` = `session/load`，与 codex 的 `SessionStart` 一致）；其它事件没有可匹配字段，配了会被忽略并 warn 一次（写错位置不该静默生效）。事件名写错（如驼峰 `sessionStart`）会**加载期直接报错**，不会静默什么都不做。
 
 `pre_tool_use` 在权限确认**之前**、也在 `tool_call` 通知之前：因此客户端显示的标题、`rawInput`、以及**人类在弹窗里批准的参数**与真正执行的参数三者一致——不存在"人批准了 A、实际跑了 B"。`post_tool_use` 覆盖成功、超时与抛错路径（失败也要能审计）。
 
@@ -293,7 +302,7 @@ Hook 让你用**外部命令**在固定点位介入 agent 生命周期——策�
   "hook_name": "guard-writes", "timestamp": "2026-01-01T00:00:00.000Z",
   // 事件附加字段：pre/post_tool_use: tool_name/tool_call_id/tool_kind/tool_input/tool_title
   //               （post 另有 tool_output/tool_error/tool_elapsed_ms）
-  //   user_prompt_submit: prompt    session_start: source/mcp_servers/skills
+  //   user_prompt_submit: prompt    session_start: source(startup|resume)/mcp_servers/skills
   //   turn_end: stop_reason/iterations/elapsed_ms/turn_kind（main|init）  session_end: reason
   "tool_input": { "path": "src/a.ts" }
 }
@@ -338,6 +347,7 @@ exit 0
 
 - **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到直接启动报错。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.zhente/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
 - hook 进程的运行时 `cwd` 仍是 **session cwd**（脚本里的 `git status` / `npm` 语义不变）。因此**不要在全局配置里写依赖仓库的裸命令**（`"npm run lint"` 会跑被打开仓库的 `package.json` scripts 与 `node_modules/.bin`）；要跑就写绝对解释器 + 绝对脚本：`"bash ${HOME}/.config/zhente/hooks/lint.sh"`。
+- **全局配置里的 hook 在所有项目里都生效**（配置分层，D16）：这是全局 hook 的意义所在，也意味着**你打开任何仓库时它都会跑**。因此全局 hook 尤其要遵守上一条（绝对解释器 + 绝对脚本），且**不要**在全局 hook 里执行依赖仓库内容的裸命令。
 - **项目级 hooks（`.zhente/hooks.json`）默认关闭**：该文件随仓库分发，开启等于"打开仓库就执行任意命令"；显式 `projectFile.enabled: true` 才加载（开启时会 warn 一次），且项目级条目的 `onError` / `timeoutMs` 只能**更严**不能放宽。
 - hook 是**本地用户自己配置的、权限等同你 shell 的非沙箱进程**：它能看到模型文本、工具参数与输出（可能含代码/密钥）；不要把 payload POST 到不可信地址。stdout 不整体进日志（只记解析结果与长度），stderr 截断后进日志。
 - **hook 策略是"深度防御"，不是沙箱**：基于工具参数字符串的规则天然可绕过（禁止写 `.env` 的规则挡不住 `bash -c 'echo … > .env'`）。要真正隔离请用 OS 级机制；能拦刀就同时配 `guard-writes` + `guard-bash` 两条 matcher。
@@ -370,6 +380,28 @@ out=$(npm run -s typecheck 2>&1) || {
 }
 exit 0
 ```
+
+一个典型的**全局 hook**：每次会话开始都在后台预热索引（`~/.config/zhente/config.json`，对所有项目生效）：
+
+```jsonc
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "session_start": [
+        {
+          "name": "jbcontext-index",
+          "matcher": "startup|resume",              // 只在新会话 / 恢复会话时跑
+          "command": "sh -c 'jbcontext index --silent >/dev/null 2>&1 &'",  // & = 不阻塞会话启动
+          "timeoutMs": 2000                          // 命令本身立刻返回，2s 只是安全网
+        }
+      ]
+    }
+  }
+}
+```
+
+> 这里用 `sh -c '… &'` 是为了"同步 hook + 后台任务"的组合：ZhenTe 的 hook 一律同步等待（决策必须在继续之前拿到），命令自己 `&` 掉即可立刻返回。`matcher` 用的是 codex `SessionStart` 的同一套 `source` 词汇表。
 
 ## 架构
 
@@ -431,7 +463,7 @@ npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器�
 npm run smoke:mcp    # MCP 工具接入冒烟
 npm run smoke:skill  # 技能层冒烟（发现/目录注入/use_skill 加载）
 npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内存配对/取消）
-npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，76 项断言）
+npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks/配置分层，89 项断言）
 npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 ```
 

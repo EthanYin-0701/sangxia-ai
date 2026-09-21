@@ -78,6 +78,11 @@
   2. `deny` / 非法改写两条路径的 `tool_call`(failed) 通知里**带上了 content**（与模型看到同一文本），便于客户端显示原因；既有的参数校验失败路径未改（保持原样）。
 - 其它：hook 失败只记 warn（`logger`，session 归属走现有 ALS）；stdout 不整体进日志（可能含代码/密钥），只记解析结果与长度；`session_end` 在 `agent.shutdown()` 汇总执行，2s 硬上限（`unref` 的定时器），超时放弃。
 - 冒烟隔离：`scripts/smoke-hooks.mjs` 给每个场景设置 `ZHENTE_SESSION_DIR=<临时目录>`（+ `ZHENTE_LOG_DIR`），不再往用户真实的 `~/.config/zhente/sessions` 写测试会话。历史遗留的测试会话已按 `meta.cwd` 里的 `/var/folders/…zhente-…` 标记清理（其余既有 `.json` 旧快照属用户数据，未动）。
+- 全局/项目 hook 需求（2026-09-21）：用户要在**所有项目**启动 zhente 时都跑 `sh -c 'jbcontext index --silent >/dev/null 2>&1 &'`（源自 codex `~/.codex/config.toml` 的 `SessionStart` matcher `startup|resume`）。据此新增 **D16 配置分层**：`~/.config/zhente/config.json` 内定为全局 base，`resolveConfigPath()` 的主配置作为 overlay 深合并；**只有 `hooks.events.*` 是数组追加**（base 先、overlay 后、不去重），所以全局 hook 不能被项目配置静默删掉，唯一关闭入口 = 显式 `hooks.enabled: false`。hook 条目按来源分别解析路径（D15 基准不变）。原设计"先找到先用、不合并"做不到这个需求 —— 本仓库自己就带 `zhente.config.json`，全局配置会被整体忽略。
+- `session_start` 对齐 codex 词汇表：payload `source` 由 `new`/`load` 改为 **`startup`/`resume`**，并让 `matcher` 支持 `session_start`（作用于 `source`，见 `MATCHER_FIELDS`）；其余非工具事件配 matcher 仍忽略 + warn。
+- `hooks.events` 里的事件名写错（如驼峰 `sessionStart`）现在**加载期直接报错**（`assertKnownHookEvents`，配置文件与项目级 hooks 文件两处都用），不再静默不跑。
+- 冒烟卫生：`scripts/smoke-hooks.mjs` 每个场景一个**假 HOME**（`HOME=<tmp>`），其它 5 个会 spawn zhente 的冒烟脚本也加了 `HOME=<tmp>` —— 分层加载后它们会读到开发机真实的 `~/.config/zhente/config.json`。
+- 用户实机配置：`~/.config/zhente/config.json`（hooks-only，jbcontext hook，`matcher: "startup|resume"`，`timeoutMs: 2000`，裸 `jbcontext` 依赖 PATH）。端到端验证过：真实 session 启动时日志出现 `hook session_start "jbcontext-index" exit=0`，`~/.jbcontext/logs/jbcontext.log` mtime 前进（jbcontext 真被拉起）。
 - 回归：`npm run typecheck` + `smoke` / `smoke:openai` / `smoke:mcp` / `smoke:skill` / `smoke:tui` / `smoke:reliability` / `smoke:hooks` 全绿（hooks 默认关闭，对既有行为零影响；`scripts/smoke-reliability.mjs` 里手搓的配置对象补了 `hooks: { enabled: false }`）。
 - 待办（v2，接口已留）：会话级 `session_end`（等 ACP 有会话结束事件/TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。
 

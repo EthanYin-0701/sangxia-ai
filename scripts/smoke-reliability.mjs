@@ -770,7 +770,9 @@ try {
     await writeFile(path, JSON.stringify({ provider: cfg, agent: { permissionMode: "auto" }, skills: { enabled: false } }));
     for (const mode of ["cancel", "stdin", "shutdown"]) {
       const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
-        stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ZHENTE_LOG_DIR: join(dir, "child-logs") },
+        // 隔离 HOME：分层加载（D16）会把 ~/.config/zhente/config.json 当 base。
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, HOME: join(dir, "home"), ZHENTE_LOG_DIR: join(dir, "child-logs") },
       });
       let stderr = "";
       child.stderr.on("data", (d) => { stderr += d; });

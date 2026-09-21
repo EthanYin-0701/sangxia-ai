@@ -22,7 +22,7 @@ npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
 npm run smoke:mcp     # MCP 工具接入冒烟
 npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
 npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
-npm run smoke:hooks   # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks，76 项断言）
+npm run smoke:hooks   # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks/配置分层，89 项断言）
 npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
 scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/zhente/skills（--dry-run/--force/--skill/--target）
 ```
@@ -33,7 +33,9 @@ scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/zhente/skills（--dry-
 src/
   acp/         ACP 侧内容处理（content.ts）
   agent.ts     主 Agent：initialize / newSession / prompt / cancel；组装会话工具集
-  config.ts    配置加载（--config → $ZHENTE_CONFIG → ./zhente.config.json → ~/.config/zhente/config.json，支持 ${ENV} 插值）
+  config.ts    配置加载（--config → $ZHENTE_CONFIG → ./zhente.config.json → ~/.config/zhente/config.json，
+               支持 ${ENV} 插值；D16 分层：~/.config/zhente/config.json 是全局 base，主配置在其上深合并，
+               hooks.events.* 数组追加 = 全局 hook 无法被项目配置删掉）
   harness/     主循环 loop.ts、权限 permissions.ts、工具抽象 tool.ts、统一参数校验 validation.ts
                头尾截断 truncate.ts、prompt token 估算 context.ts
   llm/         LLMProvider 接口（types.ts）+ OpenAI（openai.ts）/ mock（mock.ts）+ factory.ts
@@ -92,6 +94,7 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
     - **命令路径的解析基准 = 声明它的那份配置所在目录**（配置级 = 配置文件目录，项目级 = 项目根），与 hook 进程的 `cwd`（= session cwd）解耦。**绝不要把基准改成 session cwd** —— 那等于让被打开的仓库决定执行哪个文件（D15 / review H2）；路径形态的命令在加载期解析并校验存在性，缺失直接 fail fast。
     - hook 失败**绝不能影响 turn 收敛**（异常全捕获 + warn 日志，`onError` 只约束"失败"路径，不改写显式 deny）；`hooks.enabled` 与 `projectFile.enabled` 默认 **false**；项目级条目的 `onError`/`timeoutMs` 只能更严不能放宽（L3）。
     - 项目级 hooks 文件（`.zhente/hooks.json`）在**会话建立时**加载（基准是 session cwd），配置级在 `loadConfig` 阶段解析路径。
+    - **配置分层（D16）**：`~/.config/zhente/config.json` 永远是 base，主配置是 overlay；`hooks.events.*` 按"base 先、overlay 后"**追加**，所以**不要**给 hooks 加"数组覆盖"或去重 —— 那会让项目配置静默卸掉用户的全局守卫 hook。唯一关闭入口是显式 `hooks.enabled: false`。改 `loadConfig` 时不要退回"单文件、先找到先用"。
 
 
 ## 已知扩展点（勿破坏预留接口）

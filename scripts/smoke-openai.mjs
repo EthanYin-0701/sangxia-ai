@@ -76,6 +76,9 @@ const port = server.address().port;
 
 // --- Spawn the agent pointed at the fake server -------------------------------
 const workdir = mkdtempSync(join(tmpdir(), "zhente-openai-"));
+// 隔离的 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+// 冒烟不能读到开发机真实的全局配置（hooks / provider 都可能与本场景冲突）。
+const home = join(workdir, "home");
 const cfgPath = join(workdir, "zhente.config.json");
 writeFileSync(
   cfgPath,
@@ -87,6 +90,7 @@ writeFileSync(
 
 const child = spawn("node", [join(root, "dist/index.js"), "--config", cfgPath], {
   stdio: ["pipe", "pipe", "inherit"],
+  env: { ...process.env, HOME: home },
 });
 
 const failTimer = setTimeout(() => {

@@ -23,6 +23,9 @@ import { discoverSkills, skillCatalogPrompt, useSkillTool } from "../dist/skills
 const root = fileURLToPath(new URL("..", import.meta.url));
 const mockServer = join(root, "scripts/mock-mcp-server.mjs");
 const workdir = mkdtempSync(join(tmpdir(), "zhente-mcp-"));
+// 隔离的 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+// 冒烟不能读到开发机真实的全局配置（hooks / provider 都可能与本场景冲突）。
+const home = join(workdir, "home");
 
 // A demo skill living in the session cwd.
 mkdirSync(join(workdir, "skills", "hello"), { recursive: true });
@@ -40,6 +43,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------- Part 1: ACP integration ----------------
 const child = spawn("node", [join(root, "dist/index.js"), "--config", cfgPath], {
   stdio: ["pipe", "pipe", "pipe"],
+  env: { ...process.env, HOME: home },
 });
 let stderr = "";
 child.stderr.on("data", (d) => {

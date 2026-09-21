@@ -20,6 +20,10 @@
 //  18  project-level hooks file is off by default
 //  19  project-level hooks: project-root base + clamping
 //  20  session/load injects session_start context into the restored system message
+//  21  session_start matcher matches `source` (startup|resume)
+//  22  config layering: global base + project overlay — hooks appended, hooks.enabled honoured
+//  23  global config alone boots a project that has no config of its own
+//  24  unknown event name / unknown hooks key ⇒ fail fast (no silent no-op)
 //
 // Run: npm run build && node scripts/smoke-hooks.mjs
 
@@ -115,6 +119,10 @@ async function withAgent(name, opts, drive) {
   const dir = mkdtempSync(join(workRoot, `${name}-`));
   const cwd = join(dir, "project");
   mkdirSync(cwd, { recursive: true });
+  // 每个场景一个假 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+  // 冒烟绝不能读到开发机真实的那份（否则一条坏配置会让整套冒烟红掉）。
+  const home = join(dir, "home");
+  mkdirSync(join(home, ".config", "zhente"), { recursive: true });
   // Pre-seed project memory so the first prompt doesn't trigger the project
   // initialization turn (its permission prompt would pollute permission counts).
   writeFileSync(join(cwd, "AGENTS.md"), "# 测试项目\n");
@@ -141,11 +149,17 @@ async function withAgent(name, opts, drive) {
   // Some scenarios need project files (`.zhente/hooks.json`) to exist *before*
   // newSession — session_start and hook path resolution happen at session setup.
   opts.prepareCwd?.(cwd, dir);
+  const fill = (obj) =>
+    JSON.stringify(obj, null, 2)
+      .replaceAll("__DIR__", dir)
+      .replaceAll("__CWD__", cwd)
+      .replaceAll("__HOME__", home);
+  // `globalConfig` → 假 HOME 里的全局配置（分层 base）；`overlayConfig` → 主配置整体替换。
+  if (opts.globalConfig) {
+    writeFileSync(join(home, ".config", "zhente", "config.json"), fill(opts.globalConfig));
+  }
   const configPath = join(dir, "zhente.config.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify(config, null, 2).replaceAll("__DIR__", dir).replaceAll("__CWD__", cwd),
-  );
+  writeFileSync(configPath, fill(opts.overlayConfig ?? config));
 
   rounds = [];
   llmRequests = [];
@@ -153,16 +167,21 @@ async function withAgent(name, opts, drive) {
   permissionTitles = [];
   permissionResponder = opts.onPermission ?? (() => ({ outcome: { outcome: "selected", optionId: "allow_once" } }));
 
-  const child = spawn("node", [join(root, "dist/index.js"), "--config", configPath], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      ZHENTE_LOG_DIR: join(dir, "logs"),
-      ZHENTE_LOG_FILE: "",
-      // 不要把冒烟会话写进用户真实的 ~/.config/zhente/sessions
-      ZHENTE_SESSION_DIR: join(dir, "sessions"),
+  const child = spawn(
+    "node",
+    [join(root, "dist/index.js"), ...(opts.noConfig ? [] : ["--config", configPath])],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        HOME: home,
+        ZHENTE_LOG_DIR: join(dir, "logs"),
+        ZHENTE_LOG_FILE: "",
+        // 不要把冒烟会话写进用户真实的 ~/.config/zhente/sessions
+        ZHENTE_SESSION_DIR: join(dir, "sessions"),
+      },
     },
-  });
+  );
   children.push(child);
   let stderr = "";
   child.stderr.on("data", (c) => (stderr += c));
@@ -188,6 +207,7 @@ async function withAgent(name, opts, drive) {
   const ctx = {
     dir,
     cwd,
+    home,
     updates,
     conn,
     sessionId: session.sessionId,
@@ -887,6 +907,174 @@ await withAgent(
     ok(String(system?.content).includes("测试项目"), "原有 system 内容没有被破坏");
   },
 );
+
+// 21) session_start matcher is applied to `source` (startup | resume).
+await withAgent(
+  "start-matcher",
+  {
+    hooks: {
+      enabled: true,
+      events: {
+        session_start: [
+          { name: "on-startup", matcher: "^startup$", command: "sh __DIR__/startup.sh" },
+          { name: "on-resume", matcher: "^resume$", command: "sh __DIR__/resume.sh" },
+          { name: "on-clear", matcher: "^clear$", command: "sh __DIR__/clear.sh" },
+        ],
+      },
+    },
+    hookFiles: (dir) => ({
+      "startup.sh": `#!/bin/sh\ncat > /dev/null\necho startup >> "${dir}/sources.txt"\n`,
+      "resume.sh": `#!/bin/sh\ncat > /dev/null\necho resume >> "${dir}/sources.txt"\n`,
+      "clear.sh": `#!/bin/sh\ncat > /dev/null\necho clear >> "${dir}/sources.txt"\n`,
+    }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[21] session_start matcher 按 source 过滤");
+    ok(ctx.read("sources.txt") === "startup\n", "新会话只跑 matcher ^startup$（^resume$ / ^clear$ 不跑）");
+    await ctx.conn.loadSession({ sessionId: ctx.sessionId, cwd: ctx.cwd, mcpServers: [] });
+    ok(ctx.read("sources.txt") === "startup\nresume\n", "session/load 只跑 matcher ^resume$");
+  },
+);
+
+// 22) config layering: `~/.config/zhente/config.json` (base) + project config (overlay).
+await withAgent(
+  "layer-merge",
+  {
+    // overlay 故意只给 provider/agent：hooks 全部来自全局 base（若没有分层，这里会
+    // 因为 base 没 provider 而直接启动失败）。
+    overlayConfig: {
+      provider: { type: "mock" },
+      agent: { permissionMode: "auto" },
+      mcp: { enabled: false },
+      skills: { enabled: false },
+    },
+    globalConfig: {
+      hooks: {
+        enabled: true,
+        events: {
+          session_start: [
+            { name: "global", command: "sh __DIR__/global.sh" },
+            { name: "only-in-base", command: "sh __DIR__/base-only.sh" },
+          ],
+        },
+      },
+    },
+    hookFiles: (dir) => ({
+      "global.sh": `#!/bin/sh\ncat > /dev/null\necho base >> "${dir}/order.txt"\n`,
+      "base-only.sh": `#!/bin/sh\ncat > /dev/null\necho base2 >> "${dir}/order.txt"\n`,
+    }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[22] 配置分层：base + overlay");
+    ok(ctx.read("order.txt") === "base\nbase2\n", "全局 base 的 hook 在项目配置存在时照样执行");
+    ok(!ctx.stderr().includes("未找到配置文件"), "overlay 只有 provider 也能启动（与 base 合并）");
+    ok(ctx.logs().includes("配置分层"), "启动日志说明用了哪两份配置");
+    ok(ctx.logs().includes("来源=") && ctx.logs().includes("zhente/config.json"), "hooks 日志列出合并来源");
+  },
+);
+
+// 22b) project overlay can opt out globally with `hooks.enabled: false`.
+await withAgent(
+  "layer-off",
+  {
+    overlayConfig: {
+      provider: { type: "mock" },
+      agent: { permissionMode: "auto" },
+      mcp: { enabled: false },
+      skills: { enabled: false },
+      hooks: { enabled: false },
+    },
+    globalConfig: {
+      hooks: { enabled: true, events: { session_start: [{ name: "global", command: "sh __DIR__/global.sh" }] } },
+    },
+    hookFiles: (dir) => ({ "global.sh": `#!/bin/sh\ncat > /dev/null\necho base > "${dir}/order.txt"\n` }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[22b] overlay 显式 hooks.enabled:false ⇒ 全局 hook 也停");
+    ok(ctx.read("order.txt") === null, "显式关闭后全局 hook 不执行（唯一的关闭方式）");
+    ok(!ctx.logs().includes("hooks 已启用"), "禁用时不加载 hook");
+  },
+);
+
+// 22c) overlay-appended hooks run after the base ones (no de-dup, base first).
+await withAgent(
+  "layer-append",
+  {
+    overlayConfig: {
+      provider: { type: "mock" },
+      agent: { permissionMode: "auto" },
+      mcp: { enabled: false },
+      skills: { enabled: false },
+      hooks: { enabled: true, events: { session_start: [{ name: "project", command: "sh __DIR__/project.sh" }] } },
+    },
+    globalConfig: {
+      hooks: { enabled: true, events: { session_start: [{ name: "global", command: "sh __DIR__/global.sh" }] } },
+    },
+    hookFiles: (dir) => ({
+      "global.sh": `#!/bin/sh\ncat > /dev/null\necho base >> "${dir}/order.txt"\n`,
+      "project.sh": `#!/bin/sh\ncat > /dev/null\necho overlay >> "${dir}/order.txt"\n`,
+    }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[22c] 数组追加语义：base 先、overlay 后");
+    ok(ctx.read("order.txt") === "base\noverlay\n", "两边都跑，顺序 = base → overlay（不去重）");
+  },
+);
+
+// 23) the global config alone is enough: no --config, no ./zhente.config.json.
+await withAgent(
+  "layer-base-only",
+  {
+    noConfig: true,
+    globalConfig: {
+      provider: { type: "mock" },
+      agent: { permissionMode: "auto" },
+      mcp: { enabled: false },
+      skills: { enabled: false },
+      hooks: { enabled: true, events: { session_start: [{ name: "global", command: "sh __DIR__/global.sh" }] } },
+    },
+    hookFiles: (dir) => ({ "global.sh": `#!/bin/sh\ncat > /dev/null\necho base > "${dir}/order.txt"\n` }),
+    permissionMode: "auto",
+  },
+  async (ctx) => {
+    console.error("[23] 只有全局配置也能启动一个没有配置的项目");
+    ok(ctx.read("order.txt") === "base\n", "全局配置独立可用（provider + hooks 都来自它）");
+    ok(!ctx.stderr().includes("未找到配置文件"), "不再报「未找到配置文件」");
+  },
+);
+
+// 24) config typos fail fast instead of silently never running (same trap as D14).
+{
+  console.error("[24] 事件名写错 ⇒ 启动即报错");
+  const dir = mkdtempSync(join(workRoot, "typo-"));
+  const home = join(dir, "home");
+  mkdirSync(join(home, ".config", "zhente"), { recursive: true });
+  writeFileSync(
+    join(home, ".config", "zhente", "config.json"),
+    JSON.stringify({
+      provider: { type: "mock" },
+      mcp: { enabled: false },
+      skills: { enabled: false },
+      hooks: { enabled: true, events: { sessionStart: [{ command: "echo hi" }] } },
+    }),
+  );
+  mkdirSync(join(dir, "empty"), { recursive: true });
+  const child = spawn("node", [join(root, "dist/index.js")], {
+    stdio: ["pipe", "pipe", "pipe"],
+    cwd: join(dir, "empty"),
+    env: { ...process.env, HOME: home, ZHENTE_LOG_DIR: join(dir, "logs"), ZHENTE_LOG_FILE: "", ZHENTE_SESSION_DIR: join(dir, "sessions") },
+  });
+  children.push(child);
+  let stderr = "";
+  child.stderr.on("data", (c) => (stderr += c));
+  const code = await new Promise((r) => child.on("exit", r));
+  ok(code !== 0, "未知事件名导致启动失败");
+  ok(stderr.includes('未知事件名 "sessionStart"'), `报错指出具体事件名，实际: ${stderr.split("\n").find((l) => l.includes("未知事件名")) ?? stderr.slice(0, 200)}`);
+}
 
 clearTimeout(failTimer);
 for (const res of heldOpen) res.destroy();

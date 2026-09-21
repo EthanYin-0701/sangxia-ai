@@ -51,6 +51,8 @@
     // 生命周期钩子（默认关闭）：在固定点位跑外部命令，stdin 收 JSON 信封、
     // stdout 出决策 JSON，`exit 2` 等价 deny。详见 README 的「Hook（生命周期钩子）」。
     // 注意：deny 与 ask 在 permissionMode=auto（Full Access）下同样生效。
+    // 想要"在所有项目里都生效"的 hook，就把 hooks 写进 ~/.config/zhente/config.json
+    // （全局 base，见 README 的「配置分层」）；本文件的 hooks.events 是**追加**在它后面的。
     "enabled": false,
     "timeoutMs": 60000,
     // 超时 / 崩溃 / 输出不可解析时："allow"（默认放行）| "deny"（fail-closed）
@@ -68,7 +70,11 @@
       // 配置级 hook 一律用绝对路径或 ${HOME}/…：相对路径的解析基准是**本配置文件
       // 所在目录**（不是 session cwd），写错位置会在加载期直接报错（fail fast）。
       "session_start": [
-        // { "name": "git-context", "command": "bash ${HOME}/.config/zhente/hooks/git-context.sh" }
+        // matcher 匹配 source：startup（session/new）| resume（session/load），与 codex 的
+        // SessionStart 一致；没有可匹配字段的事件上写 matcher 会被忽略（并 warn 一次）。
+        // { "name": "git-context", "command": "bash ${HOME}/.config/zhente/hooks/git-context.sh", "matcher": "startup|resume" },
+        // 后台预热（命令自己 & 掉即可立刻返回；同步 hook + 后台任务）：
+        // { "name": "warm-index", "command": "sh -c 'some-index --silent >/dev/null 2>&1 &'", "matcher": "startup|resume", "timeoutMs": 2000 }
       ],
       "user_prompt_submit": [
         // { "name": "secret-scan", "command": "bash ${HOME}/.config/zhente/hooks/secret-scan.sh", "timeoutMs": 5000, "onError": "deny" }

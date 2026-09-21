@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import type { HookEntry } from "./types.js";
+import { HOOK_EVENTS, type HookEntry } from "./types.js";
 
 /**
  * Hook 命令的加载期处理：路径形态判定、路径解析与存在性校验（fail fast）。
@@ -10,7 +10,8 @@ import type { HookEntry } from "./types.js";
  *
  * - **解析基准 = 声明它的那份配置所在目录**，绝不是 session cwd。
  *   配置级 hook（`zhente.config.json` / `$ZHENTE_CONFIG` / `~/.config/zhente/config.json`）
- *   相对**配置文件目录**；项目级 hook（`.zhente/hooks.json`）相对**项目根**。
+ *   相对**声明它的那个配置文件目录**（分层加载后全局 base 与项目 overlay 各按自己的目录，
+ *   见 D16）；项目级 hook（`.zhente/hooks.json`）相对**项目根**。
  *   若基准取 session cwd，全局配置里一句 `.zhente/hooks/guard.sh` 就会在打开任意
  *   恶意仓库时执行该仓库里的同名脚本（供应链风险）。
  * - hook 进程的**运行时 cwd 仍是 session cwd**（脚本里的 `git status` / `npm` 语义不变），
@@ -36,6 +37,22 @@ function expandHome(token: string): string {
   if (token === "~") return homedir();
   if (token.startsWith("~/")) return resolve(homedir(), token.slice(2));
   return token;
+}
+
+const KNOWN_EVENTS: readonly string[] = HOOK_EVENTS;
+
+/**
+ * 校验 `hooks.events` 的键都是合法事件名。
+ *
+ * 不说的话，`sessionStart`（驼峰）这类笔误会**静默什么都不做** —— hook 永远不跑，
+ * 而用户以为自己配上了（与 D14 的"忽略 matcher"同类陷阱），因此加载期直接报错。
+ */
+export function assertKnownHookEvents(events: Record<string, unknown>, where: string): void {
+  for (const key of Object.keys(events)) {
+    if (!KNOWN_EVENTS.includes(key)) {
+      throw new Error(`${where}: 未知事件名 "${key}"（合法取值：${KNOWN_EVENTS.join(" / ")}）`);
+    }
+  }
 }
 
 /**

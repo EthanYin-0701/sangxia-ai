@@ -2,18 +2,23 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import { assertValidHookEntries, resolveHookCommands } from "./hooks/paths.js";
-import { HOOK_EVENTS } from "./hooks/types.js";
+import { assertKnownHookEvents, assertValidHookEntries, resolveHookCommands } from "./hooks/paths.js";
+import { HOOK_EVENTS, type HookEntry } from "./hooks/types.js";
 import { logger } from "./logger.js";
 
 /**
  * Configuration loading & validation.
  *
- * Resolution order:
+ * Resolution order for the **primary** config:
  *   1. `--config <path>` CLI flag
  *   2. `$ZHENTE_CONFIG` env var
  *   3. `./zhente.config.json` (cwd)
  *   4. `~/.config/zhente/config.json`
+ *
+ * Layering (D16): `~/.config/zhente/config.json` is *always* loaded as the base and
+ * the primary config is merged on top of it (deep merge, primary wins; `hooks.events.*`
+ * arrays are **appended** so a global hook cannot be silenced by a project config).
+ * A project file alone can then keep just its own overrides — e.g. only `provider`.
  *
  * String values support `${ENV_VAR}` interpolation so secrets (API keys) can stay
  * out of the file and live in the environment instead.
@@ -178,7 +183,7 @@ const hookEntrySchema = z.object({
   name: z.string().optional(),
   /** 经 shell 执行。路径形态的命令在加载期解析成绝对路径（相对**配置文件目录**）。 */
   command: z.string().min(1),
-  /** 仅工具事件：作用于工具注册名的 JS 正则（MCP 工具为 `mcp__<server>__<tool>`）。 */
+  /** JS 正则：工具事件匹配工具名，`session_start` 匹配 `source`（startup/resume）。 */
   matcher: z.string().optional(),
   /** 覆盖全局 `hooks.timeoutMs`。 */
   timeoutMs: z.number().int().positive().optional(),
@@ -238,9 +243,14 @@ export type Config = z.infer<typeof configSchema>;
 
 /** `loadConfig` 的返回值：配置本体 + 实际使用的配置文件路径。 */
 export interface LoadedConfig extends Config {
-  /** 实际使用的配置文件绝对路径（hooks 相对路径的解析基准 = 它的目录）。 */
+  /** 主配置（overlay）的绝对路径；无项目配置时即全局配置。 */
   configPath: string;
+  /** 主配置目录（D15 相对路径基准的兜底）。 */
   configDir: string;
+  /** 分层加载的 base（`~/.config/zhente/config.json`）；未参与则为 null。 */
+  baseConfigPath: string | null;
+  /** 实际参与加载的配置文件，base 在前。 */
+  configPaths: string[];
 }
 
 /** Recursively replace `${VAR}` occurrences in string values with env vars. */
@@ -293,64 +303,164 @@ function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
 }
 
 /**
- * hooks 的加载期处理（§4-6 / §10-D15）：正则与取值校验，路径形态的 `command`
- * 按**配置文件所在目录**解析成绝对路径并校验存在性（不存在直接 fail fast，
- * 否则会退化成"每次调用都失败 + `onError` 默认 allow"）。
+ * hooks 的加载期处理（§4-6 / §10-D15 / §10-D16）：正则与取值校验，路径形态的
+ * `command` 按**声明它的那份配置所在目录**解析成绝对路径并校验存在性（不存在直接
+ * fail fast，否则会退化成"每次调用都失败 + `onError` 默认 allow"）。
  *
- * `hooks.enabled: false`（默认）时不做任何检查 —— 未启用的段不影响加载。
+ * 分层加载后 hook 条目可能来自两份文件（全局 base + 项目 overlay），所以**按来源
+ * 分别**解析路径，再按事件把数组**追加**合并（base 先、overlay 后）。
  */
-function prepareHooks(hooks: HooksConfig, configPath: string): void {
+interface HookSource {
+  /** 声明这些条目的配置文件。 */
+  path: string;
+  /** 该文件的目录 —— 相对路径命令的解析基准（D15）。 */
+  dir: string;
+  /** 该文件原始的 `hooks.events`（未插值/未解析）。 */
+  events: Record<string, unknown>;
+}
+
+const hookEntriesSchema = z.array(hookEntrySchema);
+
+/** `~/.config/zhente/config.json`：用户级全局配置，永远是分层加载的 base。 */
+export function globalConfigPath(): string {
+  return join(homedir(), ".config", "zhente", "config.json");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 深合并：对象逐字段递归，标量与**数组**由 overlay 整体覆盖。
+ * `hooks.events.*` 是唯一例外（追加语义，见 `applyHookSources`）。
+ */
+function deepMerge(base: unknown, overlay: unknown): unknown {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) return overlay;
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(overlay)) {
+    out[key] = key in base ? deepMerge(base[key], value) : value;
+  }
+  return out;
+}
+
+function readConfigFile(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`读取/解析配置文件失败 (${path}): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** 抽出一份配置里的 `hooks.events`（不存在则返回 null）。 */
+function collectHookSource(path: string, raw: unknown): HookSource | null {
+  const hooks = isPlainObject(raw) ? raw.hooks : undefined;
+  const events = isPlainObject(hooks) ? hooks.events : undefined;
+  if (!isPlainObject(events)) return null;
+  return { path, dir: dirname(path), events };
+}
+
+function parseHookEntries(raw: unknown, where: string): HookEntry[] {
+  const parsed = hookEntriesSchema.safeParse(raw);
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((i) => `${i.path.join(".") || "(item)"}: ${i.message}`)
+      .join("; ");
+    throw new Error(`${where}: hook 配置无效 —— ${details}`);
+  }
+  return parsed.data as HookEntry[];
+}
+
+/**
+ * 按来源合并 hook 条目并写回 `hooks.events.*`（D16）。
+ *
+ * 合并顺序 = 全局 base → 项目 overlay；重复的命令**都保留**（不做去重：去重会让
+ * 项目配置意外"顶掉"全局 hook，而用户以为自己还开着全局那条）。
+ * `hooks.enabled: false` 时条目不做任何校验 —— 未启用的段不影响加载。
+ */
+function applyHookSources(hooks: HooksConfig, sources: HookSource[], label: string): void {
+  for (const event of HOOK_EVENTS) hooks.events[event] = [];
   if (!hooks.enabled) return;
-  const configDir = dirname(configPath);
   let count = 0;
-  for (const event of HOOK_EVENTS) {
-    const where = `${configPath} → hooks.events.${event}`;
-    assertValidHookEntries(hooks.events[event], where);
-    hooks.events[event] = resolveHookCommands(hooks.events[event], configDir, where);
-    count += hooks.events[event].length;
+  for (const source of sources) {
+    assertKnownHookEvents(source.events, `${source.path} → hooks.events`);
+    for (const event of HOOK_EVENTS) {
+      const raw = source.events[event];
+      if (raw === undefined || raw === null) continue;
+      const where = `${source.path} → hooks.events.${event}`;
+      const entries = parseHookEntries(interpolateEnv(raw), where);
+      assertValidHookEntries(entries, where);
+      hooks.events[event]!.push(...resolveHookCommands(entries, source.dir, where));
+      count += entries.length;
+    }
   }
   if (count === 0) {
-    logger.warn(`hooks.enabled=true 但未配置任何事件（${configPath}）`);
+    logger.warn(`hooks.enabled=true 但未配置任何事件（${label}）`);
   } else {
     logger.info(
-      `hooks 已启用: ${count} 条配置级 hook · timeout=${hooks.timeoutMs}ms onError=${hooks.onError} · ` +
-        `相对路径基准=${configDir} · projectFile=${hooks.projectFile.enabled ? hooks.projectFile.path : "关闭"}`,
+      `hooks 已启用: ${count} 条配置级 hook · 来源=${sources.map((s) => s.path).join(" + ")} · ` +
+        `timeout=${hooks.timeoutMs}ms onError=${hooks.onError} · projectFile=${hooks.projectFile.enabled ? hooks.projectFile.path : "关闭"}`,
     );
   }
 }
 
 export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig {
-  const path = resolveConfigPath(argv);
+  const overlayPath = resolveConfigPath(argv);
+  const globalPath = globalConfigPath();
+  // 分层加载（D16）：全局配置作为 base，除非它**就是**主配置本身（此时退化为单文件）。
+  const basePath =
+    overlayPath !== null && resolve(overlayPath) !== resolve(globalPath) && existsSync(globalPath)
+      ? globalPath
+      : null;
+  const primaryPath = overlayPath;
   // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 ZHENTE_BASE_URL /
   //   ZHENTE_API_KEY / ZHENTE_MODEL 组合 provider 配置，实现 headless 零配置直跑
   //   （见 plan/acpreg.md §2.3 路径 C、§3 阶段 1）。
-  if (!path) {
+  if (!primaryPath) {
     throw new Error(
-      "未找到配置文件。请用 --config <path> 指定，或创建 ./zhente.config.json（参考 zhente.config.example.json）。",
+      "未找到配置文件。请用 --config <path> 指定，或创建 ./zhente.config.json（参考 zhente.config.example.json），" +
+        `或放一份全局配置在 ${globalPath}。`,
     );
   }
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e) {
-    throw new Error(`读取/解析配置文件失败 (${path}): ${e instanceof Error ? e.message : String(e)}`);
+  const primaryRaw = readConfigFile(primaryPath);
+  const baseRaw = basePath === null ? null : readConfigFile(basePath);
+  const layered = baseRaw !== null;
+  const sources: HookSource[] = [];
+  if (basePath !== null) {
+    const source = collectHookSource(basePath, baseRaw);
+    if (source) sources.push(source);
+  }
+  {
+    const source = collectHookSource(primaryPath, primaryRaw);
+    if (source) sources.push(source);
+  }
+  if (layered) {
+    logger.info(`配置分层: ${basePath}（全局 base） + ${primaryPath}（项目 overlay）`);
   }
 
-  const interpolated = interpolateEnv(raw);
-  const parsed = configSchema.safeParse(interpolated);
+  const merged = layered ? deepMerge(baseRaw, primaryRaw) : primaryRaw;
+  const parsed = configSchema.safeParse(interpolateEnv(merged));
   if (!parsed.success) {
     const details = parsed.error.issues
       .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("\n");
-    throw new Error(`配置无效 (${path}):\n${details}`);
+    const where = layered ? `${primaryPath} + ${basePath}` : primaryPath;
+    throw new Error(`配置无效 (${where}):\n${details}`);
   }
 
   const config = parsed.data;
-  // hooks：正则/取值校验 + 路径形态命令的加载期解析与存在性检查（D15）。
-  prepareHooks(config.hooks, path);
+  // hooks：正则/取值校验 + 路径形态命令的加载期解析与存在性检查（D15）+ 分层合并（D16）。
+  applyHookSources(config.hooks, sources, sources.map((s) => s.path).join(" + ") || primaryPath);
   // CLI 参数 / 环境变量可以覆盖配置文件里的权限模式（便于 IDE 侧按 agent 配置切换）。
   const override = permissionModeOverride(argv);
   if (override) config.agent.permissionMode = override;
-  return Object.assign(config, { configPath: path, configDir: dirname(path) });
+  const configPaths = [basePath, primaryPath].filter(
+    (p, i, all): p is string => p !== null && all.indexOf(p) === i,
+  );
+  return Object.assign(config, {
+    configPath: primaryPath,
+    configDir: dirname(primaryPath),
+    baseConfigPath: basePath,
+    configPaths,
+  });
 }
