@@ -63,6 +63,24 @@ export interface StreamChatParams {
   signal: AbortSignal;
 }
 
+/**
+ * A provider failure that carries a localized, actionable message for the
+ * end user (`userMessage`) alongside the raw SDK message (`message`, used for
+ * logs/diagnostics). Providers should throw this instead of a bare `Error`
+ * whenever they can name the likely cause (bad key, low balance, rate limit,
+ * …) — the harness has no backend-specific knowledge and just displays
+ * `userMessage` when present.
+ */
+export class ProviderError extends Error {
+  readonly userMessage: string;
+
+  constructor(message: string, userMessage: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ProviderError";
+    this.userMessage = userMessage;
+  }
+}
+
 export interface LLMProvider {
   readonly model: string;
 

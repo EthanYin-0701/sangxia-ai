@@ -35,6 +35,14 @@ const server = createServer(async (req, res) => {
   const send = (delta, finish_reason) => res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`);
   if (round === "fail500") { res.writeHead(500, { "content-type": "text/plain" }).end("boom"); return; }
   if (round === "rate-limit") { res.writeHead(429, { "content-type": "text/plain", "retry-after": "1" }).end("slow down"); return; }
+  if (round === "insufficient-balance") {
+    res.writeHead(402, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "Insufficient Balance", type: "invalid_request_error" } }));
+    return;
+  }
+  if (round === "bad-key") {
+    res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "Invalid API Key" } }));
+    return;
+  }
   res.writeHead(200, { "content-type": "text/event-stream" });
   res.flushHeaders();
   if (round === "idle") return;
@@ -511,6 +519,36 @@ try {
     assert.equal(capped.stopReason, "refusal");
     assert.equal(requests.length, 3);
     assert.equal(capped.session.messages.filter((m) => m.role === "assistant").length, 0, "no duplicated assistant turns");
+  });
+  await check("402/401/400/429 map to Chinese, actionable messages and are not blindly retried", async () => {
+    const insufficientBalance = await turn(["insufficient-balance"]);
+    assert.equal(insufficientBalance.stopReason, "refusal");
+    assert.match(insufficientBalance.text, /余额不足/);
+    assert.equal(requests.length, 1, "402 must not be retried");
+
+    const badKey = await turn(["bad-key"]);
+    assert.equal(badKey.stopReason, "refusal");
+    assert.match(badKey.text, /API Key 无效/);
+    assert.equal(requests.length, 1, "401 must not be retried");
+
+    // 429 is still retried (transient), but if it never recovers the final
+    // message must still be the friendly one, not the raw SDK text.
+    const rateLimited = { ...cfg, streamRetries: 0 };
+    rounds = ["rate-limit"];
+    requests = [];
+    const session = new Session(randomUUID(), dir, [], caps, "confirm", "test");
+    session.messages = [{ role: "user", content: "test" }];
+    session.abort = new AbortController();
+    const updates = [];
+    const stopReason = await runTurn({
+      conn: { async sessionUpdate(p) { updates.push(p.update); } }, session,
+      provider: new (await import("../dist/llm/openai.js")).OpenAIProvider(rateLimited),
+      tools: new ToolRegistry([]), signal: session.abort.signal,
+      config: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "confirm", systemPrompt: null },
+    });
+    assert.equal(stopReason, "refusal");
+    const text = updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map((u) => u.content.text).join("");
+    assert.match(text, /并发\/速率上限/);
   });
   await check("retry respects Retry-After, caps the delay, and yields to cancellation", async () => {
     const providerCfg = { ...cfg, streamRetries: 1, streamRetryBaseDelayMs: 10 };

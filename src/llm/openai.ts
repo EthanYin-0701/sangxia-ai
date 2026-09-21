@@ -6,7 +6,7 @@ import OpenAI, {
 } from "openai";
 import type { ProviderConfig } from "../config.js";
 import { logger } from "../logger.js";
-import { normalizeFinishReason } from "./types.js";
+import { normalizeFinishReason, ProviderError } from "./types.js";
 import type {
   ChatMessage,
   LLMProvider,
@@ -79,7 +79,7 @@ export class OpenAIProvider implements LLMProvider {
         const reason = signal.aborted ? (signal.reason ?? new Error("aborted")) : null;
         if (reason) throw reason;
         if (error instanceof StreamTimeoutError) throw error;
-        if (state.yieldedAnything || attempt > this.#retries || !isRetryable(error)) throw error;
+        if (state.yieldedAnything || attempt > this.#retries || !isRetryable(error)) throw toProviderError(error);
         const delayMs = retryDelayMs(error, attempt, this.#retryBaseDelayMs);
         logger.warn(
           `LLM retry model=${this.model} nextAttempt=${attempt + 1}/${this.#retries + 1} ` +
@@ -282,6 +282,48 @@ function isRetryable(error: unknown): boolean {
   }
   // Unknown error types (e.g. our own abort) are not retried.
   return false;
+}
+
+/**
+ * Wrap an SDK error into a {@link ProviderError} carrying a Chinese,
+ * actionable message, when the HTTP status tells us something specific
+ * enough to say. Errors we can't explain better than the SDK already does
+ * (network failures, unrecognized statuses) pass through unchanged.
+ *
+ * The status/wording mapping follows DeepSeek's error code reference (see
+ * plan/deepseek_first_improvements.md §2.5); it applies just as well to any
+ * other OpenAI-compatible backend using the same conventions.
+ */
+function toProviderError(error: unknown): unknown {
+  if (!(error instanceof APIError)) return error;
+  const userMessage = describeAPIErrorForUser(error);
+  return userMessage ? new ProviderError(error.message, userMessage, { cause: error }) : error;
+}
+
+function describeAPIErrorForUser(error: APIError): string | null {
+  const body = error.message ?? "";
+  switch (error.status) {
+    case 401:
+      return "API Key 无效或未授权，请检查 provider.apiKey（或其引用的环境变量，如 DEEPSEEK_API_KEY）是否正确。";
+    case 402:
+      return "余额不足（402 Insufficient Balance）。DeepSeek 用户请前往 https://platform.deepseek.com 充值后重试；其他端点请检查账户余额/欠费状态。";
+    case 400:
+      if (/reasoning_content/i.test(body)) {
+        return "历史中缺少必须回传的思考内容（reasoning_content），通常是本次修复上线前创建的旧会话导致，建议开始新会话。";
+      }
+      if (/tool_choice/i.test(body) && /required/i.test(body)) {
+        return "思考模式下不支持强制指定工具调用（tool_choice: required 或具体函数名），请改回 auto。";
+      }
+      return `请求参数格式错误（400）：${body}`;
+    case 422:
+      return `请求参数不合法（422）：${body}`;
+    case 429:
+      return "已触发并发/速率上限（429），已自动重试仍失败；请稍后重试，或检查是否有过多并发请求。";
+    case 503:
+      return "服务端过载（503），已自动重试仍失败，请稍后再试。";
+    default:
+      return null;
+  }
 }
 
 /** Exponential backoff, honoring `Retry-After` (seconds or HTTP date). */

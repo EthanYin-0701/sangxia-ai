@@ -1,5 +1,6 @@
 import type { AgentSideConnection, PromptResponse } from "@zed-industries/agent-client-protocol";
 import type { AgentConfig } from "../config.js";
+import { ProviderError } from "../llm/types.js";
 import type { ChatMessage, LLMProvider, ToolCallRequest } from "../llm/types.js";
 import { logger } from "../logger.js";
 import type { Session } from "../session.js";
@@ -233,7 +234,10 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     } catch (e) {
       if (signal.aborted) return "cancelled";
       logger.error("LLM 流式请求失败:", e);
-      const msg = e instanceof Error ? e.message : String(e);
+      // ProviderError carries a localized, actionable explanation (bad key,
+      // insufficient balance, rate limit, …); anything else falls back to the
+      // raw SDK/transport message.
+      const msg = e instanceof ProviderError ? e.userMessage : e instanceof Error ? e.message : String(e);
       await safeSessionUpdate(conn, {
         sessionId: session.id,
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n[错误] 调用模型失败: ${msg}` } },
