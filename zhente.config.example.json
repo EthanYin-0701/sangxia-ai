@@ -23,6 +23,9 @@
     "streamRetries": 2,
     "streamRetryBaseDelayMs": 500,
     "streamIncludeUsage": true,
+    // 默认 "all"：把捕获的 reasoning_content 回传给后端（DeepSeek 思考模式要求）；
+    // 端点不认识该字段且会报错时改 "none"
+    // "passBackReasoning": "all",
     "extraHeaders": {}
   },
   "agent": {

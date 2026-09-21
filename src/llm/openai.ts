@@ -31,6 +31,7 @@ export class OpenAIProvider implements LLMProvider {
   readonly #idleTimeoutMs: number;
   readonly #totalTimeoutMs: number;
   readonly #includeUsage: boolean;
+  readonly #passBackReasoning: boolean;
   readonly #retries: number;
   readonly #retryBaseDelayMs: number;
   #lastPromptTokens: number | null = null;
@@ -45,6 +46,7 @@ export class OpenAIProvider implements LLMProvider {
     this.#idleTimeoutMs = modelConfig?.streamIdleTimeoutMs ?? cfg.streamIdleTimeoutMs;
     this.#totalTimeoutMs = modelConfig?.streamTotalTimeoutMs ?? cfg.streamTotalTimeoutMs;
     this.#includeUsage = cfg.streamIncludeUsage;
+    this.#passBackReasoning = cfg.passBackReasoning !== "none";
     this.#retries = modelConfig?.streamRetries ?? cfg.streamRetries ?? 2;
     this.#retryBaseDelayMs = modelConfig?.streamRetryBaseDelayMs ?? cfg.streamRetryBaseDelayMs ?? 500;
     this.#client = new OpenAI({
@@ -128,7 +130,7 @@ export class OpenAIProvider implements LLMProvider {
       logger.info(`LLM request start model=${this.model} messages=${messages.length} tools=${tools.length}`);
       const request: Record<string, unknown> = {
         model: this.model,
-        messages: toOpenAIMessages(messages),
+        messages: toOpenAIMessages(messages, this.#passBackReasoning),
         temperature: this.#temperature,
         stream: true,
       };
@@ -332,7 +334,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** Map our neutral ChatMessage[] to the OpenAI chat-completions message shape. */
-function toOpenAIMessages(messages: ChatMessage[]): unknown[] {
+function toOpenAIMessages(messages: ChatMessage[], passBackReasoning: boolean): unknown[] {
   return messages.map((m) => {
     if (m.role === "assistant") {
       const out: Record<string, unknown> = { role: "assistant" };
@@ -346,6 +348,10 @@ function toOpenAIMessages(messages: ChatMessage[]): unknown[] {
       } else {
         out.content = m.content ?? "";
       }
+      // DeepSeek thinking mode: with `tools` present, every prior assistant
+      // turn's reasoning_content must be echoed back verbatim, even turns
+      // that made no tool call, or the request is rejected with 400.
+      if (passBackReasoning && m.reasoning_content) out.reasoning_content = m.reasoning_content;
       return out;
     }
     if (m.role === "tool") {

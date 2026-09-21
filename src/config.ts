@@ -71,6 +71,14 @@ const providerSchema = z
      * invisible and cost on DeepSeek is dominated by prompt tokens.
      */
     streamIncludeUsage: z.boolean().default(true),
+    /**
+     * Whether captured assistant `reasoning_content` from earlier turns is
+     * echoed back on subsequent requests. DeepSeek's thinking mode requires
+     * this whenever `tools` are present (ZhenTe always sends tools) and
+     * returns 400 otherwise. "none" is an escape hatch for a backend that
+     * rejects an unrecognized field instead of ignoring it.
+     */
+    passBackReasoning: z.enum(["all", "none"]).default("all"),
     extraHeaders: z.record(z.string()).optional(),
   })
   .superRefine((cfg, ctx) => {

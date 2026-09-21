@@ -54,6 +54,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "streamRetries": 2,                   // 仅在“首个 delta 之前”失败时重试（网络抖动/429/5xx）
     "streamRetryBaseDelayMs": 500,        // 重试退避基数（指数增长，上限 8s；尊重 Retry-After）
     "streamIncludeUsage": true,            // 请求 stream_options.include_usage；不支持的端点会忽略该字段
+    "passBackReasoning": "all",            // "all"（默认）把捕获的 reasoning_content 回传给后端；"none" 为不支持该字段的端点提供退路
     "extraHeaders": {}                     // 可选附加请求头
   },
   "agent": {
@@ -95,9 +96,11 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 - 调大不额外花钱（按实际输出计费），但会放宽单轮的最坏延迟。
 - 撞顶时提示会写明实际额度：显式配置过就是 `[输出被截断] …（maxTokens=8192）`，未配置则是「使用服务端默认额度」并给出 DeepSeek 的参考值；日志同时记录当次 `textChars/reasoningChars/toolCalls`，便于判断是思考、正文还是工具参数吃掉了预算。
 
+**关于 `reasoning_content`（思考内容回传）**：带 `tools` 的请求（ZhenTe 每次都带），DeepSeek 思考模式要求把此前每一轮 assistant 消息的 `reasoning_content` 原样回传——哪怕那一轮没有发起工具调用；不回传会直接 400（生产日志里已经撞到过一次，且是偶发/条件式的，无法重试）。ZhenTe 会把每轮的 reasoning 累积进对应的 assistant 消息（随会话文件落盘，`session/load` 后仍带），并在下一次请求里原样带上。不需要任何配置；`provider.passBackReasoning: "none"` 是给不认识该字段、且会因为多余字段报错（而不是忽略）的非 DeepSeek 端点留的退路。日志只统计 `reasoningChars`，从不打印思考正文。
+
 **首 token 前有界重试**：网络抖动、429、5xx 这类失败若发生在**首个流式 delta 之前**（此时没有已展示内容、也没有副作用），ZhenTe 会按 `streamRetries`（默认 2 次）指数退避重试，并尊重响应里的 `Retry-After`。一旦已经流出内容就不再重试（否则会重复输出），自己的空闲/总时长 watchdog 也不重试（否则等待时间翻倍），中途失败仍按现状终止为 `refusal`。运行期取消（`session/cancel`、Ctrl+C）会立即打断退避等待。
 
-模型返回 `length` 时显示“输出被截断”并返回 `max_tokens`，本次工具调用全部拒绝执行；服务端过滤、未知或缺失结束原因返回 `refusal`。仅正常 `stop` 且有正文时结束为 `end_turn`；空正文且无工具调用的 `stop` 最多补偿一次，补偿计入 `maxIterations`，不回传 reasoning。正文里的 JSON / function 标签只作诊断。
+模型返回 `length` 时显示“输出被截断”并返回 `max_tokens`，本次工具调用全部拒绝执行；服务端过滤、未知或缺失结束原因返回 `refusal`。仅正常 `stop` 且有正文时结束为 `end_turn`；空正文且无工具调用的 `stop` 最多补偿一次，补偿计入 `maxIterations`（该轮若有 reasoning 仍会随 assistant 消息回传，见上）。正文里的 JSON / function 标签只作诊断。
 
 所有工具（含 MCP）在权限确认前验证 JSON object 和声明的 JSON Schema（支持 draft-07、2019-09、2020-12）；失败返回配对的工具错误，交给模型修正。不会补默认参数或强制转换类型。日志只记录流式字符计数、时序和 token usage 等指标，不记录完整 reasoning 或工具参数。历史达到阈值时告警，保留消息及工具调用配对。
 

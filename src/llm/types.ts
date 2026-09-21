@@ -23,6 +23,14 @@ export interface ChatMessage {
   tool_calls?: ToolCallRequest[];
   /** Present on tool-result messages, referencing the originating call. */
   tool_call_id?: string;
+  /**
+   * Raw thinking/reasoning text from a prior assistant turn (DeepSeek-style
+   * `reasoning_content`), assistant-only. Some backends require this to be
+   * echoed back verbatim in every subsequent request that includes `tools`,
+   * even for turns that made no tool call — omitting it gets a 400, not a
+   * silent ignore (see `llm/openai.ts` `toOpenAIMessages`).
+   */
+  reasoning_content?: string;
 }
 
 /** A tool advertised to the model (OpenAI function-calling shape). */

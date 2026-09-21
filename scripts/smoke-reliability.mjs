@@ -121,7 +121,12 @@ try {
     assert.equal(ok.stopReason, "end_turn");
     // The recovery prompt is in the request; an unrelated notice may follow it.
     assert.ok(requests[1].messages.some((m) => /上次响应未产生正文/.test(m.content ?? "")), "recovery prompt must reach the model");
-    assert.ok(!JSON.stringify(requests[1]).includes("private reasoning"));
+    // reasoning_content must be echoed back (DeepSeek thinking mode 400s
+    // otherwise), attached to the assistant turn that produced it, not leaked
+    // into visible content.
+    const reasoningTurn = requests[1].messages.find((m) => m.role === "assistant" && m.reasoning_content);
+    assert.equal(reasoningTurn?.reasoning_content, "private reasoning");
+    assert.equal(reasoningTurn?.content, "", "no tool_calls on this turn → content coerces to empty string, not leaking reasoning into it");
     const empty = await turn([reasoning, reasoning, answer]);
     assert.equal(empty.stopReason, "refusal");
     assert.equal(requests.length, 2);
@@ -140,6 +145,40 @@ try {
     const r = await turn([finish("tool_calls", [callDelta(write.name, '{"path":"x","content":"y"}')]), answer], { toolList: [guardedWrite] });
     assert.equal(r.permissions, 1);
     assert.equal(executed, 1);
+  });
+  const reasoningWrite = { ...write, run: async () => ({ output: "ok" }) };
+  await check("reasoning_content on a tool-call turn is persisted and echoed back, and survives reload", async () => {
+    const planned = finish("tool_calls", [{ reasoning_content: "先看文件再改" }, callDelta(write.name, '{"path":"x","content":"y"}')]);
+    const r = await turn([planned, answer], { toolList: [reasoningWrite] });
+    assert.equal(r.stopReason, "end_turn");
+    const assistantTurn = r.session.messages.find((m) => m.role === "assistant" && m.tool_calls);
+    assert.equal(assistantTurn.reasoning_content, "先看文件再改");
+
+    const followUp = requests[1].messages.find((m) => m.role === "assistant" && m.tool_calls);
+    assert.equal(followUp.reasoning_content, "先看文件再改", "must be echoed back on the next request");
+
+    const saved = await loadSession(r.session.id);
+    assert.equal(saved.messages.find((m) => m.role === "assistant" && m.tool_calls).reasoning_content, "先看文件再改", "must survive a reload");
+  });
+  await check("passBackReasoning: none suppresses the echo for non-DeepSeek backends", async () => {
+    const { OpenAIProvider } = await import("../dist/llm/openai.js");
+    const planned = finish("tool_calls", [{ reasoning_content: "先看文件再改" }, callDelta(write.name, '{"path":"x","content":"y"}')]);
+    rounds = [planned, answer];
+    requests = [];
+    const session = new Session(randomUUID(), dir, [], caps, "confirm", "test");
+    session.messages = [{ role: "user", content: "test" }];
+    session.abort = new AbortController();
+    const stopReason = await runTurn({
+      conn: { async sessionUpdate() {} }, session, provider: new OpenAIProvider({ ...cfg, passBackReasoning: "none" }),
+      tools: new ToolRegistry([reasoningWrite]), signal: session.abort.signal,
+      config: { maxIterations: 5, historyWarningMessages: 3, permissionMode: "auto", systemPrompt: null },
+    });
+    assert.equal(stopReason, "end_turn");
+    // Still captured in our own history …
+    assert.equal(session.messages.find((m) => m.role === "assistant" && m.tool_calls).reasoning_content, "先看文件再改");
+    // … but never sent to the backend.
+    const followUp = requests[1].messages.find((m) => m.role === "assistant" && m.tool_calls);
+    assert.equal(followUp.reasoning_content, undefined);
   });
   await check("length refuses even syntactically complete tool calls", async () => {
     const r = await turn([finish("length", [callDelta(write.name, '{"path":"x","content":"y"}')])], { toolList: [guardedWrite] });

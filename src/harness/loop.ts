@@ -196,7 +196,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
     let text = "";
     let toolCalls: ToolCallRequest[] = [];
     let finishReason: string | null = null;
-    let reasoningChars = 0;
+    let reasoning = "";
     let rawFinishReason: string | null | undefined;
 
     try {
@@ -215,7 +215,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
             });
             break;
           case "reasoning-delta":
-            reasoningChars += ev.text.length;
+            reasoning += ev.text;
             await conn.sessionUpdate({
               sessionId: session.id,
               update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: ev.text } },
@@ -243,7 +243,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
 
     logger.info(
       `turn ${session.id} iteration=${iter + 1} completed ` +
-        `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length} ` +
+        `textChars=${text.length} reasoningChars=${reasoning.length} toolCalls=${toolCalls.length} ` +
         `finishReason=${finishReason ?? "none"} rawFinishReason=${JSON.stringify(rawFinishReason)} ` +
         `cacheHitRatio=${cacheHitRatio(provider.lastUsage)}`,
     );
@@ -251,11 +251,14 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
       logger.warn(`turn ${session.id} 模型返回空的可见内容（可能只有 reasoning 或被服务端过滤）`);
     }
 
-    // Record the assistant turn (text + any tool calls) in history.
+    // Record the assistant turn (text + any tool calls + reasoning) in
+    // history. `reasoning_content` must ride along on every assistant turn
+    // (not only ones with tool calls) — see toOpenAIMessages in llm/openai.ts.
     session.messages.push({
       role: "assistant",
       content: text.length > 0 ? text : null,
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+      reasoning_content: reasoning.length > 0 ? reasoning : undefined,
     });
     await persistSession(session);
 
@@ -279,7 +282,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
           : "（未设置 provider.maxTokens，使用服务端默认额度；DeepSeek 思考模式默认约 64K，reasoning_effort=max 时约 128K）";
         logger.warn(
           `turn ${session.id} 输出被截断 finishReason=length maxTokens=${provider.maxTokens ?? "server-default"} ` +
-            `textChars=${text.length} reasoningChars=${reasoningChars} toolCalls=${toolCalls.length}`,
+            `textChars=${text.length} reasoningChars=${reasoning.length} toolCalls=${toolCalls.length}`,
         );
         await notice(
           `[输出被截断] 模型达到输出 Token 上限${budget}。该额度由「思考过程 + 正文 + 工具参数」共用，` +
