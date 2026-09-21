@@ -70,7 +70,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "extraHeaders": {}                     // 可选附加请求头
   },
   "agent": {
-    "maxIterations": 40,                   // 单轮最多迭代次数
+    "maxIterations": 120,                  // 单轮最多迭代次数
     "historyWarningMessages": 400,         // 历史消息数告警阈值（不自动裁剪）
     "toolTimeoutMs": 300000,               // 单次工具执行的默认 deadline（工具自身 timeoutMs / timeout 参数优先）
     "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）

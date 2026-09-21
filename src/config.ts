@@ -131,7 +131,7 @@ const providerSchema = z
  */
 const agentSchema = z
   .object({
-    maxIterations: z.number().int().positive().default(40),
+    maxIterations: z.number().int().positive().default(120),
     historyWarningMessages: z.number().int().positive().default(400),
     /**
      * Default deadline for one tool invocation (M3). The LLM has idle/total

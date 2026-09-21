@@ -85,7 +85,7 @@ sequenceDiagram
     Agent->>Session: 查会话 + push(user)；建 AbortController
     Agent->>Loop: runTurn(tools = session.tools) —— 交给 Harness
 
-    loop 最多 maxIterations(=40) 轮 · Harness 循环控制
+    loop 最多 maxIterations(=120) 轮 · Harness 循环控制
         Note over Loop: signal.aborted → return "cancelled"（Harness 判定）
         Loop->>LLM: streamChat(messages, tools.schemas, signal)
         Note over Loop: tools.schemas = 内置 + MCP(mcp__*) + use_skill（Harness 通告）

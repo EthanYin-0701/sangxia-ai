@@ -33,7 +33,7 @@
     "extraHeaders": {}
   },
   "agent": {
-    "maxIterations": 40,
+    "maxIterations": 120,
     "historyWarningMessages": 400,
     "toolTimeoutMs": 300000,
     "permissionMode": "confirm",
