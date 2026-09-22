@@ -273,7 +273,11 @@ export function interpolateEnv(value: unknown): unknown {
 
 export function resolveConfigPath(argv: string[]): string | null {
   const flagIdx = argv.indexOf("--config");
-  if (flagIdx >= 0 && argv[flagIdx + 1]) return resolve(argv[flagIdx + 1]!);
+  if (flagIdx >= 0) {
+    const path = argv[flagIdx + 1];
+    if (!path || path.startsWith("--")) throw new Error("--config 需要文件路径");
+    return resolve(path);
+  }
 
   if (process.env.SANGXIA_CONFIG) return resolve(process.env.SANGXIA_CONFIG);
 
@@ -464,6 +468,9 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
   const configPaths = [basePath, primaryPath].filter(
     (p, i, all): p is string => p !== null && all.indexOf(p) === i,
   );
+  const keySource = keyRefs.length ? `环境变量引用 ${keyRefs.join(", ")}`
+    : config.provider.apiKey ? "字面量" : "未提供（mock 无需凭据）";
+  logger.info(`凭据来源: ${configPaths.join(" + ")} · apiKey=${keySource}`);
   return Object.assign(config, {
     configPath: primaryPath,
     configDir: dirname(primaryPath),
