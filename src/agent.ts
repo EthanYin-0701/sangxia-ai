@@ -4,6 +4,8 @@ import { stat } from "node:fs/promises";
 import {
   type Agent,
   type AuthMethod,
+  type AuthenticateRequest,
+  type AuthenticateResponse,
   type AgentSideConnection,
   type CancelNotification,
   type InitializeRequest,
@@ -531,11 +533,13 @@ export class SangxiaAgent implements Agent {
     });
   }
 
-  // TODO(acpreg): ACP 注册准入 —— 实现 Terminal Auth 认证：methodId === "terminal-setup"
-  //   时，stdin 为 TTY 则直接进入 `sangxia setup` 交互向导，否则返回引导说明；已认证
-  //   状态返回成功即可（见 plan/acpreg.md §2.2、§3 阶段 2）。
-  async authenticate(): Promise<void> {
-    /* no-op */
+  async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
+    if (params.methodId !== "terminal-setup") {
+      throw RequestError.invalidParams({ methodId: `未知认证方法: ${params.methodId}` });
+    }
+    // Terminal auth normally completes in a separate process followed by reconnect.
+    this.#requireConfig();
+    return {};
   }
 
   /**
