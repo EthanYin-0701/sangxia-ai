@@ -38,6 +38,7 @@ import { loadSession as loadPersistedSession, persistHistoryReset, persistSessio
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
+import { AGENT_INFO } from "./version.js";
 
 // SDK 0.4.5 strips clientCapabilities.auth and predates terminal method fields.
 // Advertise unconditionally until an SDK upgrade can preserve auth.terminal.
@@ -95,7 +96,8 @@ export class SangxiaAgent implements Agent {
       terminal: Boolean(params.clientCapabilities?.terminal),
     };
     logger.info("initialize: client caps =", this.#clientCaps);
-    return {
+    const response = {
+      agentInfo: AGENT_INFO,
       protocolVersion: PROTOCOL_VERSION,
       authMethods: AUTH_METHODS,
       agentCapabilities: {
@@ -105,6 +107,7 @@ export class SangxiaAgent implements Agent {
         promptCapabilities: { image: false, audio: false, embeddedContext: true },
       },
     };
+    return response;
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
