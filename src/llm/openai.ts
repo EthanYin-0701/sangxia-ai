@@ -52,7 +52,7 @@ export class OpenAIProvider implements LLMProvider {
     this.#retries = modelConfig?.streamRetries ?? cfg.streamRetries ?? 2;
     this.#retryBaseDelayMs = modelConfig?.streamRetryBaseDelayMs ?? cfg.streamRetryBaseDelayMs ?? 500;
     this.#client = new OpenAI({
-      baseURL: cfg.baseURL,
+      baseURL: cfg.baseURL ?? "https://api.openai.com/v1",
       apiKey: cfg.apiKey ?? "unused",
       defaultHeaders: cfg.extraHeaders,
       timeout: this.#requestTimeoutMs,

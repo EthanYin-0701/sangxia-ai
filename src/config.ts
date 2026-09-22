@@ -104,9 +104,6 @@ const providerSchema = z
   })
   .superRefine((cfg, ctx) => {
     if (cfg.type === "openai") {
-      if (!cfg.baseURL) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseURL"], message: "openai provider 需要 baseURL（如 https://api.openai.com/v1）" });
-      }
       if (!cfg.apiKey?.trim()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "provider.apiKey 为空" });
       }
@@ -416,17 +413,21 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
       ? globalPath
       : null;
   const primaryPath = overlayPath;
-  // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 SANGXIA_BASE_URL /
-  //   SANGXIA_API_KEY / SANGXIA_MODEL 组合 provider 配置，实现 headless 零配置直跑
-  //   （见 plan/acpreg.md §2.3 路径 C、§3 阶段 1）。
-  if (!primaryPath) {
+  if (!primaryPath && process.env.SANGXIA_API_KEY === undefined) {
     throw new Error(
-      "未找到配置文件。请用 --config <path> 指定，或创建 ./sangxia.config.json（参考 sangxia.config.example.json），" +
-        `或放一份全局配置在 ${globalPath}。`,
+      "未找到配置文件。请运行 sangxia setup，或用 --config <path> 指定配置，" +
+        `或设置 SANGXIA_API_KEY（全局配置: ${globalPath}）。`,
     );
   }
-
-  const primaryRaw = readConfigFile(primaryPath);
+  const label = primaryPath ?? "<env>";
+  // Environment bootstrap is only a fallback when no file was selected. An
+  // explicitly selected missing/broken file must fail instead of falling back.
+  const primaryRaw = primaryPath ? readConfigFile(primaryPath) : {
+    provider: {
+      type: "openai", apiKey: process.env.SANGXIA_API_KEY,
+      baseURL: process.env.SANGXIA_BASE_URL, model: process.env.SANGXIA_MODEL,
+    },
+  };
   const baseRaw = basePath === null ? null : readConfigFile(basePath);
   const layered = baseRaw !== null;
   const sources: HookSource[] = [];
@@ -434,7 +435,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
     const source = collectHookSource(basePath, baseRaw);
     if (source) sources.push(source);
   }
-  {
+  if (primaryPath) {
     const source = collectHookSource(primaryPath, primaryRaw);
     if (source) sources.push(source);
   }
@@ -443,9 +444,9 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
   }
 
   const merged = layered ? deepMerge(baseRaw, primaryRaw) : primaryRaw;
-  const parsed = configSchema.safeParse(interpolateEnv(merged));
+  const parsed = configSchema.safeParse(primaryPath ? interpolateEnv(merged) : merged);
   const rawProvider = isPlainObject(merged) && isPlainObject(merged.provider) ? merged.provider : {};
-  const keyRefs = typeof rawProvider.apiKey === "string"
+  const keyRefs = primaryPath && typeof rawProvider.apiKey === "string"
     ? rawProvider.apiKey.match(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g) ?? [] : [];
   if (!parsed.success) {
     const details = parsed.error.issues
@@ -455,13 +456,13 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
           : i.message
       }`)
       .join("\n");
-    const where = layered ? `${primaryPath} + ${basePath}` : primaryPath;
+    const where = layered ? `${primaryPath} + ${basePath}` : label;
     throw new Error(`配置无效 (${where}):\n${details}`);
   }
 
   const config = parsed.data;
   // hooks：正则/取值校验 + 路径形态命令的加载期解析与存在性检查（D15）+ 分层合并（D16）。
-  applyHookSources(config.hooks, sources, sources.map((s) => s.path).join(" + ") || primaryPath);
+  applyHookSources(config.hooks, sources, sources.map((s) => s.path).join(" + ") || label);
   // CLI 参数 / 环境变量可以覆盖配置文件里的权限模式（便于 IDE 侧按 agent 配置切换）。
   const override = permissionModeOverride(argv);
   if (override) config.agent.permissionMode = override;
@@ -470,10 +471,12 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
   );
   const keySource = keyRefs.length ? `环境变量引用 ${keyRefs.join(", ")}`
     : config.provider.apiKey ? "字面量" : "未提供（mock 无需凭据）";
-  logger.info(`凭据来源: ${configPaths.join(" + ")} · apiKey=${keySource}`);
+  logger.info(primaryPath
+    ? `凭据来源: ${configPaths.join(" + ")} · apiKey=${keySource}`
+    : "凭据来源: 环境变量 SANGXIA_* · apiKey=SANGXIA_API_KEY");
   return Object.assign(config, {
-    configPath: primaryPath,
-    configDir: dirname(primaryPath),
+    configPath: label,
+    configDir: primaryPath ? dirname(primaryPath) : process.cwd(),
     baseConfigPath: basePath,
     configPaths,
   });
