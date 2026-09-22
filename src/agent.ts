@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import {
   type Agent,
+  type AuthMethod,
   type AgentSideConnection,
   type CancelNotification,
   type InitializeRequest,
@@ -35,6 +36,18 @@ import { loadSession as loadPersistedSession, persistHistoryReset, persistSessio
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
+
+// SDK 0.4.5 strips clientCapabilities.auth and predates terminal method fields.
+// Advertise unconditionally until an SDK upgrade can preserve auth.terminal.
+type RegistryAuthMethod = AuthMethod & { type: "terminal"; args: string[] };
+const AUTH_METHODS: RegistryAuthMethod[] = [{
+  id: "terminal-setup",
+  name: "在终端中配置（Terminal setup）",
+  description: "配置 LLM provider 与 API key，无需浏览器；headless 环境可用。",
+  type: "terminal",
+  args: ["setup"],
+  _meta: { "terminal-auth": true },
+}];
 
 /**
  * The ACP agent surface. It owns sessions and delegates the actual work of a
@@ -79,11 +92,9 @@ export class SangxiaAgent implements Agent {
       terminal: Boolean(params.clientCapabilities?.terminal),
     };
     logger.info("initialize: client caps =", this.#clientCaps);
-    // TODO(acpreg): ACP 注册准入 —— initialize 响应需声明 authMethods（Terminal Auth：
-    //   { id: "terminal-setup", name, description }），否则无法通过 registry CI 的
-    //   authMethods 校验（见 plan/acpreg.md §2.2、§3 阶段 2）。
     return {
       protocolVersion: PROTOCOL_VERSION,
+      authMethods: AUTH_METHODS,
       agentCapabilities: {
         loadSession: true,
         // stdio MCP is mandatory (no flag); advertise network transports too.
