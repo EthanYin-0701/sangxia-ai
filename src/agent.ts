@@ -42,16 +42,33 @@ import { buildTools } from "./tools/index.js";
  */
 export class SangxiaAgent implements Agent {
   readonly #conn: AgentSideConnection;
-  readonly #config: Config;
+  readonly #loadedConfig: Config | null;
+  readonly #configError: string | null;
   readonly #providers = new Map<string, LLMProvider>();
   readonly #builtinTools: Tool[];
   readonly #sessions = new Map<string, Session>();
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
 
-  constructor(conn: AgentSideConnection, config: Config) {
+  constructor(conn: AgentSideConnection, config: Config | null, configError: string | null = null) {
     this.#conn = conn;
-    this.#config = config;
+    this.#loadedConfig = config;
+    this.#configError = configError;
     this.#builtinTools = buildTools();
+  }
+
+  #requireConfig(): Config {
+    if (!this.#loadedConfig) {
+      throw RequestError.authRequired({
+        reason: this.#configError ?? "未找到配置文件",
+        hint: "在终端运行 `npx sangxia-ai setup` 完成配置",
+      });
+    }
+    return this.#loadedConfig;
+  }
+
+  // Helpers only run for configured sessions; keep the same guard as entry points.
+  get #config(): Config {
+    return this.#requireConfig();
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
@@ -77,8 +94,7 @@ export class SangxiaAgent implements Agent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    // TODO(acpreg): 未认证（unconfigured）时拒绝建会话，返回 AUTH_REQUIRED 错误并
-    //   提示运行 `sangxia setup`（见 plan/acpreg.md §2.2、§3 阶段 2）。
+    const config = this.#requireConfig();
     const id = randomUUID();
     return logger.withSession(id, async () => {
       const session = new Session(
@@ -86,8 +102,8 @@ export class SangxiaAgent implements Agent {
         params.cwd,
         params.mcpServers ?? [],
         this.#clientCaps,
-        this.#config.agent.permissionMode,
-        this.#config.provider.model,
+        config.agent.permissionMode,
+        config.provider.model,
       );
       await this.prepareSession(session);
       await this.runSessionStart(session, "startup");
@@ -100,6 +116,7 @@ export class SangxiaAgent implements Agent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    const config = this.#requireConfig();
     const saved = await loadPersistedSession(params.sessionId);
     if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
     return logger.withSession(params.sessionId, async () => {
@@ -108,8 +125,8 @@ export class SangxiaAgent implements Agent {
         params.cwd || saved.cwd,
         params.mcpServers ?? [],
         this.#clientCaps,
-        saved.permissionMode ?? this.#config.agent.permissionMode,
-        this.isAvailableModel(saved.modelId) ? saved.modelId : this.#config.provider.model,
+        saved.permissionMode ?? config.agent.permissionMode,
+        this.isAvailableModel(saved.modelId) ? saved.modelId : config.provider.model,
       );
       await this.prepareSession(session);
       session.messages = saved.messages;
@@ -312,9 +329,7 @@ export class SangxiaAgent implements Agent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    // TODO(acpreg): 未认证（unconfigured）时 prompt 返回 AUTH_REQUIRED JSON-RPC 错误
-    //   （含 type:"terminal"、args:["setup"] 声明），而不是继续运行（见 plan/acpreg.md
-    //   §2.2、§3 阶段 2）。
+    const config = this.#requireConfig();
     const session = this.#sessions.get(params.sessionId);
     if (!session) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
@@ -390,7 +405,7 @@ export class SangxiaAgent implements Agent {
               session,
               provider: this.providerFor(session.modelId),
               tools: session.tools,
-              config: this.#config.agent,
+              config: config.agent,
               signal: abort.signal,
               hooks: session.hooks,
             });
