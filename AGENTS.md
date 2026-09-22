@@ -47,7 +47,7 @@ src/
   skills/      技能发现与 use_skill（index.ts）
   tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts
   tui/         终端 UI（`sangxia tui`）：index.ts 主循环 / bridge.ts 进程内 ACP 配对
-               / ui.ts 备用屏渲染 / keys.ts raw 键盘解析 / input.ts 行编辑
+               / ui.ts 备用屏渲染（含 IME 真光标定位） / keys.ts raw 键盘解析 / input.ts 行编辑
                / model.ts ACP 通知→聊天条目映射 / commands.ts 斜杠命令
                / theme.ts 红绿白主题 / wcwidth.ts 最小 CJK 宽度（零依赖）
   index.ts     入口（stdio JSON-RPC；argv[0]==="tui" 时转 TUI 分支）
@@ -83,6 +83,7 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
    所有工具先过 JSON object / JSON Schema 校验；非法参数不得进入权限确认，截断响应中的工具调用一律拒绝执行，并补齐失败 tool result。
 9. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 连接失败只告警跳过，不影响其他工具。
 10. **TUI 纪律**：`sangxia tui` 分支完全接管进程生命周期（stdio/TTY/信号），不注册 ACP 模式的 SIGINT 逻辑；TUI 下日志必须 `logger.configure({ stderr:false, dir })` 只进文件，严禁把日志写进备用屏。输入层是自研 raw 键盘解析（keys.ts），不要换回 readline——`rl.pause()` 无法隔离 raw 弹窗（按键会漏进行输入行，spike 已验证）。
+    **真光标 = IME 锚点**：`ui.ts` 每帧结束时必须把**真**光标定位到输入 caret 并显示（`writeDiffed(..., caret)`，`Frame.inputCaret` 控制；弹窗接管按键时隐藏）。中文/日文输入法的组合文字与候选框锚在终端真光标上，代码里若只画反显"假光标"而不动真光标，组合过程会跟着**上一帧最后被改写的那一行**跑（模型流式输出时表现为"拼音/组合被拽走、打断或丢失"）。同理不要给输入行单元格再加反显方块（真光标叠上去会二次反色），也不要每帧无条件发 `\x1b[?25l`+`\x1b[?25h` 制造闪烁/多余写入。
 11. **SDK 陷阱**：`@zed-industries/agent-client-protocol@0.4.5` 的 `ClientSideConnection.setSessionModel` 会错发 `session/set_mode`；绕行 `extMethod("sangxia.set_model")`（agent.ts 已登记，转发到标准 setSessionModel）。不要"修" SDK 里那两处辅助方法（node_modules 是产物）。
 12. **持久化纪律**：`src/persistence.ts` 是唯一的会话写入口（`persistSession`）+ 工具事件（`persistToolEvent`）+ 历史替换（`persistHistoryReset`）。存储是 append-only JSONL 事件流（`meta`/`message`/`reset`/`tool_started`/`tool_finished`/`mode`/`model`），**不要**退回"每条消息全量重写快照"（长会话 O(n²)，且无法记录工具是否启动过）。`tool_started` 必须在 `tool.run` **之前**落盘——`sanitizeHistory` 靠它区分"结果未知"与"可安全重试"。`sessionId` 写文件前必过 `/^[a-zA-Z0-9-]+$/` 白名单。
 13. **工具超时纪律**：工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，`tool.timeoutMs` / 调用参数（bash 的 `timeout`）优先；deadline 必须 **race** 工具 promise，只 abort signal 不够（不理会 signal 的工具会永久 await）。超时按 `deadline.signal.aborted && !signal.aborted` 判定为失败 tool result，用户取消优先级更高（语义不得混）。

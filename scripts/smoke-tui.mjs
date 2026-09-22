@@ -28,6 +28,7 @@ import { makeTheme } from "../dist/tui/theme.js";
 import { stringWidth, truncateWidth } from "../dist/tui/wcwidth.js";
 import { InputLine } from "../dist/tui/input.js";
 import { KeyReader } from "../dist/tui/keys.js";
+import { QUIT_ARM_MS, QuitGate } from "../dist/tui/quit-gate.js";
 import { renderFrame, invalidateFrame } from "../dist/tui/ui.js";
 import { logger } from "../dist/logger.js";
 
@@ -107,6 +108,28 @@ const ok = (name, cond, extra = "") => {
   il.setText("");
   il.commit();
   ok("input commit empty returns", il.text === "" && il.isEmpty());
+}
+
+// Ctrl+C-while-idle: two presses quit (the first one only arms + shows a
+// hint), and the window still has to lapse for a stale press to be ignored.
+{
+  let clock = 1_000;
+  const gate = new QuitGate(() => clock);
+  ok("quit gate starts disarmed", gate.armed === false && gate.remaining() === 0);
+  gate.arm();
+  ok("armed right after the first Ctrl+C", gate.armed === true && gate.remaining() === QUIT_ARM_MS);
+  clock += QUIT_ARM_MS - 1;
+  ok("still armed just inside the window", gate.armed === true);
+  clock += 2;
+  ok("window lapse disarms (stale press never exits)", gate.armed === false && gate.remaining() === 0);
+  gate.arm();
+  clock += 10;
+  gate.reset(); // e.g. the user typed something instead
+  ok("reset disarms immediately", gate.armed === false);
+  const seenC = [];
+  const kr3 = new KeyReader((k) => seenC.push(k));
+  kr3.push("\x03");
+  ok("Ctrl+C parses to the ctrl-c key", seenC.length === 1 && seenC[0].type === "ctrl-c");
 }
 
 // P1-4: bracketed paste (ESC[200~ … ESC[201~) arrives as ONE paste key, and
@@ -218,6 +241,75 @@ const ok = (name, cond, extra = "") => {
     renderFrame(makeFrame({ rows: 12, cols: 60, chat: [{ kind: "notice", text: "same" }] }), theme, c2);
     const locators = (c2.out().match(/\x1b\[\d+;1H/g) ?? []).length;
     ok("invalidateFrame forces a full repaint on identical content", locators >= 12, `locators=${locators}`);
+  }
+
+  // IME anchor: the REAL terminal caret must land on the input cursor on every
+  // frame (that is what macOS/Windows IMEs use to place the composing text and
+  // the candidate window). Regression guard for "pinyin gets pulled into the
+  // chat area / composition is dropped while the model streams".
+  {
+    invalidateFrame();
+    const c1 = capture();
+    // rows=10 -> input row is row 10; "> " + "中文" (width 4) puts the caret
+    // for an empty tail at column 2+4+1 = 7.
+    renderFrame(makeFrame({ inputText: "中文", inputCursorText: 2, inputCursorCol: 6 }), theme, c1);
+    ok("real caret is placed at the input cursor", c1.out().includes("\x1b[10;7H\x1b[?25h"), JSON.stringify(c1.out().slice(-40)));
+
+    // Moving the caret left (between 中 and 文) moves the anchor too.
+    const c2 = capture();
+    renderFrame(makeFrame({ inputText: "中文", inputCursorText: 1, inputCursorCol: 4 }), theme, c2);
+    ok("caret follows the cursor inside the line", c2.out().includes("\x1b[10;5H\x1b[?25h"), JSON.stringify(c2.out().slice(0, 60)));
+
+    // Streaming repaint: only a chat row changes (the input row is byte
+    // identical), yet the frame must still end with the caret back in the
+    // input row — this is exactly the case that used to drag composing text
+    // into the chat area.
+    const base = { inputText: "中文", inputCursorText: 2, inputCursorCol: 6, busy: true };
+    const c3 = capture();
+    renderFrame(makeFrame({ ...base, streaming: { text: "x", thinking: false } }), theme, c3);
+    ok("streaming frame paints chat row", c3.out().includes("\x1b[2;1H"), JSON.stringify(c3.out().slice(0, 40)));
+    const c4 = capture();
+    renderFrame(makeFrame({ ...base, streaming: { text: "xy", thinking: false } }), theme, c4);
+    const out4 = c4.out();
+    ok(
+      "caret returns to the input row even when the input row itself is untouched",
+      out4.includes("\x1b[3;1H") && !out4.includes("\x1b[10;1H") && out4.endsWith("\x1b[10;7H\x1b[?25h"),
+      JSON.stringify(out4),
+    );
+
+    // A frame whose rows and caret are unchanged writes nothing at all.
+    const c5 = capture();
+    renderFrame(makeFrame({ ...base, streaming: { text: "xy", thinking: false } }), theme, c5);
+    ok("identical frame writes nothing", c5.out() === "", JSON.stringify(c5.out()));
+
+    // Modal dialogs own the keys -> no caret to compose into.
+    const c6 = capture();
+    renderFrame(makeFrame({ dialog: { kind: "confirm-full-access" }, inputCaret: false }), theme, c6);
+    const out6 = c6.out();
+    ok("dialog hides the caret (no IME anchor)", out6.includes("\x1b[?25l") && !out6.includes("\x1b[?25h"), JSON.stringify(out6.slice(-30)));
+
+    // Scrolled (wider than the row) input must never push the caret off-screen.
+    const c7 = capture();
+    renderFrame(makeFrame({ cols: 20, inputText: "很长的中文输入内容超过一行宽度", inputCursorText: 15, inputCursorCol: 2 + 30 }), theme, c7);
+    const m = /\x1b\[10;(\d+)H\x1b\[\?25h/.exec(c7.out());
+    ok("scrolled caret stays inside the row", m !== null && Number(m[1]) >= 1 && Number(m[1]) <= 20, JSON.stringify(c7.out().slice(-40)));
+
+    // Idle Ctrl+C hint rides on the input row; while a turn is running the
+    // cancel hint wins (they are mutually exclusive by construction).
+    const c8 = capture();
+    renderFrame(makeFrame({ inputHint: "再按一次 Ctrl+C 退出" }), theme, c8);
+    ok("idle input hint is rendered", c8.out().includes("再按一次 Ctrl+C 退出"), JSON.stringify(c8.out().slice(-80)));
+    const c9 = capture();
+    renderFrame(makeFrame({ inputHint: "再按一次 Ctrl+C 退出", busy: true }), theme, c9);
+    const out9 = c9.out();
+    ok(
+      "busy cancels the hint (cancel text wins)",
+      out9.includes("(Ctrl+C to cancel)") && !out9.includes("再按一次"),
+      JSON.stringify(out9.slice(-80)),
+    );
+    const c10 = capture();
+    renderFrame(makeFrame({}), theme, c10);
+    ok("hint disappears when disarmed", !c10.out().includes("再按一次"), JSON.stringify(c10.out().slice(-60)));
   }
 }
 

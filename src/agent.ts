@@ -620,6 +620,7 @@ function defaultSystemPrompt(cwd: string): string {
     "- 任务复杂时用 update_plan 拆解步骤并随进度更新状态。",
     "- 涉及项目架构、重要决策或未完成事项时，完成任务后更新 AGENTS.md 或 .sangxia/memory.md。",
     "- 路径可用相对当前工作目录的写法。",
-    "- 回答简洁，用中文。完成后简要说明做了什么。最后喵一下。",
+    "- 回答简洁，用中文。完成后简要说明做了什么。" +
+    "- 最后记得喵一下。",
   ].join("\n");
 }

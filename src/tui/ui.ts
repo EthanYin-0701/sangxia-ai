@@ -65,6 +65,20 @@ export interface Frame {
   inputText: string;
   inputCursorText: number; // index into inputText
   inputCursorCol: number;  // display column of the cursor
+  /**
+   * Place the *real* terminal caret at the input cursor (default true). This
+   * is the IME anchor: macOS/Windows IMEs draw the pre-edit (composing) text
+   * and the candidate window at the terminal's cursor, so as long as the app
+   * never moves it the composition lands wherever the last rewritten row
+   * ended (chat area while streaming). `false` while a modal dialog owns the
+   * keys — there is no text input to compose into then.
+   */
+  inputCaret?: boolean;
+  /**
+   * Dim hint appended to the input row while the app is idle (e.g. "press
+   * Ctrl+C again to exit"). Ignored while `busy`, where the cancel hint wins.
+   */
+  inputHint?: string;
   busy: boolean;
   canSend: boolean;
   spinnerTick: number; // ms counter for in_progress animations
@@ -133,7 +147,7 @@ export function renderFrame(frame: Frame, theme: Theme, stdout: { write(s: strin
     // Invalidate the diff cache too: when the terminal grows back we must
     // repaint everything, not skip rows that match a stale-width frame.
     invalidateFrame(stdout);
-    stdout.write(C.err(theme, `terminal too small (${cols}x${rows}), resize`));
+    stdout.write(C.err(theme, `terminal too small (${cols}x${rows}), resize`) + "\x1b[?25l");
     return;
   }
   const rowsOut: string[] = [];
@@ -180,12 +194,17 @@ export function renderFrame(frame: Frame, theme: Theme, stdout: { write(s: strin
   for (const dl of dialogLines) rowsOut.push(dl);
 
   // ── input row ──────────────────────────────────────────────────────
-  rowsOut.push(composeInputRow(frame, theme, cols));
+  const inputView = composeInputRow(frame, theme, cols);
+  rowsOut.push(inputView.row);
 
-  writeDiffed(rowsOut, rows, cols, stdout);
+  // The real caret goes to the input cursor after every frame — including
+  // frames that only rewrote chat rows while the model was streaming (else
+  // the IME would compose into the chat area). Hidden during modal dialogs.
+  const caret = frame.inputCaret === false ? null : { row: rows, col: inputView.caretCol + 1 };
+  writeDiffed(rowsOut, rows, cols, stdout, caret);
 }
 
-function composeInputRow(frame: Frame, theme: Theme, cols: number): string {
+function composeInputRow(frame: Frame, theme: Theme, cols: number): { row: string; caretCol: number } {
   const prompt = "> ";
   const text = frame.inputText;
   const maxTextW = Math.max(0, cols - W(prompt) - 1);
@@ -201,25 +220,24 @@ function composeInputRow(frame: Frame, theme: Theme, cols: number): string {
     const { text: t2 } = truncateWidth(text.slice(cutStart), maxTextW);
     visible = t2;
   }
+  // Caret display column (0-based) inside the row: `inputCursorCol` already
+  // counts the prompt, minus the horizontally scrolled-off prefix. Clamped to
+  // the drawn row so a scrolled/truncated tail can never push it off-screen.
   const visCursor = Math.max(0, frame.inputCursorCol - W(text.slice(0, cutStart)));
-  const cutAt = charIndexAtWidthLocal(visible, visCursor);
-  const before = visible.slice(0, cutAt);
-  const after = visible.slice(cutAt);
-  const curChar = after.length > 0 ? after[0] ?? " " : " ";
-  const afterRest = after.length > 0 ? after.slice(after[0]!.length) : "";
-  let row = paint(theme, theme.green, prompt);
-  row += paint(theme, theme.whiteBright, before);
-  row += theme.enabled ? `\x1b[7m${curChar}\x1b[0m` : curChar;
-  row += paint(theme, theme.whiteBright, afterRest);
+  const caretCol = Math.max(0, Math.min(visCursor, cols - 1));
+  // No hand-drawn block cursor: the real caret (positioned above) marks the
+  // insertion point, and a reverse-video cell under it would invert twice.
+  let row = paint(theme, theme.green, prompt) + paint(theme, theme.whiteBright, visible);
   if (frame.busy) row += C.meta(theme, "  (Ctrl+C to cancel)");
-  return fitRow(row, cols);
+  else if (frame.inputHint) row += C.meta(theme, "  " + frame.inputHint);
+  return { row: fitRow(row, cols), caretCol };
 }
 
 function composeChatEntry(entry: ChatEntry, theme: Theme, cols: number): string[] {
   const bodyWidth = Math.max(1, cols - 4);
   switch (entry.kind) {
     case "user": {
-      const head = "> 你";
+      const head = "> You";
       const lines: string[] = [];
       lines.push(C.user(theme, head) + (entry.time ? rightPad(head, entry.time, cols, C.meta(theme, entry.time)) : ""));
       for (const l of wrapText(entry.text, bodyWidth)) lines.push(paint(theme, theme.green, "  " + l));
@@ -355,6 +373,8 @@ function composeDialog(dialog: DialogFrame, theme: Theme, cols: number): string[
 }
 
 const prevRows: string[] = [];
+/** Caret spec ("row;col" or null=hidden) applied by the last writeDiffed call. */
+let prevCaret: string | null = null;
 
 /**
  * Drop the dirty-row diff cache. Call before a full repaint when the previous
@@ -364,18 +384,34 @@ const prevRows: string[] = [];
  */
 export function invalidateFrame(stdout?: { write(s: string): void }): void {
   prevRows.length = 0;
+  prevCaret = null;
   if (stdout) stdout.write("\x1b[2J\x1b[H");
 }
 
-export function writeDiffed(rows: string[], totalRows: number, cols: number, stdout: { write(s: string): void }): void {
+export interface Caret {
+  /** 1-based terminal row. */
+  row: number;
+  /** 1-based terminal column. */
+  col: number;
+}
+
+export function writeDiffed(
+  rows: string[],
+  totalRows: number,
+  cols: number,
+  stdout: { write(s: string): void },
+  caret: Caret | null = null,
+): void {
   // Diff against the previous frame; only rewrite changed rows. Frames have a
   // fixed row count so clearing below is unnecessary.
-  let buf = "\x1b[?25l";
+  let buf = "";
+  let changed = 0;
   for (let y = 0; y < totalRows; y++) {
     const cur = rows[y] ?? "";
     const prev = prevRows[y];
     if (prev === cur) continue;
     prevRows[y] = cur;
+    changed += 1;
     // Do NOT slice by JS string length: ANSI escapes inflate it and would chop
     // visible text. Rows are composed already-fitted to `cols` display columns;
     // only a misbehaving wide row falls back to plain-text truncation.
@@ -390,5 +426,13 @@ export function writeDiffed(rows: string[], totalRows: number, cols: number, std
     buf += `\x1b[${y + 1};1H${fitted}\x1b[K`;
   }
   prevRows.length = totalRows;
+  // The real caret is the IME anchor (see Frame.inputCaret), so it is re-placed
+  // on *every* written frame, not only when the input row changed. A frame
+  // whose rows and caret are both unchanged writes nothing at all — fewer
+  // writes means less chance of disturbing an in-flight IME composition.
+  const caretSpec = caret ? `${caret.row};${caret.col}` : null;
+  if (changed === 0 && caretSpec === prevCaret) return;
+  prevCaret = caretSpec;
+  buf += caretSpec === null ? "\x1b[?25l" : `\x1b[${caretSpec}H\x1b[?25h`;
   stdout.write(buf);
 }

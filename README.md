@@ -449,7 +449,7 @@ sangxia tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即�
   - `/model [modelId]` 查看/切换模型（配置 `provider.models`；无参数弹选择器；模型**下一轮生效**，状态栏带 `*` 待生效标记）。
   - `/access` 只显示当前权限模式；`/access full` 进入 FULL ACCESS（需二次确认，变更不再请求确认，红横幅+badge）；`/access standard` 切回每次确认。切换会清空本会话"总是允许/总是拒绝"记忆。
   - `/permissions reset` 清空记住的授权决策（等价于重发一次 `set_mode`）；`/help`、`/clear`（只清屏，不动会话历史）、`/new`（重开会话，仅空闲时可用）、`/quit`。
-- **快捷键**：Enter 发送（上一轮未结束时禁用，Ctrl+C 可取消该轮）、↑/↓ 输入历史、Tab 补全命令/modelId、Ctrl+C 清空输入行（turn 中 = 取消）、Ctrl+U 删到行首、Ctrl+W 删词、Ctrl+A/Ctrl+E 行首/行尾、Ctrl+D 删字符（空行 = 退出）、PgUp/PgDn 与 Shift+↑/↓ 滚动对话区、Esc 关弹窗。权限弹窗支持数字键直选或 ↑/↓ + Enter；模型选择器用 ↑/↓ + Enter，Esc 取消。
+- **快捷键**：Enter 发送（上一轮未结束时禁用，Ctrl+C 可取消该轮）、↑/↓ 输入历史、Tab 补全命令/modelId、Ctrl+C 清空输入行（**空闲时连按两次 = 退出**，turn 中 = 取消）、Ctrl+U 删到行首、Ctrl+W 删词、Ctrl+A/Ctrl+E 行首/行尾、Ctrl+D 删字符（空行 = 立即退出）、PgUp/PgDn 与 Shift+↑/↓ 滚动对话区、Esc 关弹窗。权限弹窗支持数字键直选或 ↑/↓ + Enter；模型选择器用 ↑/↓ + Enter，Esc 取消。
 - **粘贴**：启用了终端 bracketed paste，粘贴多行文本不会被当成多次回车——换行会归一成空格并入单行输入（v1 是单行编辑器）。
 - **日志**：TUI 模式下日志不打印到屏幕，只写入 `SANGXIA_LOG_DIR`（未设置时为系统临时目录 `sangxia-tui-logs/`），级别默认降到 `warn`。
 - **已知差异**：TUI 不向 agent 声明 `fs` / `terminal` 能力，文件读写与 `bash` 都走本地 Node 回退——`bash` 输出在命令结束时一次性返回（工具行的 spinner + 计时是"仍在运行"的唯一信号）；Zed 里则走编辑器的终端、输出实时可见。

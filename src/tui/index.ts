@@ -16,6 +16,7 @@ import { logger } from "../logger.js";
 import { completeLine, parseCommand, type CommandAction } from "./commands.js";
 import { InputLine } from "./input.js";
 import { KeyReader, type Key } from "./keys.js";
+import { QUIT_ARM_MS, QuitGate } from "./quit-gate.js";
 import { makeTheme } from "./theme.js";
 import { renderFrame, invalidateFrame, type DialogFrame, type Frame } from "./ui.js";
 import { stringWidth } from "./wcwidth.js";
@@ -122,6 +123,38 @@ export async function runTui(argv: string[]): Promise<number> {
   const modeLabel = (): string =>
     state.modeId === "auto" ? "Full Access (auto)" : "Standard Access (confirm)";
 
+  // ── Ctrl+C-while-idle quit gate (see quit-gate.ts) ──
+  const quitGate = new QuitGate();
+  let quitHint: string | null = null;
+  let quitTimer: NodeJS.Timeout | null = null;
+
+  /** Arm "press Ctrl+C again to exit" and show `hint` on the input row. */
+  function armQuit(hint: string): void {
+    quitGate.arm();
+    quitHint = hint;
+    if (quitTimer) clearTimeout(quitTimer);
+    // Drop the hint when the window lapses (a later press only re-arms).
+    quitTimer = setTimeout(() => {
+      quitTimer = null;
+      quitGate.reset();
+      if (quitHint !== null) {
+        quitHint = null;
+        render();
+      }
+    }, QUIT_ARM_MS + 50);
+    quitTimer.unref?.();
+  }
+
+  /** Disarm on any other key / when the UI moves on. */
+  function disarmQuit(): void {
+    if (quitTimer) {
+      clearTimeout(quitTimer);
+      quitTimer = null;
+    }
+    quitGate.reset();
+    quitHint = null;
+  }
+
   function paintFrame(): void {
     const rows = stdout.rows || 24; // || (not ??) so a 0 winsize falls back
     const cols = stdout.columns || 80;
@@ -181,6 +214,14 @@ export async function runTui(argv: string[]): Promise<number> {
       inputText,
       inputCursorText: input.cursorTextIndex,
       inputCursorCol: 2 + displayWidth(before),
+      // IME anchor: the real caret must sit at the input cursor so composing
+      // text (and the candidate window) land in the input row, never in the
+      // chat area. While a modal dialog owns the keys there is nothing to
+      // compose into, so the caret stays hidden.
+      inputCaret: state.dialog === null,
+      // Idle-only hint (busy shows the cancel hint instead): "press Ctrl+C
+      // again to exit".
+      inputHint: quitHint ?? undefined,
       busy: state.busy,
       canSend: !state.busy && !state.dialog,
       spinnerTick: Date.now(),
@@ -489,6 +530,10 @@ export async function runTui(argv: string[]): Promise<number> {
       dialogKey(k);
       return;
     }
+    // Any other key means the user is still working: cancel a pending
+    // "press Ctrl+C again" arm (and drop its hint). Most branches below
+    // repaint, so the hint disappears with them.
+    if (k.type !== "ctrl-c") disarmQuit();
     switch (k.type) {
       case "char":
         input.insert(k.char);
@@ -519,8 +564,15 @@ export async function runTui(argv: string[]): Promise<number> {
         if (state.busy) {
           model.addMeta("取消中…");
           cancelTurn();
-        } else {
+        } else if (!input.isEmpty()) {
+          // Same key clears the line first, then (a second press) exits.
           input.clear();
+          armQuit("输入已清空；再按一次 Ctrl+C 退出");
+        } else if (quitGate.armed) {
+          fireAndLog(quit(), "退出");
+          return; // quit() tears the UI down; nothing left to repaint
+        } else {
+          armQuit("再按一次 Ctrl+C 退出（Ctrl+D 也可退出）");
         }
         render();
         break;

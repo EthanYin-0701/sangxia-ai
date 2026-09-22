@@ -93,9 +93,9 @@ export function helpLines(): HelpLine[] {
     { kind: "text", text: "/clear         清空屏幕（不影响会话历史）" },
     { kind: "text", text: "/new           重开会话（仅空闲时；旧会话已持久化）" },
     { kind: "text", text: "/help          显示本帮助" },
-    { kind: "text", text: "/quit          退出（或空行 Ctrl+D）" },
+    { kind: "text", text: "/quit          退出（或空闲时连按两次 Ctrl+C / 空行 Ctrl+D）" },
     { kind: "text", text: "" },
-    { kind: "text", text: "快捷键：Enter 发送 · ↑/↓ 历史 · Tab 补全 · Ctrl+C 清空/取消 · Ctrl+U 删到行首 · Ctrl+D 删字符(空行退出)" },
+    { kind: "text", text: "快捷键：Enter 发送 · ↑/↓ 历史 · Tab 补全 · Ctrl+C 清空输入（空闲时连按两次=退出，turn 中=取消）· Ctrl+U 删到行首 · Ctrl+D 删字符(空行退出)" },
     { kind: "text", text: "以 // 开头的输入按普通文本发送。" },
   ];
 }
