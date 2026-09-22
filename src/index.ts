@@ -4,6 +4,7 @@ import { AgentSideConnection, ndJsonStream } from "@zed-industries/agent-client-
 import { SangxiaAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
+import { VERSION } from "./version.js";
 
 /**
  * Entry point: bridge stdio <-> ACP.
@@ -22,9 +23,28 @@ async function main(): Promise<void> {
     return;
   }
 
-  // TODO(acpreg): CLI 参数分发 —— 新增 `setup` / `--non-interactive` / `--api-key-env`
-  //   / `--version` / `--help` 入口（见 plan/acpreg.md §3 阶段 1）；当前所有 argv 都被
-  //   当作 ACP 正常启动忽略。
+  if (argv[0] === "setup") {
+    const { runSetup } = await import("./setup.js");
+    process.exitCode = await runSetup(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    process.stdout.write(`${VERSION}\n`);
+    return;
+  }
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    process.stdout.write(`Sangxia.ai ${VERSION}
+Usage: sangxia [--config PATH] [--permission-mode confirm|auto]
+       sangxia tui [options]
+       sangxia setup [options]
+       sangxia --version
+
+Without a subcommand, runs the ACP agent over stdio.
+Run sangxia setup --help for provider configuration options.
+`);
+    return;
+  }
+
   let config = null;
   let configError: string | null = null;
   try {
