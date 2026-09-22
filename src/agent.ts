@@ -70,13 +70,14 @@ export class SangxiaAgent implements Agent {
   }
 
   #requireConfig(): Config {
-    if (!this.#loadedConfig) {
+    const config = this.#loadedConfig;
+    if (!config || (config.provider.type !== "mock" && !config.provider.apiKey?.trim())) {
       throw RequestError.authRequired({
-        reason: this.#configError ?? "未找到配置文件",
+        reason: this.#configError ?? (config ? "provider.apiKey 为空" : "未找到配置文件"),
         hint: "在终端运行 `npx sangxia-ai setup` 完成配置",
       });
     }
-    return this.#loadedConfig;
+    return config;
   }
 
   // Helpers only run for configured sessions; keep the same guard as entry points.

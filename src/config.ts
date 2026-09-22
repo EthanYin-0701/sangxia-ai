@@ -107,8 +107,8 @@ const providerSchema = z
       if (!cfg.baseURL) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseURL"], message: "openai provider 需要 baseURL（如 https://api.openai.com/v1）" });
       }
-      if (!cfg.apiKey) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "openai provider 需要 apiKey（可用 \"${OPENAI_API_KEY}\" 从环境变量注入）" });
+      if (!cfg.apiKey?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "provider.apiKey 为空" });
       }
     }
     if (cfg.models) {
@@ -440,9 +440,16 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
 
   const merged = layered ? deepMerge(baseRaw, primaryRaw) : primaryRaw;
   const parsed = configSchema.safeParse(interpolateEnv(merged));
+  const rawProvider = isPlainObject(merged) && isPlainObject(merged.provider) ? merged.provider : {};
+  const keyRefs = typeof rawProvider.apiKey === "string"
+    ? rawProvider.apiKey.match(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g) ?? [] : [];
   if (!parsed.success) {
     const details = parsed.error.issues
-      .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
+      .map((i) => `  - ${i.path.join(".") || "(root)"}: ${
+        i.path.join(".") === "provider.apiKey"
+          ? `provider.apiKey 为空${keyRefs.length ? `（来源: ${keyRefs.join(", ")}）` : ""}`
+          : i.message
+      }`)
       .join("\n");
     const where = layered ? `${primaryPath} + ${basePath}` : primaryPath;
     throw new Error(`配置无效 (${where}):\n${details}`);
