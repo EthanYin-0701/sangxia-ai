@@ -21,7 +21,8 @@
     "smoke:skill": "npm run build && node scripts/smoke-skill.mjs",
     "smoke:tui": "npm run build && node scripts/smoke-tui.mjs",
     "smoke:reliability": "npm run build && node scripts/smoke-reliability.mjs",
-    "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs"
+    "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs",
+    "smoke:setup": "npm run build && node scripts/smoke-setup.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
