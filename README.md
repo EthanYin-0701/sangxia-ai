@@ -13,9 +13,8 @@
 npm install
 npm run build
 
-# 复制并填写配置
-cp sangxia.config.example.json sangxia.config.json
-export OPENAI_API_KEY=sk-...        # 配置里用 ${OPENAI_API_KEY} 引用
+# 交互配置（API key 不回显，写入全局配置）
+node dist/index.js setup
 
 # 冒烟测试（离线，无需 key）
 npm run smoke          # 完整 ACP 握手 + 工具 + 权限流（mock provider）
@@ -30,7 +29,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ## 配置
 
 解析顺序：`--config <path>` → `$SANGXIA_CONFIG` → `./sangxia.config.json` → `~/.config/sangxia/config.json`。
-字符串值支持 `${ENV_VAR}` 环境变量插值，密钥不必落盘。
+字符串值支持 `${ENV_VAR}` 环境变量插值，密钥不必落盘。示例文件含 JSONC 注释，仅供参考；运行配置必须是严格 JSON，建议用 `sangxia setup` 生成。
 
 **配置分层（D16）**：`~/.config/sangxia/config.json` 是**全局 base**，永远先加载，上面这份主配置作为 **overlay** 叠加（深合并，overlay 胜；只有 `hooks.events.*` 是**数组追加**，base 先、overlay 后）。于是：
 
