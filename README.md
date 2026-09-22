@@ -1,5 +1,49 @@
 # Sangxia.ai · 基于 Node.js 的 ACP Coding AI Agent
 
+Sangxia.ai is a coding agent speaking ACP over stdio, with a built-in tool harness and JSON-configured OpenAI-compatible LLM backends. Requires Node.js 20 or newer.
+
+### Install / Setup / Add to Zed
+
+The commands below target the planned npm release `0.6.16`; publication and registry listing are pending. To try the current checkout now, use the source-build commands under **快速开始**.
+
+```bash
+# Install (after publication)
+npm install -g sangxia-ai@0.6.16
+# Setup: prompts for the provider, model and a hidden API key
+sangxia setup
+# Run in a terminal, or use the Zed configuration below
+sangxia tui
+```
+
+Add this entry to Zed's `settings.json` (requires the published package):
+
+```json
+{
+  "agent_servers": {
+    "Sangxia": {
+      "command": "npx",
+      "args": ["--yes", "sangxia-ai@0.6.16"],
+      "env": {}
+    }
+  }
+}
+```
+
+Select **Sangxia** in the Agent panel. Without usable credentials, the agent still completes the ACP handshake and advertises **Terminal setup**. Run setup, then reconnect. The full Zed terminal-auth UI flow still needs a manual check after publication.
+
+For headless setup, supply your key through the environment (for example, your secret manager) and run:
+
+```bash
+sangxia setup --non-interactive --provider openai \
+  --base-url https://api.openai.com/v1 --model gpt-4o \
+  --api-key-env SANGXIA_API_KEY
+```
+
+Setup stores `${SANGXIA_API_KEY}`, so the same variable must also be available when the agent starts, including in the ACP client's `env` configuration. Setup verifies `/models`, falling back to a minimal non-streaming `/chat/completions` request on HTTP 404/405. `--skip-verify` opts out. `--api-key` stores a literal key and may expose it in shell history or process listings.
+
+Setup writes `~/.config/sangxia/config.json` with mode 0600 and preserves existing non-provider sections. Configuration priority is explicit `--config` / `SANGXIA_CONFIG`, project configuration, then global configuration; the global file remains the base for overlays. Only when **no file exists** does `SANGXIA_API_KEY` bootstrap configuration, with optional `SANGXIA_BASE_URL` and `SANGXIA_MODEL`. The defaults are the official OpenAI URL and `gpt-4o`; implicit SDK variables such as `OPENAI_BASE_URL` are not used. Explicitly selected missing or invalid files produce an authentication error instead of falling back.
+
+
 一个用 TypeScript 写的编程 AI agent：
 
 - **兼容 ACP 协议**（[Agent Client Protocol](https://agentclientprotocol.com)）——通过 stdio 上的 JSON-RPC，可作为「外部 agent」接入 Zed 等 ACP 客户端。
@@ -35,7 +79,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 - 项目里只需要写"和全局不一样的东西"（例如只写 `provider`），全局的 `hooks` 照样生效；
 - **全局 hook 不能被某个项目配置静默删掉** —— 唯一关掉方式是显式 `"hooks": { "enabled": false }`（这是有意的：否则打开一个带 `sangxia.config.json` 的仓库就能悄悄卸掉你的守卫 hook）；
-- 反过来，全局配置写错（未知事件名、路径形态命令不存在等）会让**所有**项目启动失败 —— 这是 fail fast 的代价，报错信息里会指名具体文件与条目；
+- 反过来，全局配置写错（未知事件名、路径形态命令不存在等）会让**所有**项目无法建立会话（ACP 握手仍可用） —— 这是 fail fast 的代价，报错信息里会指名具体文件与条目；
 - 项目里没有任何配置文件时，全局配置可以独立当配置用（`provider` + `hooks` 都写它即可）。
 
 和分层配置同一思路的还有 **`~/.config/sangxia/AGENTS.md`（用户级长期指令）**：它不是配置项，而是一份纯 markdown，每次都进 system prompt、对所有项目生效（见「架构」一节的项目记忆说明）。
@@ -346,7 +390,7 @@ exit 0
 
 ### 安全说明（务必读）
 
-- **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到直接启动报错。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.sangxia/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
+- **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到时配置加载报错并阻止会话（ACP 握手仍可用）。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.sangxia/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
 - hook 进程的运行时 `cwd` 仍是 **session cwd**（脚本里的 `git status` / `npm` 语义不变）。因此**不要在全局配置里写依赖仓库的裸命令**（`"npm run lint"` 会跑被打开仓库的 `package.json` scripts 与 `node_modules/.bin`）；要跑就写绝对解释器 + 绝对脚本：`"bash ${HOME}/.config/sangxia/hooks/lint.sh"`。
 - **全局配置里的 hook 在所有项目里都生效**（配置分层，D16）：这是全局 hook 的意义所在，也意味着**你打开任何仓库时它都会跑**。因此全局 hook 尤其要遵守上一条（绝对解释器 + 绝对脚本），且**不要**在全局 hook 里执行依赖仓库内容的裸命令。
 - **项目级 hooks（`.sangxia/hooks.json`）默认关闭**：该文件随仓库分发，开启等于"打开仓库就执行任意命令"；显式 `projectFile.enabled: true` 才加载（开启时会 warn 一次），且项目级条目的 `onError` / `timeoutMs` 只能**更严**不能放宽。
