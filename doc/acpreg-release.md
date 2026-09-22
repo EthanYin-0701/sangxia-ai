@@ -38,3 +38,27 @@ node scripts/prepare-registry.mjs --repository https://github.com/OWNER/REPO --o
 - `repository: { "type": "git", "url": "https://github.com/OWNER/REPO.git" }`
 - `homepage: "https://github.com/OWNER/REPO#readme"`
 - `bugs: { "url": "https://github.com/OWNER/REPO/issues" }`
+
+## 官方校验（C4，本地制品）
+
+使用 [agentclientprotocol/registry](https://github.com/agentclientprotocol/registry) 提交 `009da55c60aa50b5fea04df5b759e3bb9a2cbb21` 的原始脚本验证：
+
+1. `client.run_auth_check` 启动本地 `dist/index.js`，空 cwd + 隔离 HOME：`terminal-setup(terminal)` 通过。
+2. 在临时 registry clone 中生成 Sangxia 条目，运行 `SKIP_URL_VALIDATION=1 uv run --with jsonschema .github/workflows/build_registry.py`：包含 Sangxia 的完整 registry 构建通过，schema / 版本一致性 / icon 检查通过。因为真实仓库 URL 尚未提供，**仅这个临时测试 fixture** 使用 `https://github.com/example/sangxia-ai`，未将假 URL 写入项目发布元数据。
+3. `npm pack` 生成 `sangxia-ai-0.6.16.tgz`；仅在临时 clone 的 manifest 中把 `distribution.npx.package` 改为 `file:/绝对路径/sangxia-ai-0.6.16.tgz`，运行 `python3 .github/workflows/verify_agents.py --auth-check --agent sangxia-ai`：**Passed 1 / Failed 0**，`Auth OK: terminal-setup(terminal)`。运行后恢复 manifest。
+
+本地 tarball 必须用 `file:` npm spec；裸绝对路径会被 npx 当作可执行文件而失败。这些检查覆盖打包后安装、空 HOME 启动与认证声明，**不证明 npm 上的版本或真实 GitHub URL 已存在**。发布后必须用正式 `sangxia-ai@0.6.16` 再跑 C4 / E3。
+
+## 本地回归
+
+通过 `npm run typecheck`、`npm run build`，以及所有冒烟：`smoke`、`smoke:openai`、`smoke:mcp`、`smoke:skill`、`smoke:tui`、`smoke:hooks`（89 断言）、`smoke:reliability`（41 组）、`smoke:auth`（15 场景）和 `smoke:setup`。
+
+另通过伪终端驱动交互 setup，验证 API key 不回显且正确保存；通过拦截 SDK fetch 验证未配置 baseURL 时不受 `OPENAI_BASE_URL` 影响，实际请求地址为官方 `/v1/chat/completions`，未访问真实 LLM。
+
+## 外部待办
+
+- **D3 / D5**：用户创建公开 GitHub 仓库并 push，回填真实 URL。已确认运行配置与日志未被 git 跟踪；保持原有 ignore 规则。
+- **E1–E3**：npm 登录；核对 README 发布状态说明与最终包内容，执行 `npm publish --access public`；发布成功后打 `v0.6.16` tag，做已发布包沙箱握手。本次未登录、未发布、未打发布 tag。
+- **F1 / F2 / F4**：fork registry，使用真实 URL 生成 manifest，跑官方验证并提交 PR；合并后核对 CDN。F3 图标已在本地准备并校验。
+- **G1**：Zed 真机完成「未配置 → Terminal setup → 重连 → 新会话」。伪终端与协议测试不能替代这个客户端 UI 验收。
+- **G2**：本地代码 TODO 已清理，工作规则与记忆记录本地完成情况；等发布和 registry 合并后才将注册整体标记为完成。
