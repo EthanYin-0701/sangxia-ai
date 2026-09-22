@@ -93,14 +93,14 @@ function parseFrontmatter(raw: string): { data: Record<string, string>; body: st
 
 /**
  * Discover skills. Relative `extraDirs` resolve against `cwd`; an empty list
- * falls back to `<cwd>/skills` then `~/.config/zhente/skills`. Earlier dirs win
+ * falls back to `<cwd>/skills` then `~/.config/sangxia/skills`. Earlier dirs win
  * on name collision, so a project skill shadows a global one of the same name.
  */
 export async function discoverSkills(cwd: string, extraDirs: string[]): Promise<Skill[]> {
   const dirs =
     extraDirs.length > 0
       ? extraDirs.map((d) => (isAbsolute(d) ? d : resolve(cwd, d)))
-      : [resolve(cwd, "skills"), join(homedir(), ".config", "zhente", "skills")];
+      : [resolve(cwd, "skills"), join(homedir(), ".config", "sangxia", "skills")];
 
   const found = new Map<string, Skill>();
   for (const dir of dirs) {

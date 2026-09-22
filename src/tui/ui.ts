@@ -264,7 +264,7 @@ function composeChatEntry(entry: ChatEntry, theme: Theme, cols: number): string[
 }
 
 function composeAssistantText(text: string, thinking: boolean, theme: Theme, cols: number, time?: string): string[] {
-  const head = "> ZhenTe";
+  const head = "> Sangxia";
   const lines: string[] = [];
   lines.push(C.heading(theme, head) + (time ? rightPad(head, time, cols, C.meta(theme, time)) : ""));
   if (thinking) lines.push(C.meta(theme, "  (thinking…)"));

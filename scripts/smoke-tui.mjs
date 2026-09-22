@@ -3,7 +3,7 @@
 // The full interactive UI needs a pty, so this drives what can run headless:
 //   1. pure modules: commands / theme / wcwidth / input / model (plan,
 //      tool-row failed-direct, notification mapping)
-//   2. in-process ACP pairing (bridge.ts + ZhenTeAgent + mock provider):
+//   2. in-process ACP pairing (bridge.ts + SangxiaAgent + mock provider):
 //      initialize -> newSession -> prompt with a *dynamic* permission flow
 //      (project-init has 3 options; tool permission has 4 — asserting the
 //      dialog is numbered from the returned options, B4) -> streaming lands in
@@ -32,9 +32,16 @@ import { renderFrame, invalidateFrame } from "../dist/tui/ui.js";
 import { logger } from "../dist/logger.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const workdir = mkdtempSync(join(tmpdir(), "zhente-tui-smoke-"));
-const logDir = mkdtempSync(join(tmpdir(), "zhente-tui-logs-"));
+const workdir = mkdtempSync(join(tmpdir(), "sangxia-tui-smoke-"));
+const logDir = mkdtempSync(join(tmpdir(), "sangxia-tui-logs-"));
 logger.configure({ dir: logDir, level: "info" });
+
+// 冒烟隔离：本脚本走**进程内** bridge（同进程跑 SangxiaAgent），不像其它冒烟那样
+// 能靠子进程 env 隔离，所以在这里直接改写当前进程的环境变量：
+//   - HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，不能读开发机真实配置；
+//   - SANGXIA_SESSION_DIR：否则测试会话会写进用户真实的 `~/.config/sangxia/sessions`。
+process.env.HOME = mkdtempSync(join(tmpdir(), "sangxia-tui-home-"));
+process.env.SANGXIA_SESSION_DIR = join(workdir, "sessions");
 
 let passed = 0;
 const ok = (name, cond, extra = "") => {
@@ -158,7 +165,7 @@ const ok = (name, cond, extra = "") => {
 {
   const theme = makeTheme({ crt: false, noColor: true }); // no ANSI -> easier string checks
   const makeFrame = (over = {}) => ({
-    appName: "ZhenTe",
+    appName: "Sangxia",
     modelLabel: "mock-fast",
     cwd: "/tmp",
     modeId: "confirm",
@@ -277,7 +284,7 @@ const main = async () => {
   const toolPerm = permissionLog.find((p) => p.options.length === 4);
   ok("tool permission has 4 options (B4)", !!toolPerm);
   const hello = readFileSync(join(workdir, "hello.txt"), "utf8");
-  ok("agent ran write via bridge", hello === "hello from zhente\n");
+  ok("agent ran write via bridge", hello === "hello from sangxia\n");
   ok("events streamed to model", events.includes("agent_message_chunk") && events.includes("tool_call") && events.includes("tool_call_update"));
   model.finalizeStream();
   ok("chat model assistant finalized from stream", model.entries.some((e) => e.kind === "assistant" && e.text.length > 0));
@@ -323,8 +330,8 @@ const main = async () => {
   // Pre-create project memory so the second session skips project-init and the
   // mock's first tool call (write_file, 4 permission options) is what we hold.
   writeFileSync(join(workdir, "AGENTS.md"), "# smoke\n");
-  mkdirSync(join(workdir, ".zhente"), { recursive: true });
-  writeFileSync(join(workdir, ".zhente", "memory.md"), "# smoke\n");
+  mkdirSync(join(workdir, ".sangxia"), { recursive: true });
+  writeFileSync(join(workdir, ".sangxia", "memory.md"), "# smoke\n");
   await bridge2.initialize();
   const session2 = await bridge2.newSession(workdir);
   const p2 = bridge2.prompt(session2.sessionId, "再写一个文件 a.txt");

@@ -1,10 +1,10 @@
 {
-  "name": "eye-zhen-te",
-  "version": "0.1.0",
-  "description": "ZhenTe — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
+  "name": "sangxia-ai",
+  "version": "0.6.15",
+  "description": "Sangxia — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
   "type": "module",
   "bin": {
-    "zhente": "dist/index.js"
+    "sangxia": "dist/index.js"
   },
   "main": "dist/index.js",
   "engines": {

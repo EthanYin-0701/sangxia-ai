@@ -51,7 +51,7 @@
     // 生命周期钩子（默认关闭）：在固定点位跑外部命令，stdin 收 JSON 信封、
     // stdout 出决策 JSON，`exit 2` 等价 deny。详见 README 的「Hook（生命周期钩子）」。
     // 注意：deny 与 ask 在 permissionMode=auto（Full Access）下同样生效。
-    // 想要"在所有项目里都生效"的 hook，就把 hooks 写进 ~/.config/zhente/config.json
+    // 想要"在所有项目里都生效"的 hook，就把 hooks 写进 ~/.config/sangxia/config.json
     // （全局 base，见 README 的「配置分层」）；本文件的 hooks.events 是**追加**在它后面的。
     "enabled": false,
     "timeoutMs": 60000,
@@ -59,12 +59,12 @@
     "onError": "allow",
     // null = 平台默认（shell: true）；也可指定 "/bin/bash"
     "shell": null,
-    // 项目级 hooks（.zhente/hooks.json）：默认关闭 —— 该文件随仓库分发，
+    // 项目级 hooks（.sangxia/hooks.json）：默认关闭 —— 该文件随仓库分发，
     // 开启等于“打开仓库就执行它声明的任意命令”（供应链风险）。
     // 开启后：相对路径以项目根为基准；onError / timeoutMs 只能更严不能放宽。
     "projectFile": {
       "enabled": false,
-      "path": ".zhente/hooks.json"
+      "path": ".sangxia/hooks.json"
     },
     "events": {
       // 配置级 hook 一律用绝对路径或 ${HOME}/…：相对路径的解析基准是**本配置文件
@@ -72,26 +72,26 @@
       "session_start": [
         // matcher 匹配 source：startup（session/new）| resume（session/load），与 codex 的
         // SessionStart 一致；没有可匹配字段的事件上写 matcher 会被忽略（并 warn 一次）。
-        // { "name": "git-context", "command": "bash ${HOME}/.config/zhente/hooks/git-context.sh", "matcher": "startup|resume" },
+        // { "name": "git-context", "command": "bash ${HOME}/.config/sangxia/hooks/git-context.sh", "matcher": "startup|resume" },
         // 后台预热（命令自己 & 掉即可立刻返回；同步 hook + 后台任务）：
         // { "name": "warm-index", "command": "sh -c 'some-index --silent >/dev/null 2>&1 &'", "matcher": "startup|resume", "timeoutMs": 2000 }
       ],
       "user_prompt_submit": [
-        // { "name": "secret-scan", "command": "bash ${HOME}/.config/zhente/hooks/secret-scan.sh", "timeoutMs": 5000, "onError": "deny" }
+        // { "name": "secret-scan", "command": "bash ${HOME}/.config/sangxia/hooks/secret-scan.sh", "timeoutMs": 5000, "onError": "deny" }
       ],
       "pre_tool_use": [
-        // { "name": "guard-writes", "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/zhente/hooks/guard-writes.sh" },
-        // { "name": "guard-bash", "matcher": "^bash$", "command": "bash ${HOME}/.config/zhente/hooks/guard-bash.sh", "onError": "deny" },
-        // MCP 工具的注册名带前缀：{ "name": "guard-mcp", "matcher": "^mcp__router__execute_terminal_command$", "command": "bash ${HOME}/.config/zhente/hooks/guard-mcp.sh" }
+        // { "name": "guard-writes", "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-writes.sh" },
+        // { "name": "guard-bash", "matcher": "^bash$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-bash.sh", "onError": "deny" },
+        // MCP 工具的注册名带前缀：{ "name": "guard-mcp", "matcher": "^mcp__router__execute_terminal_command$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-mcp.sh" }
       ],
       "post_tool_use": [
-        // { "name": "ts-check", "matcher": "^edit_file$", "command": "bash ${HOME}/.config/zhente/hooks/ts-check.sh", "timeoutMs": 120000 }
+        // { "name": "ts-check", "matcher": "^edit_file$", "command": "bash ${HOME}/.config/sangxia/hooks/ts-check.sh", "timeoutMs": 120000 }
       ],
       "turn_end": [
-        // { "name": "audit", "command": "bash ${HOME}/.config/zhente/hooks/audit.sh" }
+        // { "name": "audit", "command": "bash ${HOME}/.config/sangxia/hooks/audit.sh" }
       ],
       "session_end": [
-        // { "name": "cleanup", "command": "bash ${HOME}/.config/zhente/hooks/cleanup.sh" }
+        // { "name": "cleanup", "command": "bash ${HOME}/.config/sangxia/hooks/cleanup.sh" }
       ]
     }
   }

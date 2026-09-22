@@ -3,10 +3,10 @@ name: deepseek-usage
 description: >-
   Check the DeepSeek account credit balance and inspect token usage. Route
   "balance" hits the official GET /user/balance endpoint with the API key from
-  the environment or the zhente config (the key itself is never printed);
+  the environment or the sangxia config (the key itself is never printed);
   route "usage" aggregates local prompt / completion / reasoning token counts
-  per day and per model from ZhenTe log files ($ZHENTE_LOG_DIR,
-  $ZHENTE_LOG_FILE, ~/.config/zhente/logs) or, as a fallback, from the newest
+  per day and per model from Sangxia log files ($SANGXIA_LOG_DIR,
+  $SANGXIA_LOG_FILE, ~/.config/sangxia/logs) or, as a fallback, from the newest
   JetBrains IDE logs — DeepSeek publishes no account-level usage API. Use when
   the user asks about DeepSeek credit, balance, remaining quota, top-up,
   spending, cost, or token usage.
@@ -27,15 +27,15 @@ description: >-
 
 ## 步骤 1：定位脚本
 
-技能可能装在项目里（`<cwd>/skills`、`<cwd>/.claude/skills`）或全局（`~/.config/zhente/skills`），
+技能可能装在项目里（`<cwd>/skills`、`<cwd>/.claude/skills`）或全局（`~/.config/sangxia/skills`），
 所以先按候选路径定位，**不要假设脚本在 cwd 下**：
 
 ```bash
 for cand in \
   "skills/deepseek-usage/scripts/deepseek-usage.mjs" \
   ".claude/skills/deepseek-usage/scripts/deepseek-usage.mjs" \
-  "${ZHENTE_CONFIG:+$(dirname "$ZHENTE_CONFIG")/skills/deepseek-usage/scripts/deepseek-usage.mjs}" \
-  "$HOME/.config/zhente/skills/deepseek-usage/scripts/deepseek-usage.mjs"; do
+  "${SANGXIA_CONFIG:+$(dirname "$SANGXIA_CONFIG")/skills/deepseek-usage/scripts/deepseek-usage.mjs}" \
+  "$HOME/.config/sangxia/skills/deepseek-usage/scripts/deepseek-usage.mjs"; do
   [ -n "$cand" ] && [ -f "$cand" ] && SCRIPT="$cand" && break
 done
 [ -f "${SCRIPT:-}" ] || { echo "找不到 deepseek-usage.mjs（技能未安装或被移动）"; exit 1; }
@@ -48,10 +48,10 @@ node "$SCRIPT" --help | head -5
 
 ## 跨项目使用（重要）
 
-本技能是**纯本地技能**（不依赖 MCP），所以在任何 cwd 下的 ZhenTe session 都能用，包括 TUI。
+本技能是**纯本地技能**（不依赖 MCP），所以在任何 cwd 下的 Sangxia session 都能用，包括 TUI。
 但有两件事按 cwd 解析，换项目后行为会变：
 
-1. **配置发现**会先看当前项目：`--config` → `$ZHENTE_CONFIG` → `<cwd>/zhente.config.json` → `~/.config/zhente/config.json`。
+1. **配置发现**会先看当前项目：`--config` → `$SANGXIA_CONFIG` → `<cwd>/sangxia.config.json` → `~/.config/sangxia/config.json`。
    别的项目的 `provider.baseURL` / `apiKey` 可能指向**别的厂商**，此时余额查询会报 404/401
    （脚本会打一行 `warning: base URL … 看起来不是 DeepSeek 端点`）。
    跨项目时若需临时指定端点，可显式指定 base URL（API key 统一从已导出的环境变量或宿主环境获取，**绝不直接在命令里键入明文 key**）：
@@ -63,7 +63,7 @@ node "$SCRIPT" --help | head -5
 
    （`$DEEPSEEK_API_KEY` / `$DEEPSEEK_BASE_URL` 优先级高于配置文件，且不会把 key 留在历史记录中。）
 
-2. **日志发现**默认找 `$ZHENTE_LOG_DIR` / `$ZHENTE_LOG_FILE` / `~/.config/zhente/logs`，找不到就兜底
+2. **日志发现**默认找 `$SANGXIA_LOG_DIR` / `$SANGXIA_LOG_FILE` / `~/.config/sangxia/logs`，找不到就兜底
    扫 JetBrains IDE 日志。如果那个项目用 `--log` 或别的日志位置，就显式传：
 
    ```bash
@@ -84,8 +84,8 @@ node "$SCRIPT" balance --json     # JSON：isAvailable + balances[] + baseUrlSou
 
 1. `--api-key <key>`
 2. `$DEEPSEEK_API_KEY`
-3. `$OPENAI_API_KEY`（本项目 zhente.config.json 用 `${OPENAI_API_KEY}` 指向 DeepSeek，所以通常命中这个）
-4. 配置文件 `provider.apiKey`（`--config` → `$ZHENTE_CONFIG` → `./zhente.config.json` → `~/.config/zhente/config.json`，支持 `${ENV_VAR}` 插值）
+3. `$OPENAI_API_KEY`（本项目 sangxia.config.json 用 `${OPENAI_API_KEY}` 指向 DeepSeek，所以通常命中这个）
+4. 配置文件 `provider.apiKey`（`--config` → `$SANGXIA_CONFIG` → `./sangxia.config.json` → `~/.config/sangxia/config.json`，支持 `${ENV_VAR}` 插值）
 
 base URL 同理：`--base-url` → `$DEEPSEEK_BASE_URL` → 配置 `provider.baseURL` → `https://api.deepseek.com`；
 空串一律视作"未设置"（回落到下一级），非 `http(s)` 绝对地址会直接报错。
@@ -120,17 +120,17 @@ node "$SCRIPT" usage --json                        # 机器可读
 日志来源解析顺序：
 
 1. `--log <file|dir>`（可重复；目录取其中的 `*.log`，不递归）
-2. `$ZHENTE_LOG_DIR`（目录）、`$ZHENTE_LOG_FILE`（单文件）
-3. `~/.config/zhente/logs`
+2. `$SANGXIA_LOG_DIR`（目录）、`$SANGXIA_LOG_FILE`（单文件）
+3. `~/.config/sangxia/logs`
 4. 都为空时兜底：JetBrains 日志目录（macOS `~/Library/Logs/JetBrains`、Linux `~/.cache/JetBrains`、Windows `%LOCALAPPDATA%/JetBrains`）下**最近修改的 15 个** `*.log`（IDE 会把 agent 的 stderr 记进去）
 
 统计口径：只认 `LLM request end … usage={…}` 行，按 `(行内 agent 时间戳 + 整行内容)` 去重
-（同一行同时出现在 `zhente-acp.log` 和 IDE 日志里只算一次），日期取 agent 自己写的时间戳。
+（同一行同时出现在 `sangxia-acp.log` 和 IDE 日志里只算一次），日期取 agent 自己写的时间戳。
 
 ```
 本地 token 用量
-  数据源: ZhenTe 日志
-  文件: /path/to/zhente-acp.log
+  数据源: Sangxia 日志
+  文件: /path/to/sangxia-acp.log
   扫描文件: 1   命中 "LLM request end": 2,625   含 usage: 387   无 usage 记录: 28
   时间范围: 2026-09-14 .. 2026-09-20
 
@@ -144,7 +144,7 @@ node "$SCRIPT" usage --json                        # 机器可读
 
 ### 为什么有很多"无 usage 记录"的请求
 
-只有 `provider.streamIncludeUsage=true`（当前版本默认 `true`）的请求才带 usage。老日志、显式设为 `false` 的配置，或中途失败/被取消的请求没有 usage chunk。要确认或开启，检查 `zhente.config.json` 中的 `provider.streamIncludeUsage`。
+只有 `provider.streamIncludeUsage=true`（当前版本默认 `true`）的请求才带 usage。老日志、显式设为 `false` 的配置，或中途失败/被取消的请求没有 usage chunk。要确认或开启，检查 `sangxia.config.json` 中的 `provider.streamIncludeUsage`。
 
 ## 输出纪律
 
@@ -160,8 +160,8 @@ node "$SCRIPT" usage --json                        # 机器可读
 | `error: 找不到 API key` | 设 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`，或在配置里写 `provider.apiKey: "${ENV_VAR}"` |
 | `API key 被拒绝 (HTTP 401)` | key 与 base URL 不属于同一账户/区域；或 `--api-key` 传错 |
 | `base URL 必须是 http(s) 绝对地址` | `--base-url` / `$DEEPSEEK_BASE_URL` 传了相对路径或空串；空串会回落到默认 `https://api.deepseek.com`，相对路径必须改成完整 URL |
-| `error: 日志路径不存在` | `--log` 路径写错；或该环境下 `$ZHENTE_LOG_FILE` 指向的文件已被清理 |
-| `扫描文件: 0` | 该环境没写日志文件（日志只在 stderr）；用 `--log` 指定 IDE 的 `idea*.log`，或设 `ZHENTE_LOG_DIR` |
+| `error: 日志路径不存在` | `--log` 路径写错；或该环境下 `$SANGXIA_LOG_FILE` 指向的文件已被清理 |
+| `扫描文件: 0` | 该环境没写日志文件（日志只在 stderr）；用 `--log` 指定 IDE 的 `idea*.log`，或设 `SANGXIA_LOG_DIR` |
 | 有请求数但 token 全是 0 | `streamIncludeUsage=false` 或老日志/请求中途失败/取消，见上一节 |
 | `数字比预期小` | `--since` / `--until` 过滤，或只扫了最近 N 个 IDE 日志（`--ide-log-files` 调大） |
 | 报 404 且端点是别的域名 | 借用了当前项目的 `provider.baseURL`（脚本会同时打 warning）；传 `--base-url https://api.deepseek.com` 或设 `$DEEPSEEK_BASE_URL` |

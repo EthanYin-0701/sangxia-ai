@@ -22,7 +22,7 @@ export class MockProvider implements LLMProvider {
           {
             id: "call_write_1",
             name: "write_file",
-            arguments: JSON.stringify({ path: "hello.txt", content: "hello from zhente\n" }),
+            arguments: JSON.stringify({ path: "hello.txt", content: "hello from sangxia\n" }),
           },
         ],
       };

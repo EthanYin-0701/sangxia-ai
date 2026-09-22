@@ -10,9 +10,9 @@
  * 设计要点：
  * - 绝不打印 API key，只打印凭证来源（环境变量名 / 配置文件路径）。
  * - balance 走官方 GET <base>/user/balance（DeepSeek 唯一公开的账户接口）。
- * - usage 无官方接口，改为聚合 ZhenTe 日志（ZHENTE_LOG_DIR / ZHENTE_LOG_FILE /
- *   ~/.config/zhente/logs）里 `LLM request end … usage={…}` 行的 token 数；
- *   没有 ZhenTe 日志时回落到最近修改的 JetBrains IDE 日志（agent stderr 被 IDE 记录）。
+ * - usage 无官方接口，改为聚合 Sangxia 日志（SANGXIA_LOG_DIR / SANGXIA_LOG_FILE /
+ *   ~/.config/sangxia/logs）里 `LLM request end … usage={…}` 行的 token 数；
+ *   没有 Sangxia 日志时回落到最近修改的 JetBrains IDE 日志（agent stderr 被 IDE 记录）。
  * - 日志按流读取 + 按 (时间戳, model, usage) 去重，重复扫描同一文件不会重复计数。
  */
 
@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 const USAGE = `deepseek-usage — DeepSeek 余额 / 本地 token 用量
 
   balance                     查询账户余额（官方 GET /user/balance）
-  usage                       汇总本地 token 用量（ZhenTe 日志 / IDE 日志）
+  usage                       汇总本地 token 用量（Sangxia 日志 / IDE 日志）
 
 balance 选项
   --api-key <key>             API key（默认 DEEPSEEK_API_KEY → OPENAI_API_KEY → 配置文件）
@@ -36,12 +36,12 @@ usage 选项
   --until <YYYY-MM-DD>        只统计该日期（含）之前的请求
   --log <file|dir>            指定日志文件或目录（可重复；目录取 *.log，不递归）
   --ide-logs                  强制使用 JetBrains IDE 日志
-  --no-ide-logs               只读 ZhenTe 日志，不用 IDE 日志兜底
+  --no-ide-logs               只读 Sangxia 日志，不用 IDE 日志兜底
   --ide-log-files <n>         兜底时最多扫描最近修改的 n 个 IDE 日志（默认 15）
   --json                      机器可读输出
 
 公共选项
-  --config <path>             zhente 配置文件（默认 $ZHENTE_CONFIG → ./zhente.config.json → ~/.config/zhente/config.json）
+  --config <path>             sangxia 配置文件（默认 $SANGXIA_CONFIG → ./sangxia.config.json → ~/.config/sangxia/config.json）
   -h, --help                  显示本帮助
 `;
 
@@ -122,8 +122,8 @@ function firstExisting(paths) {
 function loadConfig(explicitPath) {
   const path =
     explicitPath ??
-    process.env.ZHENTE_CONFIG ??
-    firstExisting([resolve("zhente.config.json"), join(homedir(), ".config", "zhente", "config.json")]);
+    process.env.SANGXIA_CONFIG ??
+    firstExisting([resolve("sangxia.config.json"), join(homedir(), ".config", "sangxia", "config.json")]);
   if (!path) return { path: undefined, data: {} };
   if (!existsSync(path)) {
     if (explicitPath) fail(`配置文件不存在: ${path}`);
@@ -152,7 +152,7 @@ function resolveCredential(opts, cfg) {
   }
   fail(
     "找不到 API key。请设置 DEEPSEEK_API_KEY（或 OPENAI_API_KEY），" +
-      "或在 zhente.config.json 的 provider.apiKey 里用 ${ENV_VAR} 引用；也可显式传 --api-key。",
+      "或在 sangxia.config.json 的 provider.apiKey 里用 ${ENV_VAR} 引用；也可显式传 --api-key。",
   );
 }
 
@@ -177,7 +177,7 @@ function resolveBaseURL(opts, cfg) {
 }
 
 /**
- * 跨项目使用时最容易出错的地方：另一个项目的 zhente.config.json 可能指向别的厂商
+ * 跨项目使用时最容易出错的地方：另一个项目的 sangxia.config.json 可能指向别的厂商
  * （或别的网关），此时 base URL 会被静默借用，余额查询报 404/401 而不是给出默认端点。
  * 检测到这种"非 deepseek 域名 + 来自配置文件"的组合就提醒一句，只在 stderr。
  */
@@ -308,12 +308,12 @@ function collectLogFiles(opts, cfg) {
     else files.push(p);
   }
 
-  const envDir = process.env.ZHENTE_LOG_DIR;
+  const envDir = process.env.SANGXIA_LOG_DIR;
   if (envDir && existsSync(envDir)) dirs.push(envDir);
-  const envFile = process.env.ZHENTE_LOG_FILE;
+  const envFile = process.env.SANGXIA_LOG_FILE;
   if (envFile && existsSync(envFile)) files.push(envFile);
 
-  const defaultDir = join(homedir(), ".config", "zhente", "logs");
+  const defaultDir = join(homedir(), ".config", "sangxia", "logs");
   if (files.length === 0 && dirs.length === 0 && existsSync(defaultDir)) dirs.push(defaultDir);
 
   for (const dir of dirs) {
@@ -336,13 +336,13 @@ function collectLogFiles(opts, cfg) {
   });
 
   if (unique.length > 0) {
-    return { files: unique, source: opts.logs.length > 0 ? "指定的日志路径" : "ZhenTe 日志", notes };
+    return { files: unique, source: opts.logs.length > 0 ? "指定的日志路径" : "Sangxia 日志", notes };
   }
   if (opts.ideLogs === false) {
     return { files: [], source: "none", notes };
   }
 
-  // 没有 ZhenTe 日志文件时兜底：IDE 会把 agent 的 stderr（含 log 行）记进自己的 idea*.log。
+  // 没有 Sangxia 日志文件时兜底：IDE 会把 agent 的 stderr（含 log 行）记进自己的 idea*.log。
   const ide = collectIdeLogFiles(opts.ideLogFiles);
   if (ide.files.length > 0) {
     return {
@@ -631,8 +631,8 @@ function printUsageReport(opts, state, { source, notes }) {
   if (state.files === 0) {
     console.log("");
     console.log(
-      "未找到可扫描的日志。可以：① 在 zhente.config.json 里设 provider.streamIncludeUsage=true 并设置 " +
-        "ZHENTE_LOG_DIR（或 --log 指向 zhente-acp.log / IDE 的 idea*.log）；② 账户级用量请到 https://platform.deepseek.com 查看。",
+      "未找到可扫描的日志。可以：① 在 sangxia.config.json 里设 provider.streamIncludeUsage=true 并设置 " +
+        "SANGXIA_LOG_DIR（或 --log 指向 sangxia-acp.log / IDE 的 idea*.log）；② 账户级用量请到 https://platform.deepseek.com 查看。",
     );
     return;
   }

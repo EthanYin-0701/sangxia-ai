@@ -60,7 +60,7 @@ export interface PersistedSession {
 }
 
 function sessionDir(): string {
-  return process.env.ZHENTE_SESSION_DIR ?? join(homedir(), ".config", "zhente", "sessions");
+  return process.env.SANGXIA_SESSION_DIR ?? join(homedir(), ".config", "sangxia", "sessions");
 }
 
 /** `<sessionDir>/<sessionId>.jsonl`。会话 ID 来自客户端时必须先过白名单。 */

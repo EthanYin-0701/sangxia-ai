@@ -1,7 +1,7 @@
 /**
- * `zhente tui` — terminal UI entry (tui/index.ts).
+ * `sangxia tui` — terminal UI entry (tui/index.ts).
  *
- * Drives the same ZhenTeAgent over an in-process ACP pair (bridge.ts), with
+ * Drives the same SangxiaAgent over an in-process ACP pair (bridge.ts), with
  * stdio belonging exclusively to the UI. Startup failures (non-TTY, missing
  * config, …) print a friendly message to stderr and exit non-zero — never a
  * raw stack (§3 C8 of plan/tui_support.md).
@@ -39,13 +39,13 @@ export function parseTuiArgs(argv: string[]): TuiOptions {
   return opts;
 }
 
-const APP_NAME = "ZhenTe";
+const APP_NAME = "Sangxia";
 
 export async function runTui(argv: string[]): Promise<number> {
   // ── 1. TTY guard (render needs stdout, keys need stdin - both must be TTY) ──
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write(
-      "zhente tui 需要真实终端（stdin 与 stdout 均须为 TTY）。可用 `script -q /dev/null zhente tui` 包裹。\n",
+      "sangxia tui 需要真实终端（stdin 与 stdout 均须为 TTY）。可用 `script -q /dev/null sangxia tui` 包裹。\n",
     );
     return 1;
   }
@@ -63,13 +63,13 @@ export async function runTui(argv: string[]): Promise<number> {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`配置加载失败：${msg}\n`);
     process.stderr.write(
-      "提示：zhente tui 与 ACP 模式共用同一份配置（--config / ZHENTE_CONFIG / ./zhente.config.json / ~/.config/zhente/config.json）。\n",
+      "提示：sangxia tui 与 ACP 模式共用同一份配置（--config / SANGXIA_CONFIG / ./sangxia.config.json / ~/.config/sangxia/config.json）。\n",
     );
     return 1;
   }
 
   // ── 3. logger: TUI 下日志不进屏幕只进文件 ──
-  const logDir = process.env.ZHENTE_LOG_DIR ?? join(tmpdir(), "zhente-tui-logs");
+  const logDir = process.env.SANGXIA_LOG_DIR ?? join(tmpdir(), "sangxia-tui-logs");
   logger.configure({ stderr: false, level: "warn", dir: logDir });
 
   // ── 4. theme + alternate screen ──
@@ -231,7 +231,7 @@ export async function runTui(argv: string[]): Promise<number> {
   const fatal = (e: unknown): void => {
     restoreTerminal();
     process.stderr.write(
-      `\nzhente tui 致命错误：${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`,
+      `\nsangxia tui 致命错误：${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`,
     );
     process.exit(1);
   };
@@ -299,7 +299,7 @@ export async function runTui(argv: string[]): Promise<number> {
             state.availableModels = session.models?.availableModels ?? state.availableModels;
             state.pendingModelSwitch = null;
             model.resetForNewSession();
-            model.addNotice("已开始新会话（旧会话已持久化到 ~/.config/zhente/sessions/）");
+            model.addNotice("已开始新会话（旧会话已持久化到 ~/.config/sangxia/sessions/）");
           } catch (e) {
             model.addNotice(`开新会话失败：${e instanceof Error ? e.message : String(e)}`, true);
           }
@@ -731,7 +731,7 @@ export async function runTui(argv: string[]): Promise<number> {
     process.removeListener("unhandledRejection", onUnhandledRejection);
     stdout.removeListener("resize", onResize);
     restoreTerminal();
-    logger.info("zhente tui exit");
+    logger.info("sangxia tui exit");
     process.exit(0);
   }
 

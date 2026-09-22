@@ -9,10 +9,10 @@ import { HOOK_EVENTS, type HookEntry } from "./types.js";
  * 设计见 `plan/hooks_support.md` §4-6 / §10-D15（review H2 的结论）：
  *
  * - **解析基准 = 声明它的那份配置所在目录**，绝不是 session cwd。
- *   配置级 hook（`zhente.config.json` / `$ZHENTE_CONFIG` / `~/.config/zhente/config.json`）
+ *   配置级 hook（`sangxia.config.json` / `$SANGXIA_CONFIG` / `~/.config/sangxia/config.json`）
  *   相对**声明它的那个配置文件目录**（分层加载后全局 base 与项目 overlay 各按自己的目录，
- *   见 D16）；项目级 hook（`.zhente/hooks.json`）相对**项目根**。
- *   若基准取 session cwd，全局配置里一句 `.zhente/hooks/guard.sh` 就会在打开任意
+ *   见 D16）；项目级 hook（`.sangxia/hooks.json`）相对**项目根**。
+ *   若基准取 session cwd，全局配置里一句 `.sangxia/hooks/guard.sh` 就会在打开任意
  *   恶意仓库时执行该仓库里的同名脚本（供应链风险）。
  * - hook 进程的**运行时 cwd 仍是 session cwd**（脚本里的 `git status` / `npm` 语义不变），
  *   两个概念解耦：基准决定"跑哪个文件"，cwd 决定"文件里看到的工作目录"。

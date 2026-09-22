@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Readable, Writable } from "node:stream";
 import { AgentSideConnection, ndJsonStream } from "@zed-industries/agent-client-protocol";
-import { ZhenTeAgent } from "./agent.js";
+import { SangxiaAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 
@@ -14,7 +14,7 @@ import { logger } from "./logger.js";
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
 
-  // `zhente tui` — interactive terminal UI. It fully owns stdio/lifecycle, so
+  // `sangxia tui` — interactive terminal UI. It fully owns stdio/lifecycle, so
   // the ACP-mode signal handling below must NOT be registered (B6).
   if (argv[0] === "tui") {
     const { runTui } = await import("./tui/index.js");
@@ -34,13 +34,13 @@ async function main(): Promise<void> {
   const stream = ndJsonStream(output, input);
 
   // The connection begins reading immediately and drives the Agent handlers.
-  let agent: ZhenTeAgent | undefined;
+  let agent: SangxiaAgent | undefined;
   new AgentSideConnection((conn) => {
-    agent = new ZhenTeAgent(conn, config);
+    agent = new SangxiaAgent(conn, config);
     return agent;
   }, stream);
 
-  logger.info(`ZhenTe ACP agent 就绪 · provider=${config.provider.type} · model=${config.provider.model}`);
+  logger.info(`Sangxia ACP agent 就绪 · provider=${config.provider.type} · model=${config.provider.model}`);
 
   // Stay alive until the client disconnects (stdin closes) or we're signaled.
   await new Promise<void>((resolve) => {

@@ -3,7 +3,7 @@ node_modules/
 dist/
 
 # 本地配置（含密钥，勿提交）
-zhente.config.json
+sangxia.config.json
 
 # 日志
 *.log
@@ -21,5 +21,5 @@ zhente.config.json
 
 # 系统文件
 .DS_Store
-/.zhente/
+/.sangxia/
 /plan/

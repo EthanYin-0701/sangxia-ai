@@ -56,7 +56,7 @@ export async function connectMcpServer(server: McpServer, timeoutMs: number): Pr
     });
   }
 
-  const client = new Client({ name: "zhente", version: "0.1.0" });
+  const client = new Client({ name: "sangxia", version: "0.1.0" });
   await client.connect(transport, { timeout: timeoutMs });
 
   const { tools: mcpTools } = await client.listTools(undefined, { timeout: timeoutMs });

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# 把本仓库 skills/ 下的技能安装到 ZhenTe 的全局技能目录，让任意 cwd 的
-# ZhenTe session 都能发现它们（ACP 客户端、TUI 都适用）。
+# 把本仓库 skills/ 下的技能安装到 Sangxia 的全局技能目录，让任意 cwd 的
+# Sangxia session 都能发现它们（ACP 客户端、TUI 都适用）。
 #
 # 用法:
-#   scripts/install-skills.sh                 # 装到 ~/.config/zhente/skills
+#   scripts/install-skills.sh                 # 装到 ~/.config/sangxia/skills
 #   scripts/install-skills.sh --dry-run       # 只打印要做什么
 #   scripts/install-skills.sh --force         # 覆盖已存在的同名技能
 #   scripts/install-skills.sh --skill deepseek-usage
 #   scripts/install-skills.sh --target /path/to/skills
-#   ZHENTE_SKILLS_DIR=/path/to/skills scripts/install-skills.sh
+#   SANGXIA_SKILLS_DIR=/path/to/skills scripts/install-skills.sh
 #
 # 注意（装完仍然"看不见"技能时先看这三条）:
-#   1. 项目的 zhente.config.json 若设置了 skills.dirs（非空），它会**替换**默认目录
-#      （默认 = <cwd>/skills + ~/.config/zhente/skills）——必须把全局目录显式列进去。
+#   1. 项目的 sangxia.config.json 若设置了 skills.dirs（非空），它会**替换**默认目录
+#      （默认 = <cwd>/skills + ~/.config/sangxia/skills）——必须把全局目录显式列进去。
 #   2. 技能清单在 session/new 时扫描一次，装完要**新开会话**才生效。
 #   3. skills.enabled 必须为 true（默认 true）。
 
@@ -21,7 +21,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR="$REPO_ROOT/skills"
-TARGET_DIR="${ZHENTE_SKILLS_DIR:-$HOME/.config/zhente/skills}"
+TARGET_DIR="${SANGXIA_SKILLS_DIR:-$HOME/.config/sangxia/skills}"
 DRY_RUN=0
 FORCE=0
 ONLY=""
@@ -102,9 +102,9 @@ cat <<'NOTE'
 
 后续手动确认（脚本不会改你的配置文件）:
   1. 新开会话——技能清单只在 session/new 时扫描一次。
-  2. 若目标项目的 zhente.config.json 设了 skills.dirs，把全局目录加进去，例如：
+  2. 若目标项目的 sangxia.config.json 设了 skills.dirs，把全局目录加进去，例如：
        { "skills": { "enabled": true,
-                     "dirs": ["skills", ".claude/skills", "$HOME/.config/zhente/skills"] } }
+                     "dirs": ["skills", ".claude/skills", "$HOME/.config/sangxia/skills"] } }
      （dirs 非空会替换默认目录；同名技能先到先得，故全局目录建议排在最后。）
   3. TUI 场景无需额外配置（技能发现与 MCP 无关，纯本地技能可直接用）。
 NOTE

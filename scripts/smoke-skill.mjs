@@ -22,8 +22,8 @@ import {
 } from "@zed-industries/agent-client-protocol";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const workdir = mkdtempSync(join(tmpdir(), "zhente-skill-"));
-// 隔离的 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+const workdir = mkdtempSync(join(tmpdir(), "sangxia-skill-"));
+// 隔离的 HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，
 // 冒烟不能读到开发机真实的全局配置（hooks / provider 都可能与本场景冲突）。
 const home = join(workdir, "home");
 
@@ -114,7 +114,7 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
 // --- Spawn the agent pointed at the fake server -------------------------------
-const cfgPath = join(workdir, "zhente.config.json");
+const cfgPath = join(workdir, "sangxia.config.json");
 writeFileSync(
   cfgPath,
   JSON.stringify({

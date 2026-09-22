@@ -22,8 +22,8 @@ import { discoverSkills, skillCatalogPrompt, useSkillTool } from "../dist/skills
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const mockServer = join(root, "scripts/mock-mcp-server.mjs");
-const workdir = mkdtempSync(join(tmpdir(), "zhente-mcp-"));
-// 隔离的 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+const workdir = mkdtempSync(join(tmpdir(), "sangxia-mcp-"));
+// 隔离的 HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，
 // 冒烟不能读到开发机真实的全局配置（hooks / provider 都可能与本场景冲突）。
 const home = join(workdir, "home");
 
@@ -34,7 +34,7 @@ writeFileSync(
   "---\nname: hello\ndescription: 打招呼的示例技能。\n---\n# Hello\n收到问候时用中文回复「你好！」。\n",
 );
 
-const cfgPath = join(workdir, "zhente.config.json");
+const cfgPath = join(workdir, "sangxia.config.json");
 writeFileSync(cfgPath, JSON.stringify({ provider: { type: "mock", model: "mock" } }));
 
 const mcpServers = [{ name: "mock", command: "node", args: [mockServer], env: [] }];

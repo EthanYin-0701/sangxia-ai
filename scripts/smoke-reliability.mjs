@@ -16,13 +16,13 @@ import { fsTools } from "../dist/tools/fs-tools.js";
 import { connectMcpServer } from "../dist/mcp/client.js";
 import { logger } from "../dist/logger.js";
 import { validateToolArguments } from "../dist/harness/validation.js";
-import { ZhenTeAgent } from "../dist/agent.js";
+import { SangxiaAgent } from "../dist/agent.js";
 import { createHeadTailBuffer, truncateMiddle, truncationMarker } from "../dist/harness/truncate.js";
 import { bashTool } from "../dist/tools/bash.js";
 import { appendEvent, loadSession } from "../dist/persistence.js";
 
-const dir = await mkdtemp(join(tmpdir(), "zhente-reliability-"));
-process.env.ZHENTE_SESSION_DIR = join(dir, "sessions");
+const dir = await mkdtemp(join(tmpdir(), "sangxia-reliability-"));
+process.env.SANGXIA_SESSION_DIR = join(dir, "sessions");
 logger.configure({ stderr: false, dir: join(dir, "logs") });
 let rounds = [], requests = [], closed = 0;
 const server = createServer(async (req, res) => {
@@ -395,7 +395,7 @@ try {
       skills: { enabled: false, dirs: [] },
       hooks: { enabled: false },
     };
-    const agent = new ZhenTeAgent({
+    const agent = new SangxiaAgent({
       async sessionUpdate() {},
       async requestPermission() { return { outcome: { outcome: "cancelled" } }; },
     }, agentConfig);
@@ -486,7 +486,7 @@ try {
       skills: { enabled: false, dirs: [] },
       hooks: { enabled: false },
     };
-    const agent = new ZhenTeAgent({
+    const agent = new SangxiaAgent({
       async sessionUpdate() {},
       async requestPermission() { return { outcome: { outcome: "cancelled" } }; },
     }, agentConfig);
@@ -763,16 +763,16 @@ try {
     assert.equal(executed, 1);
   });
   await check("ACP stop reasons, session/cancel, stdin EOF and shutdown abort real requests", async () => {
-    await mkdir(join(dir, ".zhente"), { recursive: true });
+    await mkdir(join(dir, ".sangxia"), { recursive: true });
     await writeFile(join(dir, "AGENTS.md"), "Test project");
-    await writeFile(join(dir, ".zhente", "memory.md"), "Test memory");
+    await writeFile(join(dir, ".sangxia", "memory.md"), "Test memory");
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({ provider: cfg, agent: { permissionMode: "auto" }, skills: { enabled: false } }));
     for (const mode of ["cancel", "stdin", "shutdown"]) {
       const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
-        // 隔离 HOME：分层加载（D16）会把 ~/.config/zhente/config.json 当 base。
+        // 隔离 HOME：分层加载（D16）会把 ~/.config/sangxia/config.json 当 base。
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, HOME: join(dir, "home"), ZHENTE_LOG_DIR: join(dir, "child-logs") },
+        env: { ...process.env, HOME: join(dir, "home"), SANGXIA_LOG_DIR: join(dir, "child-logs") },
       });
       let stderr = "";
       child.stderr.on("data", (d) => { stderr += d; });
@@ -813,21 +813,21 @@ try {
       }
     }
   });
-  await check("user-level instructions (~/.config/zhente/AGENTS.md) load before project memory", async () => {
+  await check("user-level instructions (~/.config/sangxia/AGENTS.md) load before project memory", async () => {
     const project = join(dir, "memory-project");
     const home = join(dir, "memory-home");
-    await mkdir(join(project, ".zhente"), { recursive: true });
-    await mkdir(join(home, ".config", "zhente"), { recursive: true });
+    await mkdir(join(project, ".sangxia"), { recursive: true });
+    await mkdir(join(home, ".config", "sangxia"), { recursive: true });
     await writeFile(join(project, "AGENTS.md"), "PROJECT-AGENTS");
-    await writeFile(join(project, ".zhente", "memory.md"), "PROJECT-MEMORY");
-    await writeFile(join(home, ".config", "zhente", "AGENTS.md"), "USER-MEMORY");
+    await writeFile(join(project, ".sangxia", "memory.md"), "PROJECT-MEMORY");
+    await writeFile(join(home, ".config", "sangxia", "AGENTS.md"), "USER-MEMORY");
     const path = join(project, "config.json");
     await writeFile(path, JSON.stringify({ provider: cfg, agent: { permissionMode: "auto" }, mcp: { enabled: false }, skills: { enabled: false } }));
     rounds = [answer];
     requests = [];
     const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, HOME: home, ZHENTE_LOG_DIR: join(dir, "memory-logs"), ZHENTE_SESSION_DIR: join(dir, "memory-sessions") },
+      env: { ...process.env, HOME: home, SANGXIA_LOG_DIR: join(dir, "memory-logs"), SANGXIA_SESSION_DIR: join(dir, "memory-sessions") },
     });
     const exit = new Promise((r) => child.once("exit", r));
     const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);

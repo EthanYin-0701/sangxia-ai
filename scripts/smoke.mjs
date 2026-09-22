@@ -18,11 +18,11 @@ import {
 } from "@zed-industries/agent-client-protocol";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const workdir = mkdtempSync(join(tmpdir(), "zhente-smoke-"));
-// 隔离的 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+const workdir = mkdtempSync(join(tmpdir(), "sangxia-smoke-"));
+// 隔离的 HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，
 // 冒烟不能读到开发机真实的全局配置（hooks / provider 都可能与本场景冲突）。
 const home = join(workdir, "home");
-const cfgPath = join(workdir, "zhente.config.json");
+const cfgPath = join(workdir, "sangxia.config.json");
 writeFileSync(
   cfgPath,
   JSON.stringify({
@@ -125,7 +125,7 @@ try {
   );
 
   const created = readFileSync(join(workdir, "hello.txt"), "utf8");
-  assert.equal(created, "hello from zhente\n", "hello.txt 内容应匹配");
+  assert.equal(created, "hello from sangxia\n", "hello.txt 内容应匹配");
   console.error(`✓ 文件已创建: hello.txt = ${JSON.stringify(created)}`);
   console.error(`✓ 工具调用: ${toolNames.join(" · ")}`);
 

@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const MEMORY_FILE_ALIASES = [["AGENTS.md", "AGENT.md"], [".zhente/memory.md", "memory.md"]];
+const MEMORY_FILE_ALIASES = [["AGENTS.md", "AGENT.md"], [".sangxia/memory.md", "memory.md"]];
 
 /**
- * 用户级（全局）长期指令：`~/.config/zhente/AGENTS.md`。
+ * 用户级（全局）长期指令：`~/.config/sangxia/AGENTS.md`。
  *
  * 与项目记忆分开、**永远**加载（每个项目、每次 new/load session），用来放"无论打开
  * 哪个仓库都成立"的偏好 —— 例如某个 CLI 的用法约定、语义搜索优先于 grep 之类的
@@ -15,7 +15,7 @@ const MEMORY_FILE_ALIASES = [["AGENTS.md", "AGENT.md"], [".zhente/memory.md", "m
  * 路径在调用时求值（不是模块加载时），否则会冻住启动时的 HOME。
  */
 function userMemoryDir(): string {
-  return join(homedir(), ".config", "zhente");
+  return join(homedir(), ".config", "sangxia");
 }
 
 interface MemoryHit {
@@ -55,7 +55,7 @@ export async function loadProjectMemory(cwd: string): Promise<string> {
   return ["", "项目长期记忆（每次新建/恢复 session 都会加载，请在相关任务完成后维护）：", ...sections].join("\n\n");
 }
 
-/** Load the user-level instructions (`~/.config/zhente/AGENTS.md`), if any. */
+/** Load the user-level instructions (`~/.config/sangxia/AGENTS.md`), if any. */
 export async function loadUserMemory(): Promise<string> {
   const dir = userMemoryDir();
   const hit = await readMemoryFile(dir, ["AGENTS.md", "AGENT.md"]);

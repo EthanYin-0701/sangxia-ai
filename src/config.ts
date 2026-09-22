@@ -11,11 +11,11 @@ import { logger } from "./logger.js";
  *
  * Resolution order for the **primary** config:
  *   1. `--config <path>` CLI flag
- *   2. `$ZHENTE_CONFIG` env var
- *   3. `./zhente.config.json` (cwd)
- *   4. `~/.config/zhente/config.json`
+ *   2. `$SANGXIA_CONFIG` env var
+ *   3. `./sangxia.config.json` (cwd)
+ *   4. `~/.config/sangxia/config.json`
  *
- * Layering (D16): `~/.config/zhente/config.json` is *always* loaded as the base and
+ * Layering (D16): `~/.config/sangxia/config.json` is *always* loaded as the base and
  * the primary config is merged on top of it (deep merge, primary wins; `hooks.events.*`
  * arrays are **appended** so a global hook cannot be silenced by a project config).
  * A project file alone can then keep just its own overrides — e.g. only `provider`.
@@ -68,7 +68,7 @@ const providerSchema = z
      * `streamIdleTimeoutMs` (the gap *between* chunks once streaming has
      * started) because a busy DeepSeek endpoint sends SSE `: keep-alive`
      * comment lines while queueing, which the SDK drops without producing a
-     * chunk — so under the old single idle timer, ZhenTe would kill (and
+     * chunk — so under the old single idle timer, Sangxia would kill (and
      * never retry) a request the server was still going to answer. DeepSeek
      * itself only gives up after 10 minutes of no inference started, so the
      * default here matches that.
@@ -95,7 +95,7 @@ const providerSchema = z
     /**
      * Whether captured assistant `reasoning_content` from earlier turns is
      * echoed back on subsequent requests. DeepSeek's thinking mode requires
-     * this whenever `tools` are present (ZhenTe always sends tools) and
+     * this whenever `tools` are present (Sangxia always sends tools) and
      * returns 400 otherwise. "none" is an escape hatch for a backend that
      * rejects an unrecognized field instead of ignoring it.
      */
@@ -163,7 +163,7 @@ const mcpSchema = z
 /**
  * Skill discovery. `dirs` are extra directories to scan (relative paths resolve
  * against the session cwd); an empty list means "use the built-in defaults"
- * (`<cwd>/skills` and `~/.config/zhente/skills`).
+ * (`<cwd>/skills` and `~/.config/sangxia/skills`).
  */
 const skillsSchema = z
   .object({
@@ -202,14 +202,14 @@ const hooksSchema = z
     /** null = 平台默认（`shell: true`）；可指定 "/bin/bash"。 */
     shell: z.string().nullable().default(null),
     /**
-     * 项目级 hooks（`.zhente/hooks.json`）默认关闭：该文件随仓库分发 = 打开仓库就
+     * 项目级 hooks（`.sangxia/hooks.json`）默认关闭：该文件随仓库分发 = 打开仓库就
      * 执行任意命令（供应链风险）。开启后其相对路径命令以**项目根**为基准，
      * 且不能放宽 `onError` / 超时上限（只允许更严）。
      */
     projectFile: z
       .object({
         enabled: z.boolean().default(false),
-        path: z.string().default(".zhente/hooks.json"),
+        path: z.string().default(".sangxia/hooks.json"),
       })
       .default({}),
     events: z
@@ -247,7 +247,7 @@ export interface LoadedConfig extends Config {
   configPath: string;
   /** 主配置目录（D15 相对路径基准的兜底）。 */
   configDir: string;
-  /** 分层加载的 base（`~/.config/zhente/config.json`）；未参与则为 null。 */
+  /** 分层加载的 base（`~/.config/sangxia/config.json`）；未参与则为 null。 */
   baseConfigPath: string | null;
   /** 实际参与加载的配置文件，base 在前。 */
   configPaths: string[];
@@ -275,18 +275,18 @@ export function resolveConfigPath(argv: string[]): string | null {
   const flagIdx = argv.indexOf("--config");
   if (flagIdx >= 0 && argv[flagIdx + 1]) return resolve(argv[flagIdx + 1]!);
 
-  if (process.env.ZHENTE_CONFIG) return resolve(process.env.ZHENTE_CONFIG);
+  if (process.env.SANGXIA_CONFIG) return resolve(process.env.SANGXIA_CONFIG);
 
-  const cwdPath = resolve(process.cwd(), "zhente.config.json");
+  const cwdPath = resolve(process.cwd(), "sangxia.config.json");
   if (existsSync(cwdPath)) return cwdPath;
 
-  const homePath = join(homedir(), ".config", "zhente", "config.json");
+  const homePath = join(homedir(), ".config", "sangxia", "config.json");
   if (existsSync(homePath)) return homePath;
 
   return null;
 }
 
-/** 权限模式的 CLI/env 覆盖：--permission-mode auto|confirm 或 ZHENTE_PERMISSION_MODE。 */
+/** 权限模式的 CLI/env 覆盖：--permission-mode auto|confirm 或 SANGXIA_PERMISSION_MODE。 */
 function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
   const flagIdx = argv.indexOf("--permission-mode");
   if (flagIdx >= 0) {
@@ -294,10 +294,10 @@ function permissionModeOverride(argv: string[]): "auto" | "confirm" | null {
     if (v === "auto" || v === "confirm") return v;
     throw new Error(`--permission-mode 取值无效: ${v}（应为 auto 或 confirm）`);
   }
-  const envValue = process.env.ZHENTE_PERMISSION_MODE;
+  const envValue = process.env.SANGXIA_PERMISSION_MODE;
   if (envValue !== undefined) {
     if (envValue === "auto" || envValue === "confirm") return envValue;
-    throw new Error(`ZHENTE_PERMISSION_MODE 取值无效: ${envValue}（应为 auto 或 confirm）`);
+    throw new Error(`SANGXIA_PERMISSION_MODE 取值无效: ${envValue}（应为 auto 或 confirm）`);
   }
   return null;
 }
@@ -321,9 +321,9 @@ interface HookSource {
 
 const hookEntriesSchema = z.array(hookEntrySchema);
 
-/** `~/.config/zhente/config.json`：用户级全局配置，永远是分层加载的 base。 */
+/** `~/.config/sangxia/config.json`：用户级全局配置，永远是分层加载的 base。 */
 export function globalConfigPath(): string {
-  return join(homedir(), ".config", "zhente", "config.json");
+  return join(homedir(), ".config", "sangxia", "config.json");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -412,12 +412,12 @@ export function loadConfig(argv: string[] = process.argv.slice(2)): LoadedConfig
       ? globalPath
       : null;
   const primaryPath = overlayPath;
-  // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 ZHENTE_BASE_URL /
-  //   ZHENTE_API_KEY / ZHENTE_MODEL 组合 provider 配置，实现 headless 零配置直跑
+  // TODO(acpreg): 环境变量 bootstrap —— 无配置文件时尝试用 SANGXIA_BASE_URL /
+  //   SANGXIA_API_KEY / SANGXIA_MODEL 组合 provider 配置，实现 headless 零配置直跑
   //   （见 plan/acpreg.md §2.3 路径 C、§3 阶段 1）。
   if (!primaryPath) {
     throw new Error(
-      "未找到配置文件。请用 --config <path> 指定，或创建 ./zhente.config.json（参考 zhente.config.example.json），" +
+      "未找到配置文件。请用 --config <path> 指定，或创建 ./sangxia.config.json（参考 sangxia.config.example.json），" +
         `或放一份全局配置在 ${globalPath}。`,
     );
   }

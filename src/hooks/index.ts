@@ -47,14 +47,14 @@ export function hookPayload(
 export function hookEnv(payload: HookPayload): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    ZHENTE_HOOK_EVENT: payload.hook_event_name,
-    ZHENTE_SESSION_ID: payload.session_id,
-    ZHENTE_CWD: payload.cwd,
-    ZHENTE_PERMISSION_MODE: payload.permission_mode,
+    SANGXIA_HOOK_EVENT: payload.hook_event_name,
+    SANGXIA_SESSION_ID: payload.session_id,
+    SANGXIA_CWD: payload.cwd,
+    SANGXIA_PERMISSION_MODE: payload.permission_mode,
     // L5：与 Claude Code 的 CLAUDE_PROJECT_DIR 语义对齐 = 项目根（session cwd），
-    // 不是 ZhenTe 进程的启动目录；后者单独给一个不会误导的名字。
-    ZHENTE_PROJECT_DIR: payload.cwd,
-    ZHENTE_AGENT_CWD: process.cwd(),
+    // 不是 Sangxia 进程的启动目录；后者单独给一个不会误导的名字。
+    SANGXIA_PROJECT_DIR: payload.cwd,
+    SANGXIA_AGENT_CWD: process.cwd(),
   };
 }
 
@@ -84,7 +84,7 @@ export class HookRegistry {
       timeoutMs: 60_000,
       onError: "allow",
       shell: null,
-      projectFile: { enabled: false, path: ".zhente/hooks.json" },
+      projectFile: { enabled: false, path: ".sangxia/hooks.json" },
       events: Object.fromEntries(HOOK_EVENTS.map((e) => [e, []])) as unknown as HooksConfig["events"],
     },
     {},
@@ -235,7 +235,7 @@ export class HookRegistry {
 /**
  * 构建一个会话的 hook 注册表：配置级（已在 `loadConfig` 解析路径）+ 可选项目级文件。
  *
- * 项目级 hooks（`.zhente/hooks.json`）默认关闭（D4：随仓库分发 = 打开仓库就执行任意
+ * 项目级 hooks（`.sangxia/hooks.json`）默认关闭（D4：随仓库分发 = 打开仓库就执行任意
  * 命令，供应链风险）；显式 `projectFile.enabled: true` 才加载，此时该文件损坏/脚本缺失
  * 一律**直接报错**（显式开启即视为信任该仓库，坏掉的守卫不能静默失效）。
  */

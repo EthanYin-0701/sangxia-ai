@@ -1,4 +1,4 @@
-# 珍特 · 基于 Node.js 的 ACP Coding AI Agent
+# Sangxia.ai · 基于 Node.js 的 ACP Coding AI Agent
 
 一个用 TypeScript 写的编程 AI agent：
 
@@ -14,7 +14,7 @@ npm install
 npm run build
 
 # 复制并填写配置
-cp zhente.config.example.json zhente.config.json
+cp sangxia.config.example.json sangxia.config.json
 export OPENAI_API_KEY=sk-...        # 配置里用 ${OPENAI_API_KEY} 引用
 
 # 冒烟测试（离线，无需 key）
@@ -25,21 +25,21 @@ npm run smoke:openai   # 真实 OpenAI 兼容流式路径（本地假服务器�
 node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ```
 
-> 下文的 `zhente` 是 `package.json` 里声明的 bin 名；本地仓库直接用 `node dist/index.js …`，或先 `npm link` 让 `zhente` 进 PATH。
+> 下文的 `sangxia` 是 `package.json` 里声明的 bin 名；本地仓库直接用 `node dist/index.js …`，或先 `npm link` 让 `sangxia` 进 PATH。
 
 ## 配置
 
-解析顺序：`--config <path>` → `$ZHENTE_CONFIG` → `./zhente.config.json` → `~/.config/zhente/config.json`。
+解析顺序：`--config <path>` → `$SANGXIA_CONFIG` → `./sangxia.config.json` → `~/.config/sangxia/config.json`。
 字符串值支持 `${ENV_VAR}` 环境变量插值，密钥不必落盘。
 
-**配置分层（D16）**：`~/.config/zhente/config.json` 是**全局 base**，永远先加载，上面这份主配置作为 **overlay** 叠加（深合并，overlay 胜；只有 `hooks.events.*` 是**数组追加**，base 先、overlay 后）。于是：
+**配置分层（D16）**：`~/.config/sangxia/config.json` 是**全局 base**，永远先加载，上面这份主配置作为 **overlay** 叠加（深合并，overlay 胜；只有 `hooks.events.*` 是**数组追加**，base 先、overlay 后）。于是：
 
 - 项目里只需要写"和全局不一样的东西"（例如只写 `provider`），全局的 `hooks` 照样生效；
-- **全局 hook 不能被某个项目配置静默删掉** —— 唯一关掉方式是显式 `"hooks": { "enabled": false }`（这是有意的：否则打开一个带 `zhente.config.json` 的仓库就能悄悄卸掉你的守卫 hook）；
+- **全局 hook 不能被某个项目配置静默删掉** —— 唯一关掉方式是显式 `"hooks": { "enabled": false }`（这是有意的：否则打开一个带 `sangxia.config.json` 的仓库就能悄悄卸掉你的守卫 hook）；
 - 反过来，全局配置写错（未知事件名、路径形态命令不存在等）会让**所有**项目启动失败 —— 这是 fail fast 的代价，报错信息里会指名具体文件与条目；
 - 项目里没有任何配置文件时，全局配置可以独立当配置用（`provider` + `hooks` 都写它即可）。
 
-和分层配置同一思路的还有 **`~/.config/zhente/AGENTS.md`（用户级长期指令）**：它不是配置项，而是一份纯 markdown，每次都进 system prompt、对所有项目生效（见「架构」一节的项目记忆说明）。
+和分层配置同一思路的还有 **`~/.config/sangxia/AGENTS.md`（用户级长期指令）**：它不是配置项，而是一份纯 markdown，每次都进 system prompt、对所有项目生效（见「架构」一节的项目记忆说明）。
 
 ```jsonc
 {
@@ -82,16 +82,16 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
   },
   "skills": {
     "enabled": true,                       // 是否启用技能层
-    "dirs": []                             // 额外技能目录；空=默认 <cwd>/skills 与 ~/.config/zhente/skills
+    "dirs": []                             // 额外技能目录；空=默认 <cwd>/skills 与 ~/.config/sangxia/skills
   },
   "hooks": {                               // 生命周期钩子（默认关闭），见「Hook（生命周期钩子）」
     "enabled": false,                      // 总开关：升级后行为完全不变，显式开启才生效
     "timeoutMs": 60000,                    // 单条 hook 的默认超时
     "onError": "allow",                    // 超时/崩溃/输出不可解析时："allow"（默认）| "deny"（fail-closed）
     "shell": null,                         // null = 平台默认（/bin/sh -c）；可指定 "/bin/bash"
-    "projectFile": {                       // 项目级 hooks（随仓库分发的 .zhente/hooks.json）
+    "projectFile": {                       // 项目级 hooks（随仓库分发的 .sangxia/hooks.json）
       "enabled": false,                    // 默认关闭：打开一个仓库不应执行它的任意命令（供应链风险）
-      "path": ".zhente/hooks.json"
+      "path": ".sangxia/hooks.json"
     },
     "events": {                            // 事件名与 Claude Code 基本对齐（见下）
       // 配置级 hook 一律写绝对路径或 ${HOME}/…：相对路径的解析基准是**本配置文件
@@ -99,8 +99,8 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
       "session_start": [],
       "user_prompt_submit": [],
       "pre_tool_use": [
-        // { "name": "guard-writes", "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/zhente/hooks/guard-writes.sh" },
-        // { "name": "guard-bash", "matcher": "^bash$", "command": "bash ${HOME}/.config/zhente/hooks/guard-bash.sh", "onError": "deny" },
+        // { "name": "guard-writes", "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-writes.sh" },
+        // { "name": "guard-bash", "matcher": "^bash$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-bash.sh", "onError": "deny" },
         // MCP 工具用注册名（带前缀）：{ "name": "guard-mcp", "matcher": "^mcp__router__execute_terminal_command$", "command": "…" }
       ],
       "post_tool_use": [],
@@ -111,9 +111,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 }
 ```
 
-> **权限模式覆盖**：`permissionMode` 也可用 CLI 参数 `--permission-mode auto|confirm` 或环境变量 `ZHENTE_PERMISSION_MODE=auto|confirm` 覆盖（优先级：CLI > 环境变量 > 配置文件），方便在 IDE 的 ACP agent 配置（args/env）里按 agent 各自选择。旧字段 `autoApprove: true` 等价于 `permissionMode: "auto"`。
+> **权限模式覆盖**：`permissionMode` 也可用 CLI 参数 `--permission-mode auto|confirm` 或环境变量 `SANGXIA_PERMISSION_MODE=auto|confirm` 覆盖（优先级：CLI > 环境变量 > 配置文件），方便在 IDE 的 ACP agent 配置（args/env）里按 agent 各自选择。旧字段 `autoApprove: true` 等价于 `permissionMode: "auto"`。
 
-> **会话模型选择**：配置 `provider.models` 后，ZhenTe 会在 `session/new` / `session/load` 返回 ACP model 列表，并处理 `session/set_model`。`provider.model` 是新会话默认值，且必须出现在 `models` 中；未配置 `models` 时只暴露默认模型。
+> **会话模型选择**：配置 `provider.models` 后，Sangxia 会在 `session/new` / `session/load` 返回 ACP model 列表，并处理 `session/set_model`。`provider.model` 是新会话默认值，且必须出现在 `models` 中；未配置 `models` 时只暴露默认模型。
 
 支持 ACP Session Modes 的客户端会在会话输入框下方显示权限下拉菜单：`Standard Access` 对应 `confirm`，`Full Access` 对应 `auto`。配置文件、CLI 或环境变量决定新会话的默认选项；在下拉菜单中的切换仅作用于当前会话，并随会话持久化。
 
@@ -123,20 +123,20 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 流式请求受三个独立上限约束：`firstChunkTimeoutMs`（首个 chunk 前，覆盖连接建立 + 服务端排队）、`streamIdleTimeoutMs`（首个 chunk 之后，chunk 之间的空闲上限）、`streamTotalTimeoutMs`（整次请求的总时长）；`provider.models` 中的每个模型都可用同名字段（以及 `streamRetries` / `streamRetryBaseDelayMs`）覆盖全局值。SDK 自动重试已关闭，避免隐藏重试扩大等待时间。超时会中止请求并显示首 chunk/空闲/总时长原因，ACP 返回 `refusal`（首 chunk 超时除外，见下）；用户取消返回 `cancelled`。
 
-`firstChunkTimeoutMs` 单独拆分是因为它和 `streamIdleTimeoutMs` 的语义不同：高负载的 DeepSeek 端点排队时会持续发送 SSE 注释行 `: keep-alive`，而 openai SDK 会在产生 chunk 之前就丢弃注释行——也就是说这段等待对 ZhenTe 完全不可见，无法用"空闲"计时去衡量。旧版用同一个 60s 空闲上限覆盖这段等待，在生产日志里观测到过 14 次首 chunk 等待超过 30 秒（最长 66.9 秒），若换成更短的空闲阈值本会被直接杀掉且不重试。现在这段等待由 `firstChunkTimeoutMs`（默认 10 分钟，对齐 DeepSeek 服务端"10 分钟未开始推理即断连"的窗口）单独承担，而且——因为这个阶段还没有任何内容流出——**允许重试**（走 `streamRetries` 同一套指数退避），不像空闲/总时长超时那样直接终止为 `refusal`。等待期间 TUI/ACP 的"思考"提示会每 20 秒刷新一次已等待时长，避免长时间排队被误认为卡死。
+`firstChunkTimeoutMs` 单独拆分是因为它和 `streamIdleTimeoutMs` 的语义不同：高负载的 DeepSeek 端点排队时会持续发送 SSE 注释行 `: keep-alive`，而 openai SDK 会在产生 chunk 之前就丢弃注释行——也就是说这段等待对 Sangxia 完全不可见，无法用"空闲"计时去衡量。旧版用同一个 60s 空闲上限覆盖这段等待，在生产日志里观测到过 14 次首 chunk 等待超过 30 秒（最长 66.9 秒），若换成更短的空闲阈值本会被直接杀掉且不重试。现在这段等待由 `firstChunkTimeoutMs`（默认 10 分钟，对齐 DeepSeek 服务端"10 分钟未开始推理即断连"的窗口）单独承担，而且——因为这个阶段还没有任何内容流出——**允许重试**（走 `streamRetries` 同一套指数退避），不像空闲/总时长超时那样直接终止为 `refusal`。等待期间 TUI/ACP 的"思考"提示会每 20 秒刷新一次已等待时长，避免长时间排队被误认为卡死。
 
 **关于 `maxTokens`（输出上限）**：这是**单次回复**的输出上限，由「思考过程（reasoning）+ 正文 + 工具调用参数」**共用**，并且很多后端会把它计入上下文预算（`prompt_tokens + max_tokens ≤ 上下文窗口`，超了直接 400）。因此：
 
-- **默认不设置**：不写 `provider.maxTokens` 时请求里根本不带 `max_tokens` 字段，交给后端自己的默认值生效。这对思考型后端很关键——DeepSeek 思考模式的服务端默认是 **64K**（`reasoning_effort=max` 时 128K），比 ZhenTe 过去硬编码的 8192 高得多；主动设一个更小的值只会主动收窄预算，没有任何好处。
+- **默认不设置**：不写 `provider.maxTokens` 时请求里根本不带 `max_tokens` 字段，交给后端自己的默认值生效。这对思考型后端很关键——DeepSeek 思考模式的服务端默认是 **64K**（`reasoning_effort=max` 时 128K），比 Sangxia 过去硬编码的 8192 高得多；主动设一个更小的值只会主动收窄预算，没有任何好处。
 - 思考型模型给 8K 基本等于不可用——实测有 `reasoningChars=28987 / contentChars=0` 的截断，即预算全烧在思考上、正文一个字都没出（表现为「模型响应为空」）。这正是硬编码小值的后果，不设置就不会遇到。
 - 写文件也吃这个池子：一次 1.9 万字符的 `write_file` 参数就约 5k tokens，加上思考很容易撞顶；撞顶时本次响应的工具调用会被整体拒绝（避免半截参数乱跑），整个回合以 `max_tokens` 结束。
 - 需要更大上限、或后端没有合理默认值（如普通非思考模型）时，可显式设置 `provider.maxTokens`（或按模型在 `provider.models[].maxTokens` 单独设置）；先看后端的上下文窗口，取 `max_tokens ≤ 窗口 − 你实际遇到的最大 prompt`。
 - 调大不额外花钱（按实际输出计费），但会放宽单轮的最坏延迟。
 - 撞顶时提示会写明实际额度：显式配置过就是 `[输出被截断] …（maxTokens=8192）`，未配置则是「使用服务端默认额度」并给出 DeepSeek 的参考值；日志同时记录当次 `textChars/reasoningChars/toolCalls`，便于判断是思考、正文还是工具参数吃掉了预算。
 
-**关于 `reasoning_content`（思考内容回传）**：带 `tools` 的请求（ZhenTe 每次都带），DeepSeek 思考模式要求把此前每一轮 assistant 消息的 `reasoning_content` 原样回传——哪怕那一轮没有发起工具调用；不回传会直接 400（生产日志里已经撞到过一次，且是偶发/条件式的，无法重试）。ZhenTe 会把每轮的 reasoning 累积进对应的 assistant 消息（随会话文件落盘，`session/load` 后仍带），并在下一次请求里原样带上。不需要任何配置；`provider.passBackReasoning: "none"` 是给不认识该字段、且会因为多余字段报错（而不是忽略）的非 DeepSeek 端点留的退路。日志只统计 `reasoningChars`，从不打印思考正文。
+**关于 `reasoning_content`（思考内容回传）**：带 `tools` 的请求（Sangxia 每次都带），DeepSeek 思考模式要求把此前每一轮 assistant 消息的 `reasoning_content` 原样回传——哪怕那一轮没有发起工具调用；不回传会直接 400（生产日志里已经撞到过一次，且是偶发/条件式的，无法重试）。Sangxia 会把每轮的 reasoning 累积进对应的 assistant 消息（随会话文件落盘，`session/load` 后仍带），并在下一次请求里原样带上。不需要任何配置；`provider.passBackReasoning: "none"` 是给不认识该字段、且会因为多余字段报错（而不是忽略）的非 DeepSeek 端点留的退路。日志只统计 `reasoningChars`，从不打印思考正文。
 
-**首 token 前有界重试**：网络抖动、429、5xx 这类失败若发生在**首个流式 delta 之前**（此时没有已展示内容、也没有副作用），ZhenTe 会按 `streamRetries`（默认 2 次）指数退避重试，并尊重响应里的 `Retry-After`。一旦已经流出内容就不再重试（否则会重复输出），自己的空闲/总时长 watchdog 也不重试（否则等待时间翻倍），中途失败仍按现状终止为 `refusal`。运行期取消（`session/cancel`、Ctrl+C）会立即打断退避等待。
+**首 token 前有界重试**：网络抖动、429、5xx 这类失败若发生在**首个流式 delta 之前**（此时没有已展示内容、也没有副作用），Sangxia 会按 `streamRetries`（默认 2 次）指数退避重试，并尊重响应里的 `Retry-After`。一旦已经流出内容就不再重试（否则会重复输出），自己的空闲/总时长 watchdog 也不重试（否则等待时间翻倍），中途失败仍按现状终止为 `refusal`。运行期取消（`session/cancel`、Ctrl+C）会立即打断退避等待。
 
 **错误提示中文化**：401/402/400/422/429/503 这几类常见状态码会被翻译成中文、可操作的提示（而不是原样转发英文 SDK 报错），例如 402 会提示"余额不足，请前往 platform.deepseek.com 充值"——这是 DeepSeek 用户最常见的"莫名失败"。识别不了的状态码/错误仍原样显示 SDK 报错文本，不会丢信息。
 
@@ -170,7 +170,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 ## 会话持久化
 
-会话按事件流落盘到 `$ZHENTE_SESSION_DIR`（默认 `~/.config/zhente/sessions/`），每个会话一个 `<sessionId>.jsonl`，**只追加、不重写**（避免长会话的全量重写放大）：
+会话按事件流落盘到 `$SANGXIA_SESSION_DIR`（默认 `~/.config/sangxia/sessions/`），每个会话一个 `<sessionId>.jsonl`，**只追加、不重写**（避免长会话的全量重写放大）：
 
 ```jsonc
 {"t":"meta","version":2,"sessionId":"…","cwd":"…","permissionMode":"confirm","modelId":"…","createdAt":"…"}
@@ -193,16 +193,16 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ```jsonc
 {
   "agent_servers": {
-    "ZhenTe": {
+    "Sangxia": {
       "command": "node",
-      "args": ["/绝对路径/eye-zhen-te/dist/index.js"],
+      "args": ["/绝对路径/sangxia-ai/dist/index.js"],
       "env": { "OPENAI_API_KEY": "sk-..." }
     }
   }
 }
 ```
 
-然后在 Zed 的 Agent 面板里选择 “ZhenTe”。Agent 会在你打开的项目目录下工作，读写文件走 Zed 的文件系统能力，命令走 Zed 的终端能力。
+然后在 Zed 的 Agent 面板里选择 “Sangxia”。Agent 会在你打开的项目目录下工作，读写文件走 Zed 的文件系统能力，命令走 Zed 的终端能力。
 
 > 若不通过 Zed 提供的能力（`fs`/`terminal`），agent 会自动回退到本地 Node 的 `fs` 与 `child_process`。
 
@@ -220,7 +220,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 | 生命周期钩子 | `hooks.events.*` 声明外部命令，在 session/prompt/工具/turn 点位拦截、改写参数、注入上下文、审计（见「Hook（生命周期钩子）」） | 默认关闭；`deny`/`ask` 在 auto 模式下同样生效 |
 | LLM 后端 | 任意 OpenAI 兼容 `/chat/completions`（`openai` / `mock` provider），JSON 配置 | 可换 baseURL/model |
 | 取消 | `session/cancel` 中断进行中的 turn | — |
-| 终端界面 | `zhente tui`：同进程 ACP 配对的聊天式 TUI（流式/工具行/权限弹窗/斜杠命令） | 见「终端界面（TUI）」 |
+| 终端界面 | `sangxia tui`：同进程 ACP 配对的聊天式 TUI（流式/工具行/权限弹窗/斜杠命令） | 见「终端界面（TUI）」 |
 
 ## 内置工具
 
@@ -264,12 +264,12 @@ description: 一句话说明何时用它（会进 system prompt 清单）
 详细操作步骤……（仅在 use_skill 调用时才加载进上下文）
 ```
 
-- **发现目录**：默认 `<cwd>/skills` 与 `~/.config/zhente/skills`（同名时项目优先）；可用 `config.skills.dirs` 覆盖/追加（相对路径按会话 cwd 解析）。
+- **发现目录**：默认 `<cwd>/skills` 与 `~/.config/sangxia/skills`（同名时项目优先）；可用 `config.skills.dirs` 覆盖/追加（相对路径按会话 cwd 解析）。
 - **开关**：`config.skills.enabled`。
 
 ## Hook（生命周期钩子）
 
-Hook 让你用**外部命令**在固定点位介入 agent 生命周期——策略拦截、参数改写、把 lint/测试结果回喂模型、审计每一次工具执行——不需要改 ZhenTe 代码，也不依赖 ACP 客户端（**TUI 下同样可用**，与 MCP 相反）。
+Hook 让你用**外部命令**在固定点位介入 agent 生命周期——策略拦截、参数改写、把 lint/测试结果回喂模型、审计每一次工具执行——不需要改 Sangxia 代码，也不依赖 ACP 客户端（**TUI 下同样可用**，与 MCP 相反）。
 
 三个定位要点：
 
@@ -347,16 +347,16 @@ exit 0
 
 ### 安全说明（务必读）
 
-- **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到直接启动报错。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.zhente/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
-- hook 进程的运行时 `cwd` 仍是 **session cwd**（脚本里的 `git status` / `npm` 语义不变）。因此**不要在全局配置里写依赖仓库的裸命令**（`"npm run lint"` 会跑被打开仓库的 `package.json` scripts 与 `node_modules/.bin`）；要跑就写绝对解释器 + 绝对脚本：`"bash ${HOME}/.config/zhente/hooks/lint.sh"`。
+- **配置级 hook 一律用绝对路径**（或 `${HOME}/…`）。相对路径的解析基准是**声明它的那份配置所在的目录**（配置级 = 配置文件目录，项目级 = 项目根），**不是 session cwd**；路径形态的命令在加载期就解析并校验存在性，找不到直接启动报错。这条规则是必须的：如果基准是 session cwd，全局配置里一句 `.sangxia/hooks/guard.sh` 就会在你打开任意恶意仓库时执行**那个仓库里**的同名脚本，而你以为是自己的守卫脚本。
+- hook 进程的运行时 `cwd` 仍是 **session cwd**（脚本里的 `git status` / `npm` 语义不变）。因此**不要在全局配置里写依赖仓库的裸命令**（`"npm run lint"` 会跑被打开仓库的 `package.json` scripts 与 `node_modules/.bin`）；要跑就写绝对解释器 + 绝对脚本：`"bash ${HOME}/.config/sangxia/hooks/lint.sh"`。
 - **全局配置里的 hook 在所有项目里都生效**（配置分层，D16）：这是全局 hook 的意义所在，也意味着**你打开任何仓库时它都会跑**。因此全局 hook 尤其要遵守上一条（绝对解释器 + 绝对脚本），且**不要**在全局 hook 里执行依赖仓库内容的裸命令。
-- **项目级 hooks（`.zhente/hooks.json`）默认关闭**：该文件随仓库分发，开启等于"打开仓库就执行任意命令"；显式 `projectFile.enabled: true` 才加载（开启时会 warn 一次），且项目级条目的 `onError` / `timeoutMs` 只能**更严**不能放宽。
+- **项目级 hooks（`.sangxia/hooks.json`）默认关闭**：该文件随仓库分发，开启等于"打开仓库就执行任意命令"；显式 `projectFile.enabled: true` 才加载（开启时会 warn 一次），且项目级条目的 `onError` / `timeoutMs` 只能**更严**不能放宽。
 - hook 是**本地用户自己配置的、权限等同你 shell 的非沙箱进程**：它能看到模型文本、工具参数与输出（可能含代码/密钥）；不要把 payload POST 到不可信地址。stdout 不整体进日志（只记解析结果与长度），stderr 截断后进日志。
 - **hook 策略是"深度防御"，不是沙箱**：基于工具参数字符串的规则天然可绕过（禁止写 `.env` 的规则挡不住 `bash -c 'echo … > .env'`）。要真正隔离请用 OS 级机制；能拦刀就同时配 `guard-writes` + `guard-bash` 两条 matcher。
 
 ### 环境变量（stdin 之外的第二通道）
 
-`ZHENTE_HOOK_EVENT`、`ZHENTE_SESSION_ID`、`ZHENTE_CWD`、`ZHENTE_PERMISSION_MODE`、`ZHENTE_PROJECT_DIR`（= 项目根 / session cwd）、`ZHENTE_AGENT_CWD`（ZhenTe 进程启动目录）。
+`SANGXIA_HOOK_EVENT`、`SANGXIA_SESSION_ID`、`SANGXIA_CWD`、`SANGXIA_PERMISSION_MODE`、`SANGXIA_PROJECT_DIR`（= 项目根 / session cwd）、`SANGXIA_AGENT_CWD`（Sangxia 进程启动目录）。
 
 ### 与 Claude Code Hooks 的对应
 
@@ -366,8 +366,8 @@ exit 0
 
 ```sh
 #!/bin/sh
-# ~/.config/zhente/hooks/guard-writes.sh
-# 配置: { "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/zhente/hooks/guard-writes.sh" }
+# ~/.config/sangxia/hooks/guard-writes.sh
+# 配置: { "matcher": "^(write_file|edit_file)$", "command": "bash ${HOME}/.config/sangxia/hooks/guard-writes.sh" }
 payload=$(cat)
 path=$(printf '%s' "$payload" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tool_input?.path??""))')
 case "$path" in *.env|*.env.*|*id_rsa*|*.pem) echo "禁止写入敏感文件: $path" >&2; exit 2 ;; esac
@@ -376,14 +376,14 @@ exit 0
 
 ```sh
 #!/bin/sh
-# ~/.config/zhente/hooks/ts-check.sh（post_tool_use，matcher ^edit_file$，timeoutMs 120000）
+# ~/.config/sangxia/hooks/ts-check.sh（post_tool_use，matcher ^edit_file$，timeoutMs 120000）
 out=$(npm run -s typecheck 2>&1) || {
   node -e 'console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"[typecheck 失败]\n"+process.argv[1]}}))' "$out"
 }
 exit 0
 ```
 
-一个典型的**全局 hook**：每次会话开始都在后台预热索引（`~/.config/zhente/config.json`，对所有项目生效）：
+一个典型的**全局 hook**：每次会话开始都在后台预热索引（`~/.config/sangxia/config.json`，对所有项目生效）：
 
 ```jsonc
 {
@@ -403,19 +403,19 @@ exit 0
 }
 ```
 
-> 这里用 `sh -c '… &'` 是为了"同步 hook + 后台任务"的组合：ZhenTe 的 hook 一律同步等待（决策必须在继续之前拿到），命令自己 `&` 掉即可立刻返回。`matcher` 用的是 codex `SessionStart` 的同一套 `source` 词汇表。
+> 这里用 `sh -c '… &'` 是为了"同步 hook + 后台任务"的组合：Sangxia 的 hook 一律同步等待（决策必须在继续之前拿到），命令自己 `&` 掉即可立刻返回。`matcher` 用的是 codex `SessionStart` 的同一套 `source` 词汇表。
 
 ## 架构
 
 ```
 入口 A  stdio (JSON-RPC / ACP)     ← Zed 等 ACP 客户端驱动
-入口 B  zhente tui (src/tui/)      ← 界面自带 ClientSideConnection，
+入口 B  sangxia tui (src/tui/)      ← 界面自带 ClientSideConnection，
         │                            经内存流 PassThrough 与下方 agent 配对；
         │                            两个入口走完全相同的协议路径
         ▼
    AgentSideConnection            ← @zed-industries/agent-client-protocol
         │
-   ZhenTeAgent (src/agent.ts)     ← initialize / newSession / prompt / cancel
+   SangxiaAgent (src/agent.ts)     ← initialize / newSession / prompt / cancel
         │                            newSession: 连接 MCP + 发现技能 → 组装本会话工具集
    harness/loop.ts  ──►  LLMProvider (llm/*)      OpenAI 兼容 / mock
         │            └─►  ToolRegistry(每会话)     内置(tools/*) + MCP(mcp/*) + use_skill(skills/*)
@@ -424,24 +424,24 @@ exit 0
    Session (src/session.ts)       ← 每会话历史 / cwd / 权限记忆 / 取消 / MCP 连接 / 技能 / hooks
 ```
 
-- **stdout 是协议通道**，所有日志走 stderr（`ZHENTE_LOG_FILE` 可另存为单个文件；`ZHENTE_LOG_DIR` 可按 session 分文件，见下；`ZHENTE_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `ZHENTE_LOG_TIMEZONE=Asia/Shanghai`。TUI 模式下 stdout 是渲染目标而非协议通道，因此启动时会 `logger.configure({ stderr: false, … })` 把日志只写进文件。
-- **按 session 分日志**：设置 `ZHENTE_LOG_DIR=<目录>` 后，每个 session 的日志写入 `<目录>/<sessionId>.log`（启动、`initialize` 等无 session 的日志写入 `<目录>/global.log`）。session 归属基于 Node `AsyncLocalStorage`（`logger.withSession`），多 session 并发执行时日志也不会串文件；行内带 `[session=<id>]` 标记；同时设置时 `ZHENTE_LOG_DIR` 优先于 `ZHENTE_LOG_FILE`。
+- **stdout 是协议通道**，所有日志走 stderr（`SANGXIA_LOG_FILE` 可另存为单个文件；`SANGXIA_LOG_DIR` 可按 session 分文件，见下；`SANGXIA_LOG_LEVEL` 调级别）。日志默认使用运行进程的本地时区，并在时间戳中包含 UTC 偏移量；如 ACP 宿主时区不正确，可设置 `SANGXIA_LOG_TIMEZONE=Asia/Shanghai`。TUI 模式下 stdout 是渲染目标而非协议通道，因此启动时会 `logger.configure({ stderr: false, … })` 把日志只写进文件。
+- **按 session 分日志**：设置 `SANGXIA_LOG_DIR=<目录>` 后，每个 session 的日志写入 `<目录>/<sessionId>.log`（启动、`initialize` 等无 session 的日志写入 `<目录>/global.log`）。session 归属基于 Node `AsyncLocalStorage`（`logger.withSession`），多 session 并发执行时日志也不会串文件；行内带 `[session=<id>]` 标记；同时设置时 `SANGXIA_LOG_DIR` 优先于 `SANGXIA_LOG_FILE`。
 - Provider 是接口，新增后端（如 Anthropic 原生）只需实现 `LLMProvider` 再在 `llm/factory.ts` 注册。
 - 会话工具集在 `newSession`/`loadSession` 组装：内置工具 + `use_skill`（若发现技能）+ 已连接的 MCP 工具（`src/agent.ts`）。
-- 会话历史默认持久化到 `~/.config/zhente/sessions/<sessionId>.json`，可用 `ZHENTE_SESSION_DIR` 修改目录；支持 ACP `session/load` 恢复历史。
-- 新会话会自动加载项目根目录的 `AGENTS.md` 和 `.zhente/memory.md`，用于保存跨 session 的项目约定与进度；此外 `~/.config/zhente/AGENTS.md`（**用户级长期指令**）会**在所有项目**里加载，用来放"无论打开哪个仓库都成立"的工作方式约定（例如某个 CLI 的用法、语义搜索优先于 grep）。加载顺序：用户级在前、项目记忆在后（后者更具体，冲突时以项目为准）。该文件**不会**被自动创建，也不参与项目初始化补齐。
+- 会话历史默认持久化到 `~/.config/sangxia/sessions/<sessionId>.json`，可用 `SANGXIA_SESSION_DIR` 修改目录；支持 ACP `session/load` 恢复历史。
+- 新会话会自动加载项目根目录的 `AGENTS.md` 和 `.sangxia/memory.md`，用于保存跨 session 的项目约定与进度；此外 `~/.config/sangxia/AGENTS.md`（**用户级长期指令**）会**在所有项目**里加载，用来放"无论打开哪个仓库都成立"的工作方式约定（例如某个 CLI 的用法、语义搜索优先于 grep）。加载顺序：用户级在前、项目记忆在后（后者更具体，冲突时以项目为准）。该文件**不会**被自动创建，也不参与项目初始化补齐。
 - 如果上述任一文件缺失，第一次正式 prompt 前会请求用户确认；确认后 agent 会先扫描项目并只补齐缺失的记忆文件，再执行原始任务。
 - 一次 prompt 的完整时序见 [`doc/uml/prompt-turn.md`](doc/uml/prompt-turn.md)。
 
 ## 终端界面（TUI）
 
-`zhente tui` 在真实终端里启动一个聊天式 TUI，与 Zed 走**同一套 ACP 协议**：内部把同一个 `ZhenTeAgent` 通过内存流配对到客户端侧，stdio 只归界面（渲染 + 键盘）。
+`sangxia tui` 在真实终端里启动一个聊天式 TUI，与 Zed 走**同一套 ACP 协议**：内部把同一个 `SangxiaAgent` 通过内存流配对到客户端侧，stdio 只归界面（渲染 + 键盘）。
 
 ```bash
-zhente tui                          # 需要 stdin 与 stdout 均为 TTY；非 TTY 会友好报错
-zhente tui --crt                    # 可选 CRT 黑底模式（默认不强制黑底）
-zhente tui --config ./other.json    # 与 ACP 模式共用同一套配置解析
-zhente tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即有红色 badge + 横幅）
+sangxia tui                          # 需要 stdin 与 stdout 均为 TTY；非 TTY 会友好报错
+sangxia tui --crt                    # 可选 CRT 黑底模式（默认不强制黑底）
+sangxia tui --config ./other.json    # 与 ACP 模式共用同一套配置解析
+sangxia tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即有红色 badge + 横幅）
 ```
 
 - **布局**：状态栏（agent · 当前模型 · cwd + 权限 badge）→ 对话区（流式回答/工具行/TODO 计划）→ 权限弹窗（confirm 模式）→ 输入行。配色红/绿/白三色（安全=绿、危险/错误=红、正文=白，**颜色永不作唯一通道**）；设置 `NO_COLOR` 可去色。
@@ -451,7 +451,7 @@ zhente tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即�
   - `/permissions reset` 清空记住的授权决策（等价于重发一次 `set_mode`）；`/help`、`/clear`（只清屏，不动会话历史）、`/new`（重开会话，仅空闲时可用）、`/quit`。
 - **快捷键**：Enter 发送（上一轮未结束时禁用，Ctrl+C 可取消该轮）、↑/↓ 输入历史、Tab 补全命令/modelId、Ctrl+C 清空输入行（turn 中 = 取消）、Ctrl+U 删到行首、Ctrl+W 删词、Ctrl+A/Ctrl+E 行首/行尾、Ctrl+D 删字符（空行 = 退出）、PgUp/PgDn 与 Shift+↑/↓ 滚动对话区、Esc 关弹窗。权限弹窗支持数字键直选或 ↑/↓ + Enter；模型选择器用 ↑/↓ + Enter，Esc 取消。
 - **粘贴**：启用了终端 bracketed paste，粘贴多行文本不会被当成多次回车——换行会归一成空格并入单行输入（v1 是单行编辑器）。
-- **日志**：TUI 模式下日志不打印到屏幕，只写入 `ZHENTE_LOG_DIR`（未设置时为系统临时目录 `zhente-tui-logs/`），级别默认降到 `warn`。
+- **日志**：TUI 模式下日志不打印到屏幕，只写入 `SANGXIA_LOG_DIR`（未设置时为系统临时目录 `sangxia-tui-logs/`），级别默认降到 `warn`。
 - **已知差异**：TUI 不向 agent 声明 `fs` / `terminal` 能力，文件读写与 `bash` 都走本地 Node 回退——`bash` 输出在命令结束时一次性返回（工具行的 spinner + 计时是"仍在运行"的唯一信号）；Zed 里则走编辑器的终端、输出实时可见。
 
 ## 开发

@@ -40,7 +40,7 @@ import { buildTools } from "./tools/index.js";
  * The ACP agent surface. It owns sessions and delegates the actual work of a
  * prompt turn to the harness ({@link runTurn}).
  */
-export class ZhenTeAgent implements Agent {
+export class SangxiaAgent implements Agent {
   readonly #conn: AgentSideConnection;
   readonly #config: Config;
   readonly #providers = new Map<string, LLMProvider>();
@@ -78,7 +78,7 @@ export class ZhenTeAgent implements Agent {
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
     // TODO(acpreg): 未认证（unconfigured）时拒绝建会话，返回 AUTH_REQUIRED 错误并
-    //   提示运行 `zhente setup`（见 plan/acpreg.md §2.2、§3 阶段 2）。
+    //   提示运行 `sangxia setup`（见 plan/acpreg.md §2.2、§3 阶段 2）。
     const id = randomUUID();
     return logger.withSession(id, async () => {
       const session = new Session(
@@ -237,7 +237,7 @@ export class ZhenTeAgent implements Agent {
    * project initialization overwrites the system message (review M2).
    */
   private async systemPrompt(session: Session, memoryCwd = session.cwd): Promise<string> {
-    // 用户级指令（~/.config/zhente/AGENTS.md）先、项目记忆后：后者更具体，
+    // 用户级指令（~/.config/sangxia/AGENTS.md）先、项目记忆后：后者更具体，
     // 冲突时靠后的说法"更近"，与 codex（全局 AGENTS.md → 项目 AGENTS.md）一致。
     const [userMemory, projectMemory] = await Promise.all([
       loadUserMemory().catch((e) => {
@@ -468,7 +468,7 @@ export class ZhenTeAgent implements Agent {
       content: [
         `这是项目首次初始化。请先检查初始化根目录（${initRoot}）的 README、源码结构、配置和已有文档，理解项目后创建缺失的项目记忆文件。${readParentDirectory ? `请读取工作目录的上层目录（${parentCwd}）以判断项目边界或补充背景；不要读取更上层目录。` : "不要读取工作目录的上层目录。"}`,
         `只创建这些缺失文件：${missingPaths.join(", ")}。`,
-        "AGENTS.md 保存项目工作规则、技术栈和目录约定；.zhente/memory.md 保存项目背景、当前状态、重要决策和待办事项。不要修改其他文件，完成后简要说明。",
+        "AGENTS.md 保存项目工作规则、技术栈和目录约定；.sangxia/memory.md 保存项目背景、当前状态、重要决策和待办事项。不要修改其他文件，完成后简要说明。",
       ].join("\n"),
     });
     await persistSession(session);
@@ -505,7 +505,7 @@ export class ZhenTeAgent implements Agent {
   }
 
   // TODO(acpreg): ACP 注册准入 —— 实现 Terminal Auth 认证：methodId === "terminal-setup"
-  //   时，stdin 为 TTY 则直接进入 `zhente setup` 交互向导，否则返回引导说明；已认证
+  //   时，stdin 为 TTY 则直接进入 `sangxia setup` 交互向导，否则返回引导说明；已认证
   //   状态返回成功即可（见 plan/acpreg.md §2.2、§3 阶段 2）。
   async authenticate(): Promise<void> {
     /* no-op */
@@ -514,13 +514,13 @@ export class ZhenTeAgent implements Agent {
   /**
    * Extension request handler. ACP 扩展点（客户端发 `_<method>` 请求）。
    *
-   * 目前只登记 `zhente.set_model`：ACP SDK 0.4.5 的 ClientSideConnection.setSessionModel
-   * 辅助方法错发 `session/set_mode`（见 .zhente/memory.md），TUI 客户端因此改走扩展方法
+   * 目前只登记 `sangxia.set_model`：ACP SDK 0.4.5 的 ClientSideConnection.setSessionModel
+   * 辅助方法错发 `session/set_mode`（见 .sangxia/memory.md），TUI 客户端因此改走扩展方法
    * 通道转发到同一 setSessionModel —— 语义与标准 `session/set_model` 完全一致（同样的
    * modelId 校验/持久化/日志），不是旁路 API。
    */
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (method === "zhente.set_model") {
+    if (method === "sangxia.set_model") {
       await this.setSessionModel(params as unknown as SetSessionModelRequest);
       return {};
     }
@@ -610,7 +610,7 @@ async function findMentionedDirectory(prompt: string, cwd: string): Promise<stri
 
 function defaultSystemPrompt(cwd: string): string {
   return [
-    "你是 ZhenTe，一个运行在终端里的编程助手，通过 ACP 协议与编辑器协作。",
+    "你是 桑夏AI，一个运行在终端里的猫咪编程助手，通过 ACP 协议与编辑器协作。",
     `当前工作目录: ${cwd}`,
     "",
     "工作方式:",
@@ -618,8 +618,8 @@ function defaultSystemPrompt(cwd: string): string {
     "- 修改文件优先用 edit_file 做最小化的精确改动；创建新文件用 write_file。",
     "- 需要运行命令(构建/测试/git 等)时用 bash。",
     "- 任务复杂时用 update_plan 拆解步骤并随进度更新状态。",
-    "- 涉及项目架构、重要决策或未完成事项时，完成任务后更新 AGENTS.md 或 .zhente/memory.md。",
+    "- 涉及项目架构、重要决策或未完成事项时，完成任务后更新 AGENTS.md 或 .sangxia/memory.md。",
     "- 路径可用相对当前工作目录的写法。",
-    "- 回答简洁，用中文。完成后简要说明做了什么。",
+    "- 回答简洁，用中文。完成后简要说明做了什么。最后喵一下。",
   ].join("\n");
 }

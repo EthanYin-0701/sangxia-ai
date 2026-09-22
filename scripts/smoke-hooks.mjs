@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@zed-industries/agent-client-protocol";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const workRoot = mkdtempSync(join(tmpdir(), "zhente-hooks-"));
+const workRoot = mkdtempSync(join(tmpdir(), "sangxia-hooks-"));
 let checks = 0;
 const ok = (cond, msg) => {
   assert.ok(cond, msg);
@@ -119,15 +119,15 @@ async function withAgent(name, opts, drive) {
   const dir = mkdtempSync(join(workRoot, `${name}-`));
   const cwd = join(dir, "project");
   mkdirSync(cwd, { recursive: true });
-  // 每个场景一个假 HOME：分层加载（D16）会把 `~/.config/zhente/config.json` 当 base，
+  // 每个场景一个假 HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，
   // 冒烟绝不能读到开发机真实的那份（否则一条坏配置会让整套冒烟红掉）。
   const home = join(dir, "home");
-  mkdirSync(join(home, ".config", "zhente"), { recursive: true });
+  mkdirSync(join(home, ".config", "sangxia"), { recursive: true });
   // Pre-seed project memory so the first prompt doesn't trigger the project
   // initialization turn (its permission prompt would pollute permission counts).
   writeFileSync(join(cwd, "AGENTS.md"), "# 测试项目\n");
-  mkdirSync(join(cwd, ".zhente"), { recursive: true });
-  writeFileSync(join(cwd, ".zhente", "memory.md"), "# 记忆\n");
+  mkdirSync(join(cwd, ".sangxia"), { recursive: true });
+  writeFileSync(join(cwd, ".sangxia", "memory.md"), "# 记忆\n");
   for (const [file, content] of Object.entries(opts.hookFiles?.(dir) ?? {})) {
     const path = join(dir, file);
     mkdirSync(join(path, ".."), { recursive: true });
@@ -146,7 +146,7 @@ async function withAgent(name, opts, drive) {
     skills: { enabled: false },
     hooks: opts.hooks,
   };
-  // Some scenarios need project files (`.zhente/hooks.json`) to exist *before*
+  // Some scenarios need project files (`.sangxia/hooks.json`) to exist *before*
   // newSession — session_start and hook path resolution happen at session setup.
   opts.prepareCwd?.(cwd, dir);
   const fill = (obj) =>
@@ -156,9 +156,9 @@ async function withAgent(name, opts, drive) {
       .replaceAll("__HOME__", home);
   // `globalConfig` → 假 HOME 里的全局配置（分层 base）；`overlayConfig` → 主配置整体替换。
   if (opts.globalConfig) {
-    writeFileSync(join(home, ".config", "zhente", "config.json"), fill(opts.globalConfig));
+    writeFileSync(join(home, ".config", "sangxia", "config.json"), fill(opts.globalConfig));
   }
-  const configPath = join(dir, "zhente.config.json");
+  const configPath = join(dir, "sangxia.config.json");
   writeFileSync(configPath, fill(opts.overlayConfig ?? config));
 
   rounds = [];
@@ -175,10 +175,10 @@ async function withAgent(name, opts, drive) {
       env: {
         ...process.env,
         HOME: home,
-        ZHENTE_LOG_DIR: join(dir, "logs"),
-        ZHENTE_LOG_FILE: "",
-        // 不要把冒烟会话写进用户真实的 ~/.config/zhente/sessions
-        ZHENTE_SESSION_DIR: join(dir, "sessions"),
+        SANGXIA_LOG_DIR: join(dir, "logs"),
+        SANGXIA_LOG_FILE: "",
+        // 不要把冒烟会话写进用户真实的 ~/.config/sangxia/sessions
+        SANGXIA_SESSION_DIR: join(dir, "sessions"),
       },
     },
   );
@@ -252,7 +252,7 @@ function readLogs(dir) {
 
 /** Write stdin payload to a jsonl file, then apply the given shell body. */
 const dumpPayload = (dir, event) =>
-  `cat > /tmp/zhente-hook-payload.json 2>/dev/null || true\ncat /tmp/zhente-hook-payload.json >> "${dir}/${event}.jsonl"\n`;
+  `cat > /tmp/sangxia-hook-payload.json 2>/dev/null || true\ncat /tmp/sangxia-hook-payload.json >> "${dir}/${event}.jsonl"\n`;
 
 // ---------------------------------------------------------------------------
 
@@ -506,7 +506,7 @@ await withAgent(
       },
     },
     hookFiles: (dir) => ({
-      "scan.sh": `#!/bin/sh\n${dumpPayload(dir, "prompt")}cat /tmp/zhente-hook-payload.json | grep -q "SECRET" && { echo "prompt 含密钥" >&2; exit 2; }\nexit 0\n`,
+      "scan.sh": `#!/bin/sh\n${dumpPayload(dir, "prompt")}cat /tmp/sangxia-hook-payload.json | grep -q "SECRET" && { echo "prompt 含密钥" >&2; exit 2; }\nexit 0\n`,
     }),
   },
   async (ctx) => {
@@ -780,7 +780,7 @@ await withAgent(
 {
   console.error("[17] 路径形态命令不存在 ⇒ 加载期 fail fast");
   const dir = mkdtempSync(join(workRoot, "missing-"));
-  const configPath = join(dir, "zhente.config.json");
+  const configPath = join(dir, "sangxia.config.json");
   writeFileSync(
     configPath,
     JSON.stringify({
@@ -814,9 +814,9 @@ await withAgent(
     hooks: { enabled: true, events: {} },
     permissionMode: "auto",
     prepareCwd: (cwd) => {
-      mkdirSync(join(cwd, ".zhente"), { recursive: true });
+      mkdirSync(join(cwd, ".sangxia"), { recursive: true });
       writeFileSync(
-        join(cwd, ".zhente", "hooks.json"),
+        join(cwd, ".sangxia", "hooks.json"),
         JSON.stringify({ events: { pre_tool_use: [{ name: "repo", matcher: "^bash$", command: "sh -c 'echo pwned'", onError: "deny" }] } }),
       );
     },
@@ -841,24 +841,24 @@ await withAgent(
     },
     permissionMode: "auto",
     prepareCwd: (cwd, dir) => {
-      mkdirSync(join(cwd, ".zhente", "hooks"), { recursive: true });
+      mkdirSync(join(cwd, ".sangxia", "hooks"), { recursive: true });
       writeFileSync(
-        join(cwd, ".zhente", "hooks", "start.sh"),
+        join(cwd, ".sangxia", "hooks", "start.sh"),
         `#!/bin/sh\ncat > /dev/null\necho ran > "${dir}/project-start-sentinel"\n`,
         { mode: 0o755 },
       );
       // 声明 onError:"allow" 也放宽不了配置级的 "deny" ⇒ 失败即拒绝。
       writeFileSync(
-        join(cwd, ".zhente", "hooks", "guard.sh"),
+        join(cwd, ".sangxia", "hooks", "guard.sh"),
         `#!/bin/sh\ncat > /dev/null\nexit 1\n`,
         { mode: 0o755 },
       );
       writeFileSync(
-        join(cwd, ".zhente", "hooks.json"),
+        join(cwd, ".sangxia", "hooks.json"),
         JSON.stringify({
           events: {
-            session_start: [{ name: "repo-start", command: ".zhente/hooks/start.sh" }],
-            pre_tool_use: [{ name: "repo-guard", matcher: "^bash$", command: ".zhente/hooks/guard.sh", onError: "allow" }],
+            session_start: [{ name: "repo-start", command: ".sangxia/hooks/start.sh" }],
+            pre_tool_use: [{ name: "repo-guard", matcher: "^bash$", command: ".sangxia/hooks/guard.sh", onError: "allow" }],
           },
         }),
       );
@@ -937,7 +937,7 @@ await withAgent(
   },
 );
 
-// 22) config layering: `~/.config/zhente/config.json` (base) + project config (overlay).
+// 22) config layering: `~/.config/sangxia/config.json` (base) + project config (overlay).
 await withAgent(
   "layer-merge",
   {
@@ -971,7 +971,7 @@ await withAgent(
     ok(ctx.read("order.txt") === "base\nbase2\n", "全局 base 的 hook 在项目配置存在时照样执行");
     ok(!ctx.stderr().includes("未找到配置文件"), "overlay 只有 provider 也能启动（与 base 合并）");
     ok(ctx.logs().includes("配置分层"), "启动日志说明用了哪两份配置");
-    ok(ctx.logs().includes("来源=") && ctx.logs().includes("zhente/config.json"), "hooks 日志列出合并来源");
+    ok(ctx.logs().includes("来源=") && ctx.logs().includes("sangxia/config.json"), "hooks 日志列出合并来源");
   },
 );
 
@@ -1025,7 +1025,7 @@ await withAgent(
   },
 );
 
-// 23) the global config alone is enough: no --config, no ./zhente.config.json.
+// 23) the global config alone is enough: no --config, no ./sangxia.config.json.
 await withAgent(
   "layer-base-only",
   {
@@ -1052,9 +1052,9 @@ await withAgent(
   console.error("[24] 事件名写错 ⇒ 启动即报错");
   const dir = mkdtempSync(join(workRoot, "typo-"));
   const home = join(dir, "home");
-  mkdirSync(join(home, ".config", "zhente"), { recursive: true });
+  mkdirSync(join(home, ".config", "sangxia"), { recursive: true });
   writeFileSync(
-    join(home, ".config", "zhente", "config.json"),
+    join(home, ".config", "sangxia", "config.json"),
     JSON.stringify({
       provider: { type: "mock" },
       mcp: { enabled: false },
@@ -1066,7 +1066,7 @@ await withAgent(
   const child = spawn("node", [join(root, "dist/index.js")], {
     stdio: ["pipe", "pipe", "pipe"],
     cwd: join(dir, "empty"),
-    env: { ...process.env, HOME: home, ZHENTE_LOG_DIR: join(dir, "logs"), ZHENTE_LOG_FILE: "", ZHENTE_SESSION_DIR: join(dir, "sessions") },
+    env: { ...process.env, HOME: home, SANGXIA_LOG_DIR: join(dir, "logs"), SANGXIA_LOG_FILE: "", SANGXIA_SESSION_DIR: join(dir, "sessions") },
   });
   children.push(child);
   let stderr = "";
