@@ -18,6 +18,8 @@ npm run dev         # tsx 直跑 src/index.ts（开发）
 npm run typecheck   # 仅类型检查（提交前必跑）
 npm run build       # 编译到 dist/
 npm run smoke       # 离线冒烟：完整 ACP 握手 + 工具 + 权限流（mock provider）
+npm run smoke:auth    # Registry 沙箱握手/认证拒绝/环境变量启动/CLI（15 场景）
+npm run smoke:setup   # 交互配置的 headless 路径/验证回退/保留旧配置/权限
 npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
 npm run smoke:mcp     # MCP 工具接入冒烟
 npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
@@ -50,7 +52,9 @@ src/
                / ui.ts 备用屏渲染（含 IME 真光标定位） / keys.ts raw 键盘解析 / input.ts 行编辑
                / model.ts ACP 通知→聊天条目映射 / commands.ts 斜杠命令
                / theme.ts 红绿白主题 / wcwidth.ts 最小 CJK 宽度（零依赖）
-  index.ts     入口（stdio JSON-RPC；argv[0]==="tui" 时转 TUI 分支）
+  setup.ts     Terminal Auth 向导（交互隐藏 key / headless / 连通性验证 / 全局配置原子写入）
+  version.ts   package.json 版本与 ACP agentInfo 共享来源
+  index.ts     入口（tui → setup → version/help → stdio JSON-RPC；配置失败仍完成握手）
   logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 SANGXIA_LOG_FILE 单文件或 SANGXIA_LOG_DIR 按 session 分文件；logger.configure 支持运行时改 stderr/level/dir，TUI 用它把日志只进文件）
   persistence.ts  会话持久化：JSONL 事件流（~/.config/sangxia/sessions/<id>.jsonl），persistSession 唯一写入口
   project-memory.ts  AGENTS.md / .sangxia/memory.md 的发现与加载（+ 用户级 ~/.config/sangxia/AGENTS.md）
@@ -107,3 +111,13 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 - `reasoning_effort` / 请求体透传：当前 provider 只发 `max_tokens`，无法单独控制思考预算（DeepSeek 的 `reasoning_effort=max` → 默认输出 128K 那一档因此用不上）。
 - Hook v2（实现见 `src/hooks/`，v1 已落地 6 个事件）：会话级 `session_end`（等 ACP 有会话结束事件或 TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。子代理每步工具调用走父循环的 `executeToolCall`，hook 自动生效，但不产生会话级事件（D6）。
 - 上下文压缩（`plan/harness_hardening_plan.md` 步骤 10b/10c）：`harness/context.ts` 已备好 `estimateTokens` / `shouldCompact`，但**按实测证据挂起**（真实请求最大 182k prompt tokens / 789 消息、0 次 `context_length_exceeded`，见 `.sangxia/memory.md`）；重启前先看有没有新的溢出证据，不要用 128k 之类的默认窗口猜阈值。
+
+
+## ACP Registry 本地准备（2026-09-22）
+
+- npm 包名 / registry id：`sangxia-ai`，准备版本 `0.6.16`，MIT。用户选择先完成本地工作；**尚未发布 npm 或提交 registry PR**。交接与验证见 `doc/acpreg-release.md`，计划见 `plan/acpreg_gap_check.md`。
+- Terminal Auth：`initialize.authMethods` 无条件声明 `terminal-setup`（SDK 0.4.5 会剥掉客户端 `auth` 能力），`args: ["setup"]`，`_meta["terminal-auth"]: true`。setup 成功后客户端重连。SDK 升级后可按 `auth.terminal` / `_meta` 门控。
+- 配置失败时 ACP 进程继续握手；new/load/prompt/authenticate 通过统一 guard，未配置返回 `AUTH_REQUIRED`（-32000），保留加载错误原因及 setup 提示。mock 免 key；其它 provider 的 key 必须非空白。配置级 hook 的错误仍阻止建会话，不是忽略坏 hook。
+- 文件来源优先于环境：无配置文件时才用 `SANGXIA_API_KEY`（可选 `SANGXIA_BASE_URL` / `SANGXIA_MODEL`）；显式配置路径失败不 fallback。SDK 不隐式读取 `OPENAI_BASE_URL`。日志仅记录凭据来源。
+- setup 始终写全局配置，只替换 provider，保留 hooks 等字段；先验证，后原子替换，权限 0600。`--api-key-env` 保存引用，启动时也需注入；JSONC example 仅供参考，运行配置为严格 JSON。
+- `scripts/prepare-registry.mjs` 在拿到真实 GitHub URL 后生成 manifest；图标位于 `registry/sangxia-ai/icon.svg`。不要把占位 repository URL 或未发布状态伪装为已完成。

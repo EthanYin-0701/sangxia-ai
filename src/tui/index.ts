@@ -62,7 +62,7 @@ export async function runTui(argv: string[]): Promise<number> {
     config = loadConfig(argv);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`配置加载失败：${msg}\n`);
+    process.stderr.write(`配置加载失败：${msg}\n或运行 sangxia setup 完成配置。\n`);
     process.stderr.write(
       "提示：sangxia tui 与 ACP 模式共用同一份配置（--config / SANGXIA_CONFIG / ./sangxia.config.json / ~/.config/sangxia/config.json）。\n",
     );

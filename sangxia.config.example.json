@@ -1,3 +1,11 @@
+// 带注释的参考示例（JSONC），不要直接复制为运行配置；加载器只接受严格 JSON。
+// 推荐: sangxia setup（交互输入 API key 不回显）。
+// Headless: sangxia setup --non-interactive --api-key-env SANGXIA_API_KEY
+//           --base-url https://api.openai.com/v1 --model gpt-4o
+// 先在环境中设置 SANGXIA_API_KEY；保存的是 ${SANGXIA_API_KEY} 引用，启动时也需注入。
+// 无任何配置文件时，只设置 SANGXIA_API_KEY 即可启动；可选 SANGXIA_BASE_URL / SANGXIA_MODEL。
+// 环境变量不会覆盖已有配置文件；文件内可显式使用 ${VAR} 插值。
+// setup 写入 ~/.config/sangxia/config.json，保留已有 hooks / agent / mcp 等段。
 {
   "provider": {
     "type": "openai",

@@ -1,3 +1,4 @@
+import { startAgent, registryInitialize } from "./lib/acp-process.mjs";
 // Verifies the hook (生命周期钩子) layer end-to-end through the real ACP + harness
 // path, following plan/hooks_support.md §11:
 //   1  hooks.enabled:false ⇒ zero hook processes spawned
@@ -172,6 +173,7 @@ async function withAgent(name, opts, drive) {
     [join(root, "dist/index.js"), ...(opts.noConfig ? [] : ["--config", configPath])],
     {
       stdio: ["pipe", "pipe", "pipe"],
+      cwd,
       env: {
         ...process.env,
         HOME: home,
@@ -790,20 +792,23 @@ await withAgent(
       hooks: { enabled: true, events: { pre_tool_use: [{ name: "gone", command: "./hooks/nope.sh" }] } },
     }),
   );
-  const child = spawn("node", [join(root, "dist/index.js"), "--config", configPath], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const agent = startAgent({
+    cwd: dir,
+    env: { PATH: process.env.PATH, HOME: join(dir, "home"), TERM: "dumb" },
+    args: ["--config", configPath],
   });
-  children.push(child);
-  let stderr = "";
-  child.stderr.on("data", (c) => (stderr += c));
-  await new Promise((r) => setTimeout(r, 1200));
-  child.kill("SIGKILL");
-  const missingLine = stderr.split("\n").find((line) => line.includes("可执行文件不存在")) ?? "";
-  ok(
-    missingLine.includes("nope.sh") && missingLine.includes("hooks.events.pre_tool_use"),
-    `启动期 fail fast 且错误信息可定位: ${missingLine.trim()}`,
-  );
-  ok(!stderr.includes("ACP agent 就绪"), "没有进入 ACP 会话（turn 之前就失败）");
+  children.push(agent.child);
+  try {
+    const init = await agent.request("initialize", registryInitialize);
+    ok(init.result.authMethods[0].type === "terminal", "配置失败仍可握手并显示认证方法");
+    const result = await agent.request("session/new", { cwd: dir, mcpServers: [] });
+    ok(
+      result.error?.code === -32000 && result.error.data.reason.includes("nope.sh") &&
+        result.error.data.reason.includes("hooks.events.pre_tool_use"),
+      "配置级 hook 加载失败必须阻止会话，AUTH_REQUIRED 保留错误原因",
+    );
+    await agent.close();
+  } finally { agent.child.kill("SIGKILL"); }
 }
 
 
@@ -1063,17 +1068,18 @@ await withAgent(
     }),
   );
   mkdirSync(join(dir, "empty"), { recursive: true });
-  const child = spawn("node", [join(root, "dist/index.js")], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const agent = startAgent({
     cwd: join(dir, "empty"),
-    env: { ...process.env, HOME: home, SANGXIA_LOG_DIR: join(dir, "logs"), SANGXIA_LOG_FILE: "", SANGXIA_SESSION_DIR: join(dir, "sessions") },
+    env: { PATH: process.env.PATH, HOME: home, TERM: "dumb" },
   });
-  children.push(child);
-  let stderr = "";
-  child.stderr.on("data", (c) => (stderr += c));
-  const code = await new Promise((r) => child.on("exit", r));
-  ok(code !== 0, "未知事件名导致启动失败");
-  ok(stderr.includes('未知事件名 "sessionStart"'), `报错指出具体事件名，实际: ${stderr.split("\n").find((l) => l.includes("未知事件名")) ?? stderr.slice(0, 200)}`);
+  children.push(agent.child);
+  try {
+    await agent.request("initialize", registryInitialize);
+    const result = await agent.request("session/new", { cwd: join(dir, "empty"), mcpServers: [] });
+    ok(result.error?.code === -32000, "未知事件名阻止建立会话");
+    ok(result.error.data.reason.includes('未知事件名 "sessionStart"'), "认证错误指出具体事件名");
+    await agent.close();
+  } finally { agent.child.kill("SIGKILL"); }
 }
 
 clearTimeout(failTimer);

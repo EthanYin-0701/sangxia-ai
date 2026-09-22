@@ -1,6 +1,6 @@
 {
   "name": "sangxia-ai",
-  "version": "0.6.15",
+  "version": "0.6.16",
   "description": "Sangxia — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
   "type": "module",
   "bin": {
@@ -21,7 +21,10 @@
     "smoke:skill": "npm run build && node scripts/smoke-skill.mjs",
     "smoke:tui": "npm run build && node scripts/smoke-tui.mjs",
     "smoke:reliability": "npm run build && node scripts/smoke-reliability.mjs",
-    "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs"
+    "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs",
+    "smoke:setup": "npm run build && node scripts/smoke-setup.mjs",
+    "smoke:auth": "npm run build && node scripts/smoke-auth.mjs",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -36,5 +39,18 @@
     "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "license": "MIT",
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "coding-agent",
+    "zed"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "sangxia.config.example.json"
+  ]
 }

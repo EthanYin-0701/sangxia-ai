@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createFakeOpenAI } from "./lib/fake-openai.mjs";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,55 +21,7 @@ import {
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-function sse(obj) {
-  return `data: ${JSON.stringify(obj)}\n\n`;
-}
-
-// --- Fake OpenAI-compatible /chat/completions server (streaming) ---------------
-const server = createServer((req, res) => {
-  let body = "";
-  req.on("data", (c) => (body += c));
-  req.on("end", () => {
-    const payload = JSON.parse(body || "{}");
-    const isFollowUp = (payload.messages ?? []).some((m) => m.role === "tool");
-    res.writeHead(200, { "content-type": "text/event-stream" });
-
-    if (!isFollowUp) {
-      // First call: emit some text, then a tool_call whose JSON arguments are
-      // split across two chunks (exercises the provider's accumulation logic).
-      res.write(sse({ choices: [{ index: 0, delta: { role: "assistant", content: "好，" } }] }));
-      res.write(sse({ choices: [{ index: 0, delta: { content: "我来创建文件。" } }] }));
-      res.write(
-        sse({
-          choices: [
-            {
-              index: 0,
-              delta: {
-                tool_calls: [
-                  { index: 0, id: "call_1", type: "function", function: { name: "write_file", arguments: '{"path":"from-openai.txt",' } },
-                ],
-              },
-            },
-          ],
-        }),
-      );
-      res.write(
-        sse({
-          choices: [
-            { index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"content":"via openai path\\n"}' } }] } },
-          ],
-        }),
-      );
-      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
-    } else {
-      // Follow-up (after the tool result): just answer and stop.
-      res.write(sse({ choices: [{ index: 0, delta: { role: "assistant", content: "文件已创建完成。" } }] }));
-      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
-    }
-    res.write("data: [DONE]\n\n");
-    res.end();
-  });
-});
+const server = createFakeOpenAI();
 
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;

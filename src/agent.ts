@@ -3,6 +3,9 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import {
   type Agent,
+  type AuthMethod,
+  type AuthenticateRequest,
+  type AuthenticateResponse,
   type AgentSideConnection,
   type CancelNotification,
   type InitializeRequest,
@@ -35,6 +38,19 @@ import { loadSession as loadPersistedSession, persistHistoryReset, persistSessio
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
+import { AGENT_INFO } from "./version.js";
+
+// SDK 0.4.5 strips clientCapabilities.auth and predates terminal method fields.
+// Advertise unconditionally until an SDK upgrade can preserve auth.terminal.
+type RegistryAuthMethod = AuthMethod & { type: "terminal"; args: string[] };
+const AUTH_METHODS: RegistryAuthMethod[] = [{
+  id: "terminal-setup",
+  name: "在终端中配置（Terminal setup）",
+  description: "配置 LLM provider 与 API key，无需浏览器；headless 环境可用。",
+  type: "terminal",
+  args: ["setup"],
+  _meta: { "terminal-auth": true },
+}];
 
 /**
  * The ACP agent surface. It owns sessions and delegates the actual work of a
@@ -42,16 +58,34 @@ import { buildTools } from "./tools/index.js";
  */
 export class SangxiaAgent implements Agent {
   readonly #conn: AgentSideConnection;
-  readonly #config: Config;
+  readonly #loadedConfig: Config | null;
+  readonly #configError: string | null;
   readonly #providers = new Map<string, LLMProvider>();
   readonly #builtinTools: Tool[];
   readonly #sessions = new Map<string, Session>();
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
 
-  constructor(conn: AgentSideConnection, config: Config) {
+  constructor(conn: AgentSideConnection, config: Config | null, configError: string | null = null) {
     this.#conn = conn;
-    this.#config = config;
+    this.#loadedConfig = config;
+    this.#configError = configError;
     this.#builtinTools = buildTools();
+  }
+
+  #requireConfig(): Config {
+    const config = this.#loadedConfig;
+    if (!config || (config.provider.type !== "mock" && !config.provider.apiKey?.trim())) {
+      throw RequestError.authRequired({
+        reason: this.#configError ?? (config ? "provider.apiKey 为空" : "未找到配置文件"),
+        hint: "在终端运行 `npx sangxia-ai setup` 完成配置",
+      });
+    }
+    return config;
+  }
+
+  // Helpers only run for configured sessions; keep the same guard as entry points.
+  get #config(): Config {
+    return this.#requireConfig();
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
@@ -62,11 +96,10 @@ export class SangxiaAgent implements Agent {
       terminal: Boolean(params.clientCapabilities?.terminal),
     };
     logger.info("initialize: client caps =", this.#clientCaps);
-    // TODO(acpreg): ACP 注册准入 —— initialize 响应需声明 authMethods（Terminal Auth：
-    //   { id: "terminal-setup", name, description }），否则无法通过 registry CI 的
-    //   authMethods 校验（见 plan/acpreg.md §2.2、§3 阶段 2）。
-    return {
+    const response = {
+      agentInfo: AGENT_INFO,
       protocolVersion: PROTOCOL_VERSION,
+      authMethods: AUTH_METHODS,
       agentCapabilities: {
         loadSession: true,
         // stdio MCP is mandatory (no flag); advertise network transports too.
@@ -74,11 +107,11 @@ export class SangxiaAgent implements Agent {
         promptCapabilities: { image: false, audio: false, embeddedContext: true },
       },
     };
+    return response;
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    // TODO(acpreg): 未认证（unconfigured）时拒绝建会话，返回 AUTH_REQUIRED 错误并
-    //   提示运行 `sangxia setup`（见 plan/acpreg.md §2.2、§3 阶段 2）。
+    const config = this.#requireConfig();
     const id = randomUUID();
     return logger.withSession(id, async () => {
       const session = new Session(
@@ -86,8 +119,8 @@ export class SangxiaAgent implements Agent {
         params.cwd,
         params.mcpServers ?? [],
         this.#clientCaps,
-        this.#config.agent.permissionMode,
-        this.#config.provider.model,
+        config.agent.permissionMode,
+        config.provider.model,
       );
       await this.prepareSession(session);
       await this.runSessionStart(session, "startup");
@@ -100,6 +133,7 @@ export class SangxiaAgent implements Agent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    const config = this.#requireConfig();
     const saved = await loadPersistedSession(params.sessionId);
     if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
     return logger.withSession(params.sessionId, async () => {
@@ -108,8 +142,8 @@ export class SangxiaAgent implements Agent {
         params.cwd || saved.cwd,
         params.mcpServers ?? [],
         this.#clientCaps,
-        saved.permissionMode ?? this.#config.agent.permissionMode,
-        this.isAvailableModel(saved.modelId) ? saved.modelId : this.#config.provider.model,
+        saved.permissionMode ?? config.agent.permissionMode,
+        this.isAvailableModel(saved.modelId) ? saved.modelId : config.provider.model,
       );
       await this.prepareSession(session);
       session.messages = saved.messages;
@@ -312,9 +346,7 @@ export class SangxiaAgent implements Agent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    // TODO(acpreg): 未认证（unconfigured）时 prompt 返回 AUTH_REQUIRED JSON-RPC 错误
-    //   （含 type:"terminal"、args:["setup"] 声明），而不是继续运行（见 plan/acpreg.md
-    //   §2.2、§3 阶段 2）。
+    const config = this.#requireConfig();
     const session = this.#sessions.get(params.sessionId);
     if (!session) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
@@ -390,7 +422,7 @@ export class SangxiaAgent implements Agent {
               session,
               provider: this.providerFor(session.modelId),
               tools: session.tools,
-              config: this.#config.agent,
+              config: config.agent,
               signal: abort.signal,
               hooks: session.hooks,
             });
@@ -504,11 +536,13 @@ export class SangxiaAgent implements Agent {
     });
   }
 
-  // TODO(acpreg): ACP 注册准入 —— 实现 Terminal Auth 认证：methodId === "terminal-setup"
-  //   时，stdin 为 TTY 则直接进入 `sangxia setup` 交互向导，否则返回引导说明；已认证
-  //   状态返回成功即可（见 plan/acpreg.md §2.2、§3 阶段 2）。
-  async authenticate(): Promise<void> {
-    /* no-op */
+  async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
+    if (params.methodId !== "terminal-setup") {
+      throw RequestError.invalidParams({ methodId: `未知认证方法: ${params.methodId}` });
+    }
+    // Terminal auth normally completes in a separate process followed by reconnect.
+    this.#requireConfig();
+    return {};
   }
 
   /**
