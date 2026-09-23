@@ -43,10 +43,29 @@ import { AGENT_INFO } from "./version.js";
 // SDK 0.4.5 strips clientCapabilities.auth and predates terminal method fields.
 // Advertise unconditionally until an SDK upgrade can preserve auth.terminal.
 type RegistryAuthMethod = AuthMethod & { type: "terminal"; args: string[] };
+/**
+ * There is no session to talk through before authentication, so `name` /
+ * `description` here are the only guaranteed place a client renders guidance,
+ * and the `auth_required` message (see `#requireConfig`) is the error-path
+ * fallback. DeepSeek comes first: ACP has no "API key" method type
+ * (protocol/v1/authentication: only `agent` and `terminal`), and form
+ * elicitation is forbidden for secrets, so a preset terminal flow is the
+ * complaint-free way to collect just a key.
+ */
 const AUTH_METHODS: RegistryAuthMethod[] = [{
+  id: "deepseek-setup",
+  name: "使用 DeepSeek API Key 登录",
+  description:
+    "点击后在终端运行 npx sangxia-ai setup --preset deepseek：只需粘贴 DeepSeek API Key" +
+    "（platform.deepseek.com → API keys）。端点与模型已预填（https://api.deepseek.com · deepseek-flash），" +
+    "保存前会检查连通性；完成后回到编辑器重新连接。",
+  type: "terminal",
+  args: ["setup", "--preset", "deepseek"],
+  _meta: { "terminal-auth": true },
+}, {
   id: "terminal-setup",
-  name: "在终端中配置（Terminal setup）",
-  description: "配置 LLM provider 与 API key，无需浏览器；headless 环境可用。",
+  name: "在终端中配置其它 OpenAI 兼容端点（Terminal setup）",
+  description: "交互式配置 provider、base URL、model 与 API key，无需浏览器；headless 环境可用。",
   type: "terminal",
   args: ["setup"],
   _meta: { "terminal-auth": true },
@@ -75,10 +94,18 @@ export class SangxiaAgent implements Agent {
   #requireConfig(): Config {
     const config = this.#loadedConfig;
     if (!config || (config.provider.type !== "mock" && !config.provider.apiKey?.trim())) {
-      throw RequestError.authRequired({
-        reason: this.#configError ?? (config ? "provider.apiKey 为空" : "未找到配置文件"),
-        hint: "在终端运行 `npx sangxia-ai setup` 完成配置",
-      });
+      const reason = this.#configError ?? (config ? "provider.apiKey 为空" : "未找到配置文件");
+      // RequestError.authRequired() hardcodes "Authentication required" and the
+      // message is the field most clients actually render, so spell the way out
+      // both there and in `data` (some clients only surface one of the two).
+      throw new RequestError(-32000,
+        "Authentication required: 运行 `npx sangxia-ai setup --preset deepseek` 输入 DeepSeek API Key" +
+        "（或在编辑器的认证列表中选择“使用 DeepSeek API Key 登录”）。",
+        {
+          reason,
+          hint: "在终端运行 `npx sangxia-ai setup --preset deepseek` 配置 DeepSeek，" +
+            "或用 `npx sangxia-ai setup` 配置其它 OpenAI 兼容端点",
+        });
     }
     return config;
   }
@@ -537,7 +564,11 @@ export class SangxiaAgent implements Agent {
   }
 
   async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
-    if (params.methodId !== "terminal-setup") {
+    // Both advertised methods are `terminal`: the client runs `setup` itself and
+    // reconnects, so an `authenticate` request should only ever arrive from a
+    // client that ignores the type. Stay lenient, but never claim success while
+    // the config is still unusable (that would let `/new` fail later instead).
+    if (params.methodId !== "terminal-setup" && params.methodId !== "deepseek-setup") {
       throw RequestError.invalidParams({ methodId: `未知认证方法: ${params.methodId}` });
     }
     // Terminal auth normally completes in a separate process followed by reconnect.

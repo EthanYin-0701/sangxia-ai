@@ -71,6 +71,7 @@ try {
   for (const bad of [
     ["--provider", "unknown"], ["--api-key-env", "MISSING_KEY"], ["--api-key-env", "BAD-NAME"],
     ["--base-url", "invalid"], ["--model", ""], ["--api-key"], ["--api-key", key, "--api-key-env", "SX_TEST_KEY"],
+    ["--preset", "unknown"],
   ]) {
     await setup(["--non-interactive", ...bad], 1);
     assert.equal(readFileSync(path, "utf8"), before);
@@ -83,6 +84,30 @@ try {
   assert.equal(JSON.parse(readFileSync(path, "utf8")).provider.apiKey, key);
   await setup(["--provider", "mock"]);
   assert.equal(JSON.parse(readFileSync(path, "utf8")).provider.type, "mock");
+  // --preset deepseek: base URL and model are pre-filled, so only a key is needed.
+  // --skip-verify keeps this offline (the preset endpoint is the real DeepSeek one).
+  const presetStderr = await setup(["--preset", "deepseek", "--api-key", key, "--skip-verify"]);
+  const presetSaved = JSON.parse(readFileSync(path, "utf8"));
+  assert.deepEqual(presetSaved.provider, {
+    type: "openai", baseURL: "https://api.deepseek.com", model: "deepseek-flash", apiKey: key,
+    models: [
+      { modelId: "deepseek-flash", name: "DeepSeek Flash", description: "默认：更快更省（1M 上下文）" },
+      { modelId: "deepseek-v4-pro", name: "DeepSeek Pro", description: "更强推理，成本更高" },
+    ],
+  });
+  assert.deepEqual(presetSaved.hooks, hooks, "preset must keep unrelated config");
+  assert.equal(presetSaved.agent.maxIterations, 77);
+  assert.match(presetStderr, /preset deepseek/);
+  // Explicit flags still win over the preset, and an explicit model drops the
+  // preset catalogue (provider.model must be listed, so a wrong list would be invalid).
+  await setup(["--preset", "deepseek", "--model", "other-model", "--api-key-env", "SX_TEST_KEY", "--skip-verify"]);
+  const overridden = JSON.parse(readFileSync(path, "utf8")).provider;
+  assert.equal(overridden.model, "other-model");
+  assert.equal(overridden.baseURL, "https://api.deepseek.com");
+  assert.equal(overridden.models, undefined);
+  // Headless preset without any key must fail instead of writing a keyless provider.
+  await setup(["--preset", "deepseek", "--skip-verify"], 1);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).provider.model, "other-model");
   writeFileSync(path, "broken JSON");
   await setup(["--provider", "mock"], 1);
   assert.equal(readFileSync(path, "utf8"), "broken JSON");

@@ -18,9 +18,15 @@ async function scenario(name, { raw, env = {}, args = [], reason, model } = {}) 
   try {
     const init = (await agent.request("initialize", registryInitialize)).result;
     assert.equal(init.protocolVersion, 1);
-    assert.equal(init.authMethods[0].type, "terminal");
-    assert.ok(init.authMethods[0].args.includes("setup"));
-    assert.equal(init.authMethods[0]._meta["terminal-auth"], true);
+    const deepseek = init.authMethods.find(m => m.id === "deepseek-setup");
+    assert.ok(deepseek, "must advertise the DeepSeek auth method");
+    assert.equal(deepseek.type, "terminal");
+    assert.deepEqual(deepseek.args, ["setup", "--preset", "deepseek"]);
+    assert.equal(deepseek._meta["terminal-auth"], true);
+    assert.match(deepseek.name, /DeepSeek/);
+    assert.match(deepseek.description, /api\.deepseek\.com/);
+    const generic = init.authMethods.find(m => m.id === "terminal-setup");
+    assert.ok(generic && generic.type === "terminal" && generic.args.includes("setup"));
     assert.deepEqual(init.agentInfo, { name: "sangxia", title: "Sangxia.ai", version });
     const session = await agent.request("session/new", { cwd, mcpServers: [] });
     if (reason) {
@@ -31,6 +37,8 @@ async function scenario(name, { raw, env = {}, args = [], reason, model } = {}) 
         await agent.request("authenticate", { methodId: "terminal-setup" }),
       ]) {
         assert.equal(response.error.code, -32000, JSON.stringify(response));
+        // The message is what clients render most reliably; guidance must be in it.
+        assert.match(response.error.message, /setup --preset deepseek/);
         assert.match(response.error.data.reason, reason);
         assert.match(response.error.data.hint, /setup/);
       }

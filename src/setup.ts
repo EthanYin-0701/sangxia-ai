@@ -7,9 +7,10 @@ import { Writable } from "node:stream";
 import { globalConfigPath } from "./config.js";
 
 export const SETUP_HELP = `Usage: sangxia setup [options]
+  --preset deepseek         DeepSeek 预设：自动填好 base URL 与 model，交互时只需输入 API key
   --provider openai|mock    Provider (default: openai)
   --base-url URL            OpenAI-compatible URL (default: https://api.openai.com/v1)
-  --model NAME              Model (default: gpt-4o)
+  --model NAME              Model (default: gpt-4o；--preset deepseek 下为 deepseek-chat)
   --api-key-env NAME        Store an environment reference; NAME must be set during setup
   --api-key KEY             Store a literal key (visible in process listings / shell history)
   --non-interactive         Never prompt (also implied when stdin is not a TTY)
@@ -18,8 +19,31 @@ export const SETUP_HELP = `Usage: sangxia setup [options]
   --help, -h               Show this help
 `;
 
+/**
+ * Named defaults so a user only has to paste a key.
+ *
+ * The ACP auth method `deepseek-setup` (see agent.ts) launches
+ * `sangxia setup --preset deepseek`, so this is the one place that decides what
+ * "接入 DeepSeek" means: endpoint, default model, and how the key prompt reads.
+ */
+const PRESETS: Record<string, { provider: "openai"; baseURL: string; model: string; keyLabel: string; models: Array<{ modelId: string; name: string; description: string }> }> = {
+  deepseek: {
+    provider: "openai",
+    baseURL: "https://api.deepseek.com",
+    // Official model ids as of the current DeepSeek pricing page: deepseek-flash
+    // plus deepseek-v4-pro. Legacy names (deepseek-v4-flash, deepseek-chat) are
+    // retired/aliased, so don't offer them.
+    model: "deepseek-flash",
+    keyLabel: "DeepSeek API Key（不回显；platform.deepseek.com → API keys 获取）",
+    models: [
+      { modelId: "deepseek-flash", name: "DeepSeek Flash", description: "默认：更快更省（1M 上下文）" },
+      { modelId: "deepseek-v4-pro", name: "DeepSeek Pro", description: "更强推理，成本更高" },
+    ],
+  },
+};
+
 function parseArgs(argv: string[]): Map<string, string | true> {
-  const values = new Set(["--provider", "--base-url", "--model", "--api-key-env", "--api-key", "--config"]);
+  const values = new Set(["--preset", "--provider", "--base-url", "--model", "--api-key-env", "--api-key", "--config"]);
   const flags = new Set(["--non-interactive", "--skip-verify", "--help", "-h"]);
   const options = new Map<string, string | true>();
   for (let i = 0; i < argv.length; i++) {
@@ -135,9 +159,16 @@ export async function runSetup(argv: string[]): Promise<number> {
       }
     }
     if (process.stdin.isTTY && !options.has("--non-interactive")) prompter = createPrompter();
-    const provider = value("--provider") ?? (await prompter?.ask("Provider (openai/mock)", "openai")) ?? "openai";
+    const presetName = value("--preset");
+    const preset = presetName === undefined ? undefined : PRESETS[presetName];
+    if (presetName !== undefined && preset === undefined) {
+      throw new Error(`未知 --preset: ${presetName}（可用: ${Object.keys(PRESETS).join(", ")}）`);
+    }
+    // A preset supplies provider/base URL/model, so the interactive flow below
+    // skips those three questions and asks for the key only.
+    const provider = value("--provider") ?? preset?.provider ?? (await prompter?.ask("Provider (openai/mock)", "openai")) ?? "openai";
     if (provider !== "openai" && provider !== "mock") throw new Error("provider 必须是 openai 或 mock");
-    const baseURL = value("--base-url") ?? (provider === "openai"
+    const baseURL = value("--base-url") ?? preset?.baseURL ?? (provider === "openai"
       ? (await prompter?.ask("Base URL", "https://api.openai.com/v1")) ?? "https://api.openai.com/v1" : undefined);
     if (baseURL !== undefined) {
       let url: URL;
@@ -146,14 +177,14 @@ export async function runSetup(argv: string[]): Promise<number> {
         throw new Error("baseURL 必须是无凭据、查询参数和片段的 HTTP(S) URL");
       }
     }
-    const model = value("--model") ?? (await prompter?.ask("Model", "gpt-4o")) ?? "gpt-4o";
+    const model = value("--model") ?? preset?.model ?? (await prompter?.ask("Model", "gpt-4o")) ?? "gpt-4o";
     if (!model.trim()) throw new Error("model 不能为空");
     const envName = value("--api-key-env");
     if (envName !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(envName)) {
       throw new Error("--api-key-env 必须是有效的环境变量名称");
     }
     const apiKey = envName !== undefined ? process.env[envName]
-      : value("--api-key") ?? (provider === "openai" ? await prompter?.ask("API key（不回显）", "", true) : undefined);
+      : value("--api-key") ?? (provider === "openai" ? await prompter?.ask(preset?.keyLabel ?? "API key（不回显）", "", true) : undefined);
     if (provider === "openai" && !apiKey?.trim()) {
       throw new Error(envName ? `环境变量 ${envName} 为空或未设置` : "需要 --api-key-env NAME 或 --api-key KEY");
     }
@@ -163,11 +194,23 @@ export async function runSetup(argv: string[]): Promise<number> {
       await verifyProvider(baseURL!, apiKey!, model);
     }
     const storedKey = envName !== undefined ? `\${${envName}}` : apiKey;
+    // Offering a model catalogue lets the editor's model picker work right after
+    // setup. Only when the model came from the preset: with an explicit --model
+    // the catalogue would either omit it (invalid config) or guess wrong.
+    const modelCatalogue = preset && value("--model") === undefined ? { models: preset.models } : {};
     await writeConfig(path, {
       ...existing,
-      provider: { type: provider, ...(baseURL ? { baseURL } : {}), model, ...(storedKey !== undefined ? { apiKey: storedKey } : {}) },
+      provider: {
+        type: provider, ...(baseURL ? { baseURL } : {}), model,
+        ...(storedKey !== undefined ? { apiKey: storedKey } : {}),
+        ...modelCatalogue,
+      },
     });
     process.stderr.write(`配置已保存: ${path}（权限 0600）\n`);
+    if (preset) {
+      process.stderr.write(`已应用 preset ${presetName}: ${baseURL} · model=${model}。` +
+        `可在编辑器的模型选择器里切换${modelCatalogue.models ? `（${preset.models.map(m => m.modelId).join(" / ")}）` : "（修改 provider.model 或配置 provider.models）"}。\n`);
+    }
     if (options.has("--skip-verify")) process.stderr.write("已按 --skip-verify 跳过连通性验证。\n");
     if (envName) process.stderr.write(`启动 agent 时仍需提供环境变量 ${envName}（可由 ACP 客户端 env 注入）。\n`);
     process.stderr.write("若当前目录有 sangxia.config.json，或设置了 SANGXIA_CONFIG / --config，它们会作为 overlay 合并并覆盖全局配置。\n请重新连接 ACP 客户端。\n");

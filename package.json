@@ -4,7 +4,8 @@
   "description": "Sangxia — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
   "type": "module",
   "bin": {
-    "sangxia": "dist/index.js"
+    "sangxia": "dist/index.js",
+    "sangxia-ai": "dist/index.js"
   },
   "main": "dist/index.js",
   "engines": {
@@ -49,7 +50,7 @@
   ],
   "files": [
     "dist",
-    "README.md",
+    "INSTRUCTIONS.md",
     "LICENSE",
     "sangxia.config.example.json"
   ]

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Sangxia (`sangxia-ai`) is a coding AI agent written in TypeScript that speaks the **Agent Client Protocol (ACP)** over stdio JSON-RPC, so editors like Zed can drive it as an external agent. It ships its own tool harness (stream → tool call → permission → execute → feed result back → converge) and talks to any OpenAI-compatible `/chat/completions` endpoint configured in JSON.
 
-`README.md` (user-facing docs) and `AGENTS.md` (project working rules, loaded into the agent's own system prompt) are in Chinese and are the authoritative detail; this file is the short orientation.
+`INSTRUCTIONS.md` (user-facing docs) and `AGENTS.md` (project working rules, loaded into the agent's own system prompt) are in Chinese and are the authoritative detail; this file is the short orientation.
 
 ## Commands
 
