@@ -17,7 +17,7 @@ import {
   ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 

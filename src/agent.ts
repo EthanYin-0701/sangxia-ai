@@ -20,9 +20,12 @@ import {
   RequestError,
   type SessionModeState,
   type SetSessionModeRequest,
+  type SessionConfigOption,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SessionModelState,
   type SetSessionModelRequest,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
 import { runTurn } from "./harness/loop.js";
@@ -40,8 +43,7 @@ import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index
 import { buildTools } from "./tools/index.js";
 import { AGENT_INFO } from "./version.js";
 
-// SDK 0.4.5 strips clientCapabilities.auth and predates terminal method fields.
-// Advertise unconditionally until an SDK upgrade can preserve auth.terminal.
+// Keep terminal auth advertised unconditionally for clients using legacy metadata.
 type RegistryAuthMethod = AuthMethod & { type: "terminal"; args: string[] };
 /**
  * There is no session to talk through before authentication, so `name` /
@@ -155,7 +157,7 @@ export class SangxiaAgent implements Agent {
       this.#sessions.set(id, session);
       await persistSession(session);
       logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
-      return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+      return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session.modelId) };
     });
   }
 
@@ -193,7 +195,7 @@ export class SangxiaAgent implements Agent {
         `loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length} ` +
           `startedToolCalls=${session.startedToolCalls.size} hookContext=${session.hookContext.length}`,
       );
-      return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId) };
+      return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session.modelId) };
     });
   }
 
@@ -221,6 +223,39 @@ export class SangxiaAgent implements Agent {
     session.modelId = params.modelId;
     await persistSession(session);
     logger.info(`session ${session.id} model=${session.modelId}`);
+    await this.#conn.sessionUpdate({
+      sessionId: session.id,
+      update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session.modelId) },
+    });
+  }
+
+  // SDK 0.14 exposes the legacy wire method through this renamed handler.
+  async unstable_setSessionModel(params: SetSessionModelRequest): Promise<void> {
+    await this.setSessionModel(params);
+  }
+
+  async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+    if (!this.#sessions.has(params.sessionId)) {
+      throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
+    }
+    if (params.configId !== "model") {
+      throw RequestError.invalidParams({ configId: `未知配置选项: ${params.configId}` });
+    }
+    await this.setSessionModel({ sessionId: params.sessionId, modelId: params.value });
+    return { configOptions: this.configOptions(this.#sessions.get(params.sessionId)!.modelId) };
+  }
+
+  private configOptions(modelId: string): SessionConfigOption[] {
+    return [{
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: modelId,
+      options: this.availableModels().map(({ modelId, name, description }) => ({
+        value: modelId, name, ...(description !== undefined ? { description } : {}),
+      })),
+    }];
   }
 
   private availableModels() {
@@ -579,13 +614,11 @@ export class SangxiaAgent implements Agent {
   /**
    * Extension request handler. ACP 扩展点（客户端发 `_<method>` 请求）。
    *
-   * 目前只登记 `sangxia.set_model`：ACP SDK 0.4.5 的 ClientSideConnection.setSessionModel
-   * 辅助方法错发 `session/set_mode`（见 .sangxia/memory.md），TUI 客户端因此改走扩展方法
-   * 通道转发到同一 setSessionModel —— 语义与标准 `session/set_model` 完全一致（同样的
-   * modelId 校验/持久化/日志），不是旁路 API。
+   * 保留旧客户端的 `_sangxia.set_model` 以及未加前缀的内部调用。
+   * SDK 0.14 将完整方法名传入扩展入口；两种写法共用标准切换逻辑。
    */
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (method === "sangxia.set_model") {
+    if (method === "sangxia.set_model" || method === "_sangxia.set_model") {
       await this.setSessionModel(params as unknown as SetSessionModelRequest);
       return {};
     }

@@ -1,4 +1,4 @@
-import type { AgentSideConnection } from "@zed-industries/agent-client-protocol";
+import type { AgentSideConnection } from "@agentclientprotocol/sdk";
 import type { PermissionDecision, Session } from "../session.js";
 import type { Tool } from "./tool.js";
 

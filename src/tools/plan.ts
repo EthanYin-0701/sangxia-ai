@@ -1,4 +1,4 @@
-import type { PlanEntry } from "@zed-industries/agent-client-protocol";
+import type { PlanEntry } from "@agentclientprotocol/sdk";
 import type { Tool } from "../harness/tool.js";
 
 type Priority = PlanEntry["priority"];

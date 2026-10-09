@@ -15,7 +15,7 @@ import {
   ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workdir = mkdtempSync(join(tmpdir(), "sangxia-smoke-"));

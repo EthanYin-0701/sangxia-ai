@@ -26,7 +26,7 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionNotification,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 import { SangxiaAgent } from "../agent.js";
 import type { Config } from "../config.js";
 
@@ -146,11 +146,7 @@ export class TuiBridge {
   }
 
   async setModel(sessionId: string, modelId: string): Promise<void> {
-    // Workaround: SDK 0.4.5's ClientSideConnection.setSessionModel sends
-    // `session/set_mode` by mistake, so it can never switch a model. Go through
-    // the ACP extension channel instead: the agent forwards `sangxia.set_model`
-    // to its standard setSessionModel (same validation/persistence/errors).
-    await this.#clientConn.extMethod("sangxia.set_model", { sessionId, modelId });
+    await this.#clientConn.setSessionConfigOption({ sessionId, configId: "model", value: modelId });
   }
 
   async setMode(sessionId: string, modeId: "confirm" | "auto"): Promise<void> {

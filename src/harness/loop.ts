@@ -1,4 +1,4 @@
-import type { AgentSideConnection, PromptResponse } from "@zed-industries/agent-client-protocol";
+import type { AgentSideConnection, PromptResponse } from "@agentclientprotocol/sdk";
 import type { AgentConfig } from "../config.js";
 import { hookPayload, type HookRegistry } from "../hooks/index.js";
 import type { HookOutcome } from "../hooks/types.js";

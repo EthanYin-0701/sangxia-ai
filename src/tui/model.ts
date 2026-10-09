@@ -7,7 +7,7 @@
 import type {
   PlanEntry,
   SessionNotification,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 import { helpLines } from "./commands.js";
 import { fmtTime, type ChatEntry, type ChatEntryTool } from "./ui.js";
 

@@ -1,4 +1,4 @@
-import type { AgentSideConnection, ToolKind } from "@zed-industries/agent-client-protocol";
+import type { AgentSideConnection, ToolKind } from "@agentclientprotocol/sdk";
 import type { ToolSchema } from "../llm/types.js";
 import type { Session } from "../session.js";
 

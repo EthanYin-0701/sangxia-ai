@@ -1,4 +1,4 @@
-import type { McpServer } from "@zed-industries/agent-client-protocol";
+import type { McpServer } from "@agentclientprotocol/sdk";
 import { ToolRegistry } from "./harness/tool.js";
 import { HookRegistry } from "./hooks/index.js";
 import type { ChatMessage } from "./llm/types.js";

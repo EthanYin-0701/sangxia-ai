@@ -25,11 +25,12 @@
     "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs",
     "smoke:setup": "npm run build && node scripts/smoke-setup.mjs",
     "smoke:auth": "npm run build && node scripts/smoke-auth.mjs",
-    "prepublishOnly": "npm run typecheck && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "smoke:model-config": "npm run build && node scripts/smoke-model-config.mjs"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "0.14.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@zed-industries/agent-client-protocol": "^0.4.5",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "openai": "^6.0.0",

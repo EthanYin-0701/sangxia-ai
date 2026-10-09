@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Readable, Writable } from "node:stream";
-import { AgentSideConnection, ndJsonStream } from "@zed-industries/agent-client-protocol";
+import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { SangxiaAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";

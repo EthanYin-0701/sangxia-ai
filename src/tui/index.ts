@@ -25,7 +25,7 @@ import type {
   PermissionOption,
   RequestPermissionRequest,
   SessionNotification,
-} from "@zed-industries/agent-client-protocol";
+} from "@agentclientprotocol/sdk";
 
 export interface TuiOptions {
   configPath?: string;

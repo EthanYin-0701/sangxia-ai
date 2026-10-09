@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@zed-industries/agent-client-protocol";
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";

@@ -1,4 +1,4 @@
-import type { ContentBlock } from "@zed-industries/agent-client-protocol";
+import type { ContentBlock } from "@agentclientprotocol/sdk";
 
 /**
  * Flatten ACP prompt content blocks into a single text string for the LLM.

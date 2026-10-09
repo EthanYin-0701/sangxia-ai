@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 export const entry = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 export const registryInitialize = {
   protocolVersion: 1,
-  clientInfo: { name: "ACP Registry Validator" },
+  clientInfo: { name: "ACP Registry Validator", version: "1.0.0" },
   clientCapabilities: {
     terminal: true, fs: { readTextFile: true, writeTextFile: true },
     _meta: { terminal_output: true, "terminal-auth": true },
