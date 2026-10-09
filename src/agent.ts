@@ -157,7 +157,7 @@ export class SangxiaAgent implements Agent {
       this.#sessions.set(id, session);
       await persistSession(session);
       logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
-      return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session.modelId) };
+      return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session) };
     });
   }
 
@@ -195,7 +195,7 @@ export class SangxiaAgent implements Agent {
         `loadSession ${session.id} cwd=${session.cwd} messages=${session.messages.length} ` +
           `startedToolCalls=${session.startedToolCalls.size} hookContext=${session.hookContext.length}`,
       );
-      return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session.modelId) };
+      return { modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session) };
     });
   }
 
@@ -212,6 +212,14 @@ export class SangxiaAgent implements Agent {
     session.permissions.clear();
     await persistSession(session);
     logger.info(`session ${session.id} permissionMode=${session.permissionMode} (permission memory cleared)`);
+    await this.#conn.sessionUpdate({
+      sessionId: session.id,
+      update: { sessionUpdate: "current_mode_update", currentModeId: session.permissionMode },
+    });
+    await this.#conn.sessionUpdate({
+      sessionId: session.id,
+      update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
+    });
   }
 
   async setSessionModel(params: SetSessionModelRequest): Promise<void> {
@@ -225,7 +233,7 @@ export class SangxiaAgent implements Agent {
     logger.info(`session ${session.id} model=${session.modelId}`);
     await this.#conn.sessionUpdate({
       sessionId: session.id,
-      update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session.modelId) },
+      update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
   }
 
@@ -238,22 +246,34 @@ export class SangxiaAgent implements Agent {
     if (!this.#sessions.has(params.sessionId)) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     }
-    if (params.configId !== "model") {
+    if (params.configId === "model") {
+      await this.setSessionModel({ sessionId: params.sessionId, modelId: params.value });
+    } else if (params.configId === "mode") {
+      await this.setSessionMode({ sessionId: params.sessionId, modeId: params.value });
+    } else {
       throw RequestError.invalidParams({ configId: `未知配置选项: ${params.configId}` });
     }
-    await this.setSessionModel({ sessionId: params.sessionId, modelId: params.value });
-    return { configOptions: this.configOptions(this.#sessions.get(params.sessionId)!.modelId) };
+    return { configOptions: this.configOptions(this.#sessions.get(params.sessionId)!) };
   }
 
-  private configOptions(modelId: string): SessionConfigOption[] {
+  private configOptions(session: Session): SessionConfigOption[] {
     return [{
       id: "model",
       name: "Model",
       category: "model",
       type: "select",
-      currentValue: modelId,
+      currentValue: session.modelId,
       options: this.availableModels().map(({ modelId, name, description }) => ({
         value: modelId, name, ...(description !== undefined ? { description } : {}),
+      })),
+    }, {
+      id: "mode",
+      name: "Access and mode",
+      category: "mode",
+      type: "select",
+      currentValue: session.permissionMode,
+      options: permissionModes(session.permissionMode).availableModes.map(({ id, name, description }) => ({
+        value: id, name, ...(description !== undefined ? { description } : {}),
       })),
     }];
   }
@@ -671,7 +691,7 @@ function permissionModes(currentModeId: Session["permissionMode"]): SessionModeS
     currentModeId,
     availableModes: [
       { id: "confirm", name: "Standard Access", description: "变更操作执行前请求确认" },
-      { id: "auto", name: "Full Access", description: "自动批准变更操作（危险）" },
+      { id: "auto", name: "Full Access", description: "自动批准常规变更；Hook 强制确认仍生效" },
     ],
   };
 }
