@@ -115,7 +115,7 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 
 ## ACP Registry 本地准备（2026-09-22）
 
-- npm 包名 / registry id：`sangxia-ai`，准备版本 `0.6.16`，MIT。用户选择先完成本地工作；**尚未发布 npm 或提交 registry PR**。交接与验证见 `doc/acpreg-release.md`，计划见 `plan/acpreg_gap_check.md`。
+- npm 包名 / registry id：`sangxia-ai`，MIT。`0.6.16` 已于 2026-09-23 发布到 npm；`0.6.17` 补上了 SDK 0.14.1 迁移与 AIR 权限配置项修复。**registry PR 仍未提交**。交接与验证见 `doc/acpreg-release.md`，计划见 `plan/acpreg_gap_check.md`。
 - Terminal Auth：`initialize.authMethods` 无条件声明 `terminal-setup`（SDK 0.4.5 会剥掉客户端 `auth` 能力），`args: ["setup"]`，`_meta["terminal-auth"]: true`。setup 成功后客户端重连。SDK 升级后可按 `auth.terminal` / `_meta` 门控。
 - 配置失败时 ACP 进程继续握手；new/load/prompt/authenticate 通过统一 guard，未配置返回 `AUTH_REQUIRED`（-32000），保留加载错误原因及 setup 提示。mock 免 key；其它 provider 的 key 必须非空白。配置级 hook 的错误仍阻止建会话，不是忽略坏 hook。
 - 文件来源优先于环境：无配置文件时才用 `SANGXIA_API_KEY`（可选 `SANGXIA_BASE_URL` / `SANGXIA_MODEL`）；显式配置路径失败不 fallback。SDK 不隐式读取 `OPENAI_BASE_URL`。日志仅记录凭据来源。

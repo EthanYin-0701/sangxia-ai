@@ -4,11 +4,11 @@ Sangxia.ai is a coding agent speaking ACP over stdio, with a built-in tool harne
 
 ### Install / Setup / Add to Zed
 
-The commands below target the planned npm release `0.6.16`; publication and registry listing are pending. To try the current checkout now, use the source-build commands under **快速开始**.
+The commands below target npm release `0.6.17`; the ACP Registry listing is still pending. To try the current checkout now, use the source-build commands under **快速开始**.
 
 ```bash
 # Install (after publication)
-npm install -g sangxia-ai@0.6.16
+npm install -g sangxia-ai@0.6.17
 # Setup: prompts for the provider, model and a hidden API key
 sangxia setup
 # Run in a terminal, or use the Zed configuration below
@@ -22,7 +22,7 @@ Add this entry to Zed's `settings.json` (requires the published package):
   "agent_servers": {
     "Sangxia": {
       "command": "npx",
-      "args": ["--yes", "sangxia-ai@0.6.16"],
+      "args": ["--yes", "sangxia-ai@0.6.17"],
       "env": {}
     }
   }
