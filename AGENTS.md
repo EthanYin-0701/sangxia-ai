@@ -8,7 +8,8 @@ Sangxia（sangxia-ai）是一个基于 Node.js/TypeScript 的 ACP（Agent Client
 
 - **语言/运行时**：TypeScript 5.6+，Node.js >= 20，ESM（`"type": "module"`）
 - **模块解析**：`NodeNext`；目标 `ES2023`；严格模式（`strict` + `noUncheckedIndexedAccess`）
-- **关键依赖**：`@agentclientprotocol/sdk@0.14.1`、`@modelcontextprotocol/sdk`、`openai`、`zod`、`tinyglobby`
+- **关键依赖**：`@agentclientprotocol/sdk@0.14.1`、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`
+  - `src/config.ts` 从 `zod/v3` 导入（zod 4 自带的 v3 API）：配置 schema 依赖 v3 的嵌套 `.default({})` 语义（内层字段默认值照常生效）；改用 `"zod"`（v4 API）前须把这些 `.default({})` 迁移为 `.prefault({})`、`z.record(v)` 改为 `z.record(k, v)`，并对比配置解析结果。两个 SDK 走 `zod/v4`，与根目录 zod 共用一份。
 - **开发工具**：`tsx`（dev 直跑）、`tsc`（build/typecheck）、Node 内置 `node:test` 风格脚本冒烟测试
 
 ## 常用命令

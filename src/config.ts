@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { z } from "zod";
+// zod 4 ships the zod 3 API under "zod/v3"; the schemas below rely on its
+// `.default({})` semantics (nested field defaults still apply), so stay on it.
+import { z } from "zod/v3";
 import { assertKnownHookEvents, assertValidHookEntries, resolveHookCommands } from "./hooks/paths.js";
 import { HOOK_EVENTS, type HookEntry } from "./hooks/types.js";
 import { logger } from "./logger.js";
