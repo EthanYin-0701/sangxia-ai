@@ -2,126 +2,58 @@
 
 ## 项目简介
 
-Sangxia（sangxia-ai）是一个基于 Node.js/TypeScript 的 ACP（Agent Client Protocol）编程 AI agent：通过 stdio 上的 JSON-RPC 与 Zed 等 ACP 客户端通信，自带完整工具 harness（流式输出 → 工具调用 → 权限确认 → 执行 → 回喂 → 收敛），LLM 后端走任意 OpenAI 兼容 `/chat/completions` 端点，可通过 ACP `session/new` 接入 MCP servers，支持本地技能（Skills）渐进式加载，以及由本地配置驱动、不依赖 ACP 客户端的生命周期钩子（Hooks）。
+Sangxia（sangxia-ai）是 Node.js/TypeScript 写的 ACP（Agent Client Protocol）编程 agent：经 stdio JSON-RPC 与 Zed 等客户端通信，自带工具 harness（流式输出 → 工具调用 → 权限确认 → 执行 → 回喂 → 收敛），LLM 走任意 OpenAI 兼容 `/chat/completions` 端点；支持 MCP、本地技能（Skills）与本地配置驱动的生命周期钩子（Hooks），另有终端 UI（`sangxia tui`）。用户文档见 `INSTRUCTIONS.md`。
 
 ## 技术栈
 
-- **语言/运行时**：TypeScript 5.6+，Node.js >= 20，ESM（`"type": "module"`）
-- **模块解析**：`NodeNext`；目标 `ES2023`；严格模式（`strict` + `noUncheckedIndexedAccess`）
-- **关键依赖**：`@agentclientprotocol/sdk@0.14.1`、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`
-  - `src/config.ts` 从 `zod/v3` 导入（zod 4 自带的 v3 API）：配置 schema 依赖 v3 的嵌套 `.default({})` 语义（内层字段默认值照常生效）；改用 `"zod"`（v4 API）前须把这些 `.default({})` 迁移为 `.prefault({})`、`z.record(v)` 改为 `z.record(k, v)`，并对比配置解析结果。两个 SDK 走 `zod/v4`，与根目录 zod 共用一份。
-- **开发工具**：`tsx`（dev 直跑）、`tsc`（build/typecheck）、Node 内置 `node:test` 风格脚本冒烟测试
+- TypeScript 5.6+、Node.js >= 20、ESM + `NodeNext`（相对导入带 `.js`），`strict` + `noUncheckedIndexedAccess`。
+- 依赖：`@agentclientprotocol/sdk@0.14.1`（固定版本）、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`。
+- `src/config.ts` 用 `zod/v3`（依赖 v3 嵌套 `.default({})` 语义）；改用 v4 API 前须迁移 `.prefault({})` / `z.record(k, v)` 并对比解析结果。
+- 无单元测试框架，测试是 `scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。
 
 ## 常用命令
 
 ```bash
-npm run dev         # tsx 直跑 src/index.ts（开发）
-npm run typecheck   # 仅类型检查（提交前必跑）
-npm run build       # 编译到 dist/
-npm run smoke       # 离线冒烟：完整 ACP 握手 + 工具 + 权限流（mock provider）
-npm run smoke:auth    # Registry 沙箱握手/认证拒绝/环境变量启动/CLI（15 场景）
-npm run smoke:setup   # 交互配置的 headless 路径/验证回退/保留旧配置/权限
-npm run smoke:openai  # 真实 OpenAI 兼容流式路径（本地假服务器）
-npm run smoke:mcp     # MCP 工具接入冒烟
-npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + use_skill 加载/未知名称报错）
-npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
-npm run smoke:hooks   # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks/配置分层，89 项断言）
-npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
-npm run smoke:permissions # SA-1：权限记忆按 bash 命令前缀/文件目录细分、高危命令与工作区外路径强制确认
-scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/sangxia/skills（--dry-run/--force/--skill/--target）
+npm run typecheck     # 提交前必跑
+npm run build         # 编译到 dist/
+npm run check:docs    # 文档一致性：路径/脚本存在、本文件体积预算
+npm run smoke         # 离线 E2E：ACP 握手 + 工具 + 权限流（mock provider）
+# 其余冒烟：smoke:openai / smoke:mcp / smoke:skill / smoke:tui / smoke:hooks /
+#           smoke:reliability / smoke:permissions / smoke:setup / smoke:auth / smoke:model-config
 ```
 
 ## 目录约定
 
 ```
-src/
-  acp/         ACP 侧内容处理（content.ts）
-  agent.ts     主 Agent：initialize / newSession / prompt / cancel；组装会话工具集
-  config.ts    配置加载（--config → $SANGXIA_CONFIG → ./sangxia.config.json → ~/.config/sangxia/config.json，
-               支持 ${ENV} 插值；D16 分层：~/.config/sangxia/config.json 是全局 base，主配置在其上深合并，
-               hooks.events.* 数组追加 = 全局 hook 无法被项目配置删掉）
-  harness/     主循环 loop.ts、权限 permissions.ts、工具抽象 tool.ts、统一参数校验 validation.ts
-               头尾截断 truncate.ts、prompt token 估算 context.ts
-  llm/         LLMProvider 接口（types.ts）+ OpenAI（openai.ts）/ mock（mock.ts）+ factory.ts
-  mcp/         MCP client（client.ts）
-  hooks/       生命周期钩子：types.ts（事件/信封/决策类型）、paths.ts（D15 路径基准
-               解析 + 加载期 fail-fast）、exec.ts（单条 hook 进程：spawn/进程组超时
-               kill/容错解析/exit 2）、index.ts（HookRegistry：matcher/串行链式/合并
-               决策/项目级 hooks.json + onError 与超时钳制）
-  skills/      技能发现与 use_skill（index.ts）
-  tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts；
-               scope.ts（权限范围：工作区边界、bash 命令前缀、高危命令检测）
-  tui/         终端 UI（`sangxia tui`）：index.ts 主循环 / bridge.ts 进程内 ACP 配对
-               / ui.ts 备用屏渲染（含 IME 真光标定位） / keys.ts raw 键盘解析 / input.ts 行编辑
-               / model.ts ACP 通知→聊天条目映射 / commands.ts 斜杠命令
-               / theme.ts 红绿白主题 / wcwidth.ts 最小 CJK 宽度（零依赖）
-  setup.ts     Terminal Auth 向导（交互隐藏 key / headless / 连通性验证 / 全局配置原子写入）
-  version.ts   package.json 版本与 ACP agentInfo 共享来源
-  index.ts     入口（tui → setup → version/help → stdio JSON-RPC；配置失败仍完成握手）
-  logger.ts    日志（stdout 是协议通道，日志一律走 stderr；可选 SANGXIA_LOG_FILE 单文件或 SANGXIA_LOG_DIR 按 session 分文件；logger.configure 支持运行时改 stderr/level/dir，TUI 用它把日志只进文件）
-  persistence.ts  会话持久化：JSONL 事件流（~/.config/sangxia/sessions/<id>.jsonl），persistSession 唯一写入口
-  project-memory.ts  AGENTS.md / .sangxia/memory.md 的发现与加载（+ 用户级 ~/.config/sangxia/AGENTS.md）
-doc/uml/       时序图（prompt-turn）
-scripts/       冒烟测试脚本（*.mjs）+ install-skills.sh（把 skills/ 装到全局技能目录）
-               install-skills.sh 需注意：bash 里 `$var` 紧挨全角括号会被吞进变量名，一律写 `${var}
-.claude/skills/ 本地安装的第三方技能（Claude Code 布局；analyze 来自 jet-desk，见 .sangxia/memory.md）
-skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 token 用量）
+src/agent.ts       ACP 入口（initialize/newSession/loadSession/prompt/cancel/模式/模型），组装会话工具集
+src/session.ts     单会话状态；src/persistence.ts 会话持久化（JSONL 事件流）
+src/harness/       loop.ts 主循环、permissions.ts 权限门、tool.ts 工具契约、validation.ts 参数校验、
+                   truncate.ts 头尾截断、context.ts prompt token 估算
+src/llm/           LLMProvider 接口 + openai/mock 实现 + factory.ts
+src/tools/         内置工具（fs-tools/bash/plan）+ scope.ts（工作区边界、命令前缀、高危命令）
+src/mcp/ src/skills/ src/hooks/ src/tui/   MCP client、技能、生命周期钩子、终端 UI
+src/config.ts      配置加载与校验；src/setup.ts 配置向导；src/logger.ts 日志
+src/project-memory.ts  加载 AGENTS.md / .sangxia/memory.md（+ ~/.config/sangxia/AGENTS.md）
+scripts/           冒烟测试、check-docs.mjs、install-skills.sh；skills/ 本项目自有技能
 ```
-
-## 技能（Skills）
-
-- 发现目录：配置 `skills.dirs`（相对路径按 session cwd 解析）优先；未配置时回退 `<cwd>/skills` + `~/.config/sangxia/skills`。同名先到先得（项目技能盖过全局）。
-- **共享技能给其他项目**：把技能装进默认目录 `<项目>/skills`（零配置）或全局 `~/.config/sangxia/skills`（用 `scripts/install-skills.sh`）。全局目录只对**未设置 `skills.dirs`** 的项目生效——`skills.dirs` 非空会替换默认列表，此时必须把全局目录显式列进去（按顺序，靠后的被靠前的同名技能盖过）。技能不跟随 Agent 安装位置，只按 session cwd 扫描。装完需新开会话。
-- `SKILL.md` 只需 frontmatter 的 `name` / `description`；`description` 支持 YAML 块标量（`>-` / `|`），Claude Code 技能的长描述可直接用。
-- 目录（name+description）只在 `newSession` 时扫描一次并注入 system prompt，`use_skill` 工具仅在发现到技能时才暴露——**安装技能后需要新会话才生效**。
-- `use_skill` 只加载 SKILL.md 正文；Claude 专属的 `allowed-tools` / `$ARGUMENTS` / `argument-hint` 不解析（正文里按需自解释）。技能内引用的相对路径（如 `.claude/skills/<name>/references/*.md`）按 session cwd 解析，安装时要保证路径与 cwd 匹配。
-- 技能里如果依赖 MCP 工具（javaperf/diogen/…），必须由 ACP 客户端在 `session/new` 传 `mcpServers`；TUI 传空数组，所以 TUI 下只能用纯本地工具的技能。
 
 ## 工作规则
 
-1. **先读后改**：不臆测文件内容，先用 `read_file`/`list_dir`/`glob`/`grep` 确认；修改用 `edit_file` 做最小化精确改动。
-2. **运行命令**：构建/测试/git 等一律通过 `bash` 执行；提交前必须过 `npm run typecheck`（可再跑 `npm run build`）。
-3. **日志纪律**：stdout 是 ACP 协议通道，任何调试/日志输出必须走 stderr 或 `SANGXIA_LOG_FILE`/`SANGXIA_LOG_DIR`，严禁污染 stdout。日志时间戳含本地时区 UTC 偏移；宿主时区不对时用 `SANGXIA_LOG_TIMEZONE` 修正。`SANGXIA_LOG_DIR` 按 session 分文件（`<sessionId>.log` + `global.log`），session 归属用 `AsyncLocalStorage` 实现（`logger.withSession`，见 agent.ts 的 newSession/loadSession/prompt/cancel 包裹），多 session 并发也不串文件。
-4. **配置与密钥**：`sangxia.config.json` 已被 gitignore，不要提交；密钥用 `${ENV_VAR}` 引用，避免落盘。
-5. **产物与生成文件**：`dist/`、`node_modules/` 为构建产物，不手改、不提交。
-6. **记忆维护**：跨 session 的项目背景、重要决策、待办事项写入 `.sangxia/memory.md`（每次 session 自动加载）；涉及架构/决策/未完成事项时，任务完成后更新。**用户级**（对所有项目成立）的工作方式约定写 `~/.config/sangxia/AGENTS.md`，由 `loadUserMemory()` 加载，顺序在项目记忆**之前**；该文件不被自动创建/补齐（是用户自己的文件）。
-7. **新增 LLM 后端**：实现 `LLMProvider` 接口，在 `llm/factory.ts` 注册即可。
-8. **权限模型**：变更类工具（write/edit/bash/MCP 工具）执行前走 `session/request_permission`；读类工具免权限；`update_plan`/`use_skill` 免权限。
-   所有工具先过 JSON object / JSON Schema 校验；非法参数不得进入权限确认，截断响应中的工具调用一律拒绝执行，并补齐失败 tool result。
-   **权限记忆按范围而非工具名（SA-1）**：「总是允许/拒绝」记在 `Tool.permissionScope` 给出的 key 上——`bash` 按命令前缀（`npm test`；含 `;`/`&&`/`|`/重定向/`$()` 的复合命令只精确匹配），文件工具按目录子树（工作区外只记该精确路径）；未实现 `permissionScope` 的工具（MCP、`use_skill`…）仍按工具名。**工作区（session cwd，realpath 后比较）之外的路径**、逃逸的 glob 模式（绝对/`..`）、以及 `detectDangerousCommand` 命中的**高危命令**都设置 `forceAsk`：即便是只读工具、即便 auto 模式也弹窗；高危命令还忽略已记住的决策。新增碰文件/跑命令的内置工具必须实现 `permissionScope`（复用 `tools/scope.ts`），不要再往 `session.permissions` 写裸工具名来"整体放行"。
-9. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 连接失败只告警跳过，不影响其他工具。
-10. **TUI 纪律**：`sangxia tui` 分支完全接管进程生命周期（stdio/TTY/信号），不注册 ACP 模式的 SIGINT 逻辑；TUI 下日志必须 `logger.configure({ stderr:false, dir })` 只进文件，严禁把日志写进备用屏。输入层是自研 raw 键盘解析（keys.ts），不要换回 readline——`rl.pause()` 无法隔离 raw 弹窗（按键会漏进行输入行，spike 已验证）。
-    **真光标 = IME 锚点**：`ui.ts` 每帧结束时必须把**真**光标定位到输入 caret 并显示（`writeDiffed(..., caret)`，`Frame.inputCaret` 控制；弹窗接管按键时隐藏）。中文/日文输入法的组合文字与候选框锚在终端真光标上，代码里若只画反显"假光标"而不动真光标，组合过程会跟着**上一帧最后被改写的那一行**跑（模型流式输出时表现为"拼音/组合被拽走、打断或丢失"）。同理不要给输入行单元格再加反显方块（真光标叠上去会二次反色），也不要每帧无条件发 `\x1b[?25l`+`\x1b[?25h` 制造闪烁/多余写入。
-11. **ACP SDK 兼容**：固定 `@agentclientprotocol/sdk@0.14.1`，同时支持 `configOptions` 与旧式 `models`。标准 `session/set_model` 分发到 `unstable_setSessionModel`；新入口是 `setSessionConfigOption`，TUI 使用新入口。保留 `_sangxia.set_model`（SDK 将完整方法名传入 `extMethod`），所有模型入口共用模型校验、持久化和 `config_option_update` 通知。`configOptions` 始终包含完整 model/mode；新旧权限切换入口共用模式校验、权限记忆清除及持久化，成功后发送 `current_mode_update` 和完整 `config_option_update`。升级前验证新旧字段和方法实际经过 stdio，勿修改 node_modules。
-12. **持久化纪律**：`src/persistence.ts` 是唯一的会话写入口（`persistSession`）+ 工具事件（`persistToolEvent`）+ 历史替换（`persistHistoryReset`）。存储是 append-only JSONL 事件流（`meta`/`message`/`reset`/`tool_started`/`tool_finished`/`mode`/`model`），**不要**退回"每条消息全量重写快照"（长会话 O(n²)，且无法记录工具是否启动过）。`tool_started` 必须在 `tool.run` **之前**落盘——`sanitizeHistory` 靠它区分"结果未知"与"可安全重试"。`sessionId` 写文件前必过 `/^[a-zA-Z0-9-]+$/` 白名单。
-13. **工具超时纪律**：工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，`tool.timeoutMs` / 调用参数（bash 的 `timeout`）优先；deadline 必须 **race** 工具 promise，只 abort signal 不够（不理会 signal 的工具会永久 await）。超时按 `deadline.signal.aborted && !signal.aborted` 判定为失败 tool result，用户取消优先级更高（语义不得混）。
-14. **LLM 重试边界**：provider 只重试**首个 delta 之前**的瞬时失败（网络/408/409/429/5xx），尊重 `Retry-After`，可被 signal 打断；已流出内容、`StreamTimeoutError`、参数类错误一律不重试。SDK `maxRetries: 0` 保持不动。
+1. **先读后改**：先用 `read_file`/`list_dir`/`glob`/`grep` 确认内容，再用 `edit_file` 做最小精确改动。构建/测试/git 走 `bash`。
+2. **stdout 是协议通道**：严禁 `console.log`；日志一律走 `logger`（stderr / `SANGXIA_LOG_FILE` / `SANGXIA_LOG_DIR`）。新 ACP handler 用 `logger.withSession(id, ...)` 包裹，否则日志落入 `global.log`。
+3. **密钥与产物**：`sangxia.config.json` 与 `dist/` 已 gitignore，不提交、不手改；密钥用 `${ENV_VAR}` 引用。
+4. **记忆维护**：项目背景、决策、待办写 `.sangxia/memory.md`（本地文件，不入库）；本文件只放长期有效的规则，保持精简（每次请求都会全文进入 system prompt，`check:docs` 设有体积上限）。
+5. **`tool_calls` 必须配对**：每个 assistant `tool_calls` 都要有对应 tool 结果，`executeToolCall` 的每条路径（含权限拒绝、取消、超时、hook deny）都要回填；`runTurn` 开头的 `sanitizeHistory` 是兜底，不可删。
+6. **权限**：变更类工具（write/edit/bash/MCP）执行前走 `session/request_permission`，只读工具和 `update_plan`/`use_skill` 免权限。所有工具参数先过 JSON Schema 校验，非法参数和截断响应里的工具调用不执行。"总是允许/拒绝"按 `Tool.permissionScope` 的范围记忆（bash 按命令前缀、文件按目录）；工作区外路径与高危命令强制弹窗。新增碰文件/跑命令的工具必须实现 `permissionScope`（复用 `tools/scope.ts`），并优先用客户端能力（`readTextFile`/`writeTextFile`/`createTerminal`），无能力时回退 Node。
+7. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 失败只告警跳过，远程工具命名 `mcp__<server>__<tool>`。
+8. **持久化**：`persistence.ts` 是唯一写入口，append-only JSONL，不要退回全量重写快照；`tool_started` 必须在 `tool.run` 之前落盘。来自客户端的 session ID 拼路径前必过 `/^[a-zA-Z0-9-]+$/`。
+9. **超时与重试**：工具 deadline 必须 race 工具 promise（只 abort 不够），用户取消优先于超时。LLM 只重试首个 delta 之前的瞬时失败（网络/408/409/429/5xx，尊重 `Retry-After`），SDK `maxRetries` 保持 0。
+10. **Hooks**：`pre_tool_use` 在 `tool_call` 通知与权限弹窗之前运行，之后一律用改写后的参数（并重新校验）；`ask` 无条件弹窗（含 auto 模式与只读工具）；命令路径以声明它的配置所在目录为基准，绝不用 session cwd；hook 失败不得影响 turn 收敛；全局配置是 base，`hooks.events.*` 追加合并，不要改成覆盖或去重。
+11. **ACP SDK**：同时支持 `configOptions` 与旧式 `models`；各模型/模式切换入口共用校验、持久化与 `config_option_update` 通知。升级 SDK 前验证新旧方法实际经过 stdio，勿改 `node_modules`。
+12. **配置缺失**：ACP 进程仍完成握手，new/load/prompt 返回 `AUTH_REQUIRED`（-32000）并提示 `sangxia setup`；setup 只写全局配置、先验证后原子替换（0600）。
+13. **TUI**：`sangxia tui` 接管进程生命周期，日志只进文件；键盘解析用自研 `keys.ts`，不要换回 readline；每帧把真光标放回输入 caret（IME 依赖它）。
+14. **新增 LLM 后端**：实现 `LLMProvider`，在 `llm/factory.ts` 注册，并扩展 `config.ts` 的 `provider.type`。
 
-15. **Hook 纪律**：`src/hooks/` 的四条不变式，改动前先读 `plan/hooks_support.md` 的 §7/§10-D14/§10-D15。
-    - `pre_tool_use` 必须插在 `tool_call` 通知与 `session/request_permission` **之前**，且 `title`/`locations`/`rawInput`/权限弹窗全部用**可能被改写后的最终参数** —— "人批准的就是实际执行的"（D1/M1）；`updatedInput` 是整体替换，替换后必须**重新过 JSON Schema**，非法即不执行。
-    - `ask` 必须**无条件强制弹窗**（`ignoreRemembered: true` + 绕过 `needsPermission`/`permissionMode` 两个门控）：auto 模式与 `needsPermission:false` 的只读工具上都要弹，否则对企业承诺的硬约束是假的（D14）。`deny`/`ask` 都必须回填 tool result，否则触发 `tool_calls` 配对 400（D2/D13）。
-    - **命令路径的解析基准 = 声明它的那份配置所在目录**（配置级 = 配置文件目录，项目级 = 项目根），与 hook 进程的 `cwd`（= session cwd）解耦。**绝不要把基准改成 session cwd** —— 那等于让被打开的仓库决定执行哪个文件（D15 / review H2）；路径形态的命令在加载期解析并校验存在性，缺失直接 fail fast。
-    - hook 失败**绝不能影响 turn 收敛**（异常全捕获 + warn 日志，`onError` 只约束"失败"路径，不改写显式 deny）；`hooks.enabled` 与 `projectFile.enabled` 默认 **false**；项目级条目的 `onError`/`timeoutMs` 只能更严不能放宽（L3）。
-    - 项目级 hooks 文件（`.sangxia/hooks.json`）在**会话建立时**加载（基准是 session cwd），配置级在 `loadConfig` 阶段解析路径。
-    - **配置分层（D16）**：`~/.config/sangxia/config.json` 永远是 base，主配置是 overlay；`hooks.events.*` 按"base 先、overlay 后"**追加**，所以**不要**给 hooks 加"数组覆盖"或去重 —— 那会让项目配置静默卸掉用户的全局守卫 hook。唯一关闭入口是显式 `hooks.enabled: false`。改 `loadConfig` 时不要退回"单文件、先找到先用"。
+## 预留扩展点（勿破坏接口）
 
-
-## 已知扩展点（勿破坏预留接口）
-
-- Anthropic 原生 provider（接口已就绪，未实现）。
-- 图片/音频输入、多模式（`session/set_mode`）。
-- MCP 连接按会话回收（当前进程退出时统一关闭，受 ACP 0.4.5 无会话结束事件限制）。
-- TUI v2：`/resume`（session/load 续持久化会话）、权限弹窗内实时 bash 输出（客户端 createTerminal，terminal:true）、多行输入。
-- `reasoning_effort` / 请求体透传：当前 provider 只发 `max_tokens`，无法单独控制思考预算（DeepSeek 的 `reasoning_effort=max` → 默认输出 128K 那一档因此用不上）。
-- Hook v2（实现见 `src/hooks/`，v1 已落地 6 个事件）：会话级 `session_end`（等 ACP 有会话结束事件或 TUI 支持销毁会话）、`pre_compact`、`subagent_start`/`subagent_stop`、`turn_end` 的 `decision: "continue"`（需给 `runTurn` 加 resume 语义）、结构化注入（图片/文件引用）、可选审计文件 `hooks.auditFile`。子代理每步工具调用走父循环的 `executeToolCall`，hook 自动生效，但不产生会话级事件（D6）。
-- 上下文压缩（`plan/harness_hardening_plan.md` 步骤 10b/10c）：`harness/context.ts` 已备好 `estimateTokens` / `shouldCompact`，但**按实测证据挂起**（真实请求最大 182k prompt tokens / 789 消息、0 次 `context_length_exceeded`，见 `.sangxia/memory.md`）；重启前先看有没有新的溢出证据，不要用 128k 之类的默认窗口猜阈值。
-
-
-## ACP Registry 本地准备（2026-09-22）
-
-- npm 包名 / registry id：`sangxia-ai`，MIT。`0.6.16` 已于 2026-09-23 发布到 npm；`0.6.17` 补上了 SDK 0.14.1 迁移与 AIR 权限配置项修复。**registry PR 仍未提交**。交接与验证见 `doc/acpreg-release.md`，计划见 `plan/acpreg_gap_check.md`。
-- Terminal Auth：`initialize.authMethods` 无条件声明 `terminal-setup`（SDK 0.4.5 会剥掉客户端 `auth` 能力），`args: ["setup"]`，`_meta["terminal-auth"]: true`。setup 成功后客户端重连。SDK 升级后可按 `auth.terminal` / `_meta` 门控。
-- 配置失败时 ACP 进程继续握手；new/load/prompt/authenticate 通过统一 guard，未配置返回 `AUTH_REQUIRED`（-32000），保留加载错误原因及 setup 提示。mock 免 key；其它 provider 的 key 必须非空白。配置级 hook 的错误仍阻止建会话，不是忽略坏 hook。
-- 文件来源优先于环境：无配置文件时才用 `SANGXIA_API_KEY`（可选 `SANGXIA_BASE_URL` / `SANGXIA_MODEL`）；显式配置路径失败不 fallback。SDK 不隐式读取 `OPENAI_BASE_URL`。日志仅记录凭据来源。
-- setup 始终写全局配置，只替换 provider，保留 hooks 等字段；先验证，后原子替换，权限 0600。`--api-key-env` 保存引用，启动时也需注入；JSONC example 仅供参考，运行配置为严格 JSON。
-- `scripts/prepare-registry.mjs` 在拿到真实 GitHub URL 后生成 manifest；图标位于 `registry/sangxia-ai/icon.svg`。不要把占位 repository URL 或未发布状态伪装为已完成。
+Anthropic 原生 provider、图片/音频输入、子代理、按会话回收 MCP 连接（ACP SDK 0.14.1 仍无会话结束事件）、上下文压缩（`harness/context.ts` 已有估算，暂无溢出证据故未启用）。

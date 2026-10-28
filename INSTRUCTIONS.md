@@ -488,7 +488,7 @@ exit 0
 - 会话历史默认持久化到 `~/.config/sangxia/sessions/<sessionId>.jsonl`（append-only 事件流，见「会话持久化」），可用 `SANGXIA_SESSION_DIR` 修改目录；支持 ACP `session/load` 恢复历史。
 - 新会话会自动加载项目根目录的 `AGENTS.md` 和 `.sangxia/memory.md`，用于保存跨 session 的项目约定与进度；此外 `~/.config/sangxia/AGENTS.md`（**用户级长期指令**）会**在所有项目**里加载，用来放"无论打开哪个仓库都成立"的工作方式约定（例如某个 CLI 的用法、语义搜索优先于 grep）。加载顺序：用户级在前、项目记忆在后（后者更具体，冲突时以项目为准）。该文件**不会**被自动创建，也不参与项目初始化补齐。
 - 如果上述任一文件缺失，第一次正式 prompt 前会请求用户确认；确认后 agent 会先扫描项目并只补齐缺失的记忆文件，再执行原始任务。
-- 一次 prompt 的完整时序见 [`doc/uml/prompt-turn.md`](doc/uml/prompt-turn.md)。
+- 一次 prompt 的完整流程（流式 → 工具调用 → 权限 → 执行 → 回喂 → 收敛）实现在 `src/harness/loop.ts` 的 `runTurn`。
 
 ## 终端界面（TUI）
 

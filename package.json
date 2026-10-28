@@ -16,6 +16,7 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:docs": "node scripts/check-docs.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "smoke:openai": "npm run build && node scripts/smoke-openai.mjs",
     "smoke:mcp": "npm run build && node scripts/smoke-mcp.mjs",
