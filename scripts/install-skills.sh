@@ -16,6 +16,8 @@
 #      （默认 = <cwd>/skills + ~/.config/sangxia/skills）——必须把全局目录显式列进去。
 #   2. 技能清单在 session/new 时扫描一次，装完要**新开会话**才生效。
 #   3. skills.enabled 必须为 true（默认 true）。
+#
+# 维护提示：变量紧挨全角标点时一律写 ${var}——bash 会把 `$var（` 的全角字符吞进变量名。
 
 set -euo pipefail
 
