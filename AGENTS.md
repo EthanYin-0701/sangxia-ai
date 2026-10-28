@@ -26,6 +26,7 @@ npm run smoke:skill   # 技能层冒烟（skills.dirs 发现 + 目录注入 + us
 npm run smoke:tui     # TUI 层 headless 冒烟（命令/主题/输入/通知映射/内存配对/取消）
 npm run smoke:hooks   # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks/配置分层，89 项断言）
 npm run smoke:reliability # 截断/空响应/参数校验/流式超时/重试/工具 deadline/持久化/取消与断连回归（32 组）
+npm run smoke:permissions # SA-1：权限记忆按 bash 命令前缀/文件目录细分、高危命令与工作区外路径强制确认
 scripts/install-skills.sh  # 把 skills/ 装到 ~/.config/sangxia/skills（--dry-run/--force/--skill/--target）
 ```
 
@@ -47,7 +48,8 @@ src/
                kill/容错解析/exit 2）、index.ts（HookRegistry：matcher/串行链式/合并
                决策/项目级 hooks.json + onError 与超时钳制）
   skills/      技能发现与 use_skill（index.ts）
-  tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts
+  tools/       内置工具：fs-tools.ts（read/write/edit/list/glob/grep）、bash.ts、plan.ts；
+               scope.ts（权限范围：工作区边界、bash 命令前缀、高危命令检测）
   tui/         终端 UI（`sangxia tui`）：index.ts 主循环 / bridge.ts 进程内 ACP 配对
                / ui.ts 备用屏渲染（含 IME 真光标定位） / keys.ts raw 键盘解析 / input.ts 行编辑
                / model.ts ACP 通知→聊天条目映射 / commands.ts 斜杠命令
@@ -85,6 +87,7 @@ skills/      本项目自有技能（deepseek-usage：DeepSeek 余额 + 本地 t
 7. **新增 LLM 后端**：实现 `LLMProvider` 接口，在 `llm/factory.ts` 注册即可。
 8. **权限模型**：变更类工具（write/edit/bash/MCP 工具）执行前走 `session/request_permission`；读类工具免权限；`update_plan`/`use_skill` 免权限。
    所有工具先过 JSON object / JSON Schema 校验；非法参数不得进入权限确认，截断响应中的工具调用一律拒绝执行，并补齐失败 tool result。
+   **权限记忆按范围而非工具名（SA-1）**：「总是允许/拒绝」记在 `Tool.permissionScope` 给出的 key 上——`bash` 按命令前缀（`npm test`；含 `;`/`&&`/`|`/重定向/`$()` 的复合命令只精确匹配），文件工具按目录子树（工作区外只记该精确路径）；未实现 `permissionScope` 的工具（MCP、`use_skill`…）仍按工具名。**工作区（session cwd，realpath 后比较）之外的路径**、逃逸的 glob 模式（绝对/`..`）、以及 `detectDangerousCommand` 命中的**高危命令**都设置 `forceAsk`：即便是只读工具、即便 auto 模式也弹窗；高危命令还忽略已记住的决策。新增碰文件/跑命令的内置工具必须实现 `permissionScope`（复用 `tools/scope.ts`），不要再往 `session.permissions` 写裸工具名来"整体放行"。
 9. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 连接失败只告警跳过，不影响其他工具。
 10. **TUI 纪律**：`sangxia tui` 分支完全接管进程生命周期（stdio/TTY/信号），不注册 ACP 模式的 SIGINT 逻辑；TUI 下日志必须 `logger.configure({ stderr:false, dir })` 只进文件，严禁把日志写进备用屏。输入层是自研 raw 键盘解析（keys.ts），不要换回 readline——`rl.pause()` 无法隔离 raw 弹窗（按键会漏进行输入行，spike 已验证）。
     **真光标 = IME 锚点**：`ui.ts` 每帧结束时必须把**真**光标定位到输入 caret 并显示（`writeDiffed(..., caret)`，`Frame.inputCaret` 控制；弹窗接管按键时隐藏）。中文/日文输入法的组合文字与候选框锚在终端真光标上，代码里若只画反显"假光标"而不动真光标，组合过程会跟着**上一帧最后被改写的那一行**跑（模型流式输出时表现为"拼音/组合被拽走、打断或丢失"）。同理不要给输入行单元格再加反显方块（真光标叠上去会二次反色），也不要每帧无条件发 `\x1b[?25l`+`\x1b[?25h` 制造闪烁/多余写入。

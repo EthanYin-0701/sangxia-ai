@@ -7,7 +7,7 @@ import type { ChatMessage, LLMProvider, ToolCallRequest } from "../llm/types.js"
 import { logger } from "../logger.js";
 import type { Session } from "../session.js";
 import { persistHistoryReset, persistSession, persistToolEvent } from "../persistence.js";
-import { ensurePermission } from "./permissions.js";
+import { ensurePermission, resolvePermissionScope } from "./permissions.js";
 import type { Tool, ToolRegistry } from "./tool.js";
 import { ToolTimeoutError } from "./tool.js";
 import type { PermissionDecision } from "../session.js";
@@ -555,19 +555,28 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   //     too, which is what "读取敏感路径强制复核" is built on;
   //   - `ignoreRemembered` makes a previous "always allow/reject" count for
   //     nothing this once (the user's answer may still be remembered).
-  const forcedAsk = askHookName !== undefined;
+  // SA-1: the tool's own permission scope can force the same unconditional
+  // prompt (a path outside the workspace, a high-risk command), and narrows
+  // what "always allow/reject" is remembered for.
+  const scope = await resolvePermissionScope(tool, args, session);
+  const hookAsk = askHookName !== undefined;
+  const forcedAsk = hookAsk || scope.forceAsk !== undefined;
   if (forcedAsk || (tool.needsPermission && session.permissionMode !== "auto")) {
     let decision: PermissionDecision = "reject";
+    const reasons = [
+      ...(scope.forceAsk ? [`${scope.forceAsk}，需要确认`] : []),
+      ...(hookAsk && askReason ? [`hook ${askHookName} 要求确认：${askReason}`] : []),
+    ];
     try {
       decision = await ensurePermission(
         conn,
         session,
         tool,
         toolCallId,
-        forcedAsk && askReason ? `${title}｜hook ${askHookName} 要求确认：${askReason}` : title,
+        [title, ...reasons].join("｜"),
         args,
         signal,
-        { ignoreRemembered: forcedAsk },
+        { ignoreRemembered: hookAsk || scope.ignoreRemembered === true, scope },
       );
     } catch (e) {
       logger.error(`工具 ${tool.name} 权限确认失败，按拒绝处理: ${e instanceof Error ? e.message : String(e)}`);

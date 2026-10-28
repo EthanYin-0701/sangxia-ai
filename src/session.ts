@@ -33,7 +33,12 @@ export class Session {
   /** Full LLM conversation history (system + user + assistant + tool). */
   messages: ChatMessage[] = [];
 
-  /** Tool name → remembered allow/reject (set by "allow always" / "reject always"). */
+  /**
+   * Permission scope key → remembered allow/reject (set by "allow always" /
+   * "reject always"). Keys come from `Tool.permissionScope` (e.g.
+   * `bash:prefix:npm test`, `write_file:dir:/abs/src`); tools without one are
+   * keyed by their bare name.
+   */
   readonly permissions = new Map<string, PermissionDecision>();
 
   /** Set while a prompt turn is running; used to cancel. */

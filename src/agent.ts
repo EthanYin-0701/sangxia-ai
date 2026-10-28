@@ -41,6 +41,7 @@ import { loadSession as loadPersistedSession, persistHistoryReset, persistSessio
 import { type ClientCapabilities, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
+import { canonicalPath, dirPermissionKey } from "./tools/scope.js";
 import { AGENT_INFO } from "./version.js";
 
 // Keep terminal auth advertised unconditionally for clients using legacy metadata.
@@ -575,8 +576,16 @@ export class SangxiaAgent implements Agent {
 
     // The initialization turn lets the model inspect the project before writing
     // durable instructions/context. The user's actual prompt runs afterwards.
-    const previousWritePermission = session.permissions.get("write_file");
-    session.permissions.set("write_file", "allow");
+    // SA-1: permission memory is scoped, so grant exactly what the user just
+    // approved — writes under the initialization root, reads there (and in the
+    // parent directory if they chose so) — instead of the whole tool.
+    const grantDirs = [await canonicalPath(initRoot), ...(readParentDirectory ? [await canonicalPath(parentCwd)] : [])];
+    const grantKeys = [
+      dirPermissionKey("write_file", grantDirs[0]!),
+      ...grantDirs.flatMap((dir) => ["read_file", "list_dir", "glob", "grep"].map((tool) => dirPermissionKey(tool, dir))),
+    ];
+    const previousGrants = new Map(grantKeys.map((key) => [key, session.permissions.get(key)]));
+    for (const key of grantKeys) session.permissions.set(key, "allow");
     session.messages.push({
       role: "user",
       content: [
@@ -601,8 +610,10 @@ export class SangxiaAgent implements Agent {
       // (its write_file calls would otherwise never show up in turn_end).
       await this.runTurnEnd(session, initStopReason, Date.now() - initStartedAt, "init");
     } finally {
-      if (previousWritePermission) session.permissions.set("write_file", previousWritePermission);
-      else session.permissions.delete("write_file");
+      for (const [key, previous] of previousGrants) {
+        if (previous) session.permissions.set(key, previous);
+        else session.permissions.delete(key);
+      }
     }
     const system = session.messages.find((message) => message.role === "system");
     if (system) system.content = await this.systemPrompt(session, initRoot);

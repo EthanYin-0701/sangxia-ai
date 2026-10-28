@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { Session } from "../session.js";
 import type { Tool, ToolContext, ToolResult } from "../harness/tool.js";
 import { createHeadTailBuffer, truncateMiddle } from "../harness/truncate.js";
+import { bashPermissionScope } from "./scope.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const OUTPUT_BYTE_LIMIT = 1_000_000;
@@ -145,6 +146,7 @@ export const bashTool: Tool = {
     required: ["command"],
   },
   title: (a) => `执行 ${String(a.command).split("\n")[0]}`,
+  permissionScope: (a, s) => bashPermissionScope("bash", s, String(a.command ?? ""), a.cwd ? abs(s, String(a.cwd)) : s.cwd),
   run: async (a, ctx) => {
     ctx.signal.throwIfAborted();
     const command = String(a.command ?? "");
