@@ -1,6 +1,6 @@
 {
   "name": "sangxia-ai",
-  "version": "0.6.17",
+  "version": "0.6.18",
   "description": "Sangxia — a Node.js coding AI agent speaking the Agent Client Protocol (ACP), with a tool harness and JSON-configured LLM backends.",
   "type": "module",
   "bin": {
