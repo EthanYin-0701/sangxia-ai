@@ -254,13 +254,13 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 | 能力 | 内容 | 备注 |
 |---|---|---|
-| 文件操作 | `read_file` / `list_dir` / `glob` / `grep` / `write_file` / `edit_file` | 读类免权限；写/改需权限 |
+| 文件操作 | `read_file` / `list_dir` / `glob` / `grep` / `write_file` / `edit_file` | 读类在工作区内免权限；写/改需权限；工作区外一律确认 |
 | 命令执行 | `bash` | 需权限 |
 | 任务计划 | `update_plan`（ACP `plan`） | 免权限 |
 | 技能 (Skills) | `use_skill` 按需加载 `SKILL.md`；启动时扫描项目/全局技能目录并注入清单 | 免权限 |
 | MCP 工具 | 接入 `session/new` 传入的 MCP servers（stdio/http/sse），命名 `mcp__<server>__<tool>` | 默认需权限 |
 | 流式输出 | 正文 + 思考(reasoning) 增量流（`agent_message_chunk` / `agent_thought_chunk`） | — |
-| 权限控制 | 变更类工具执行前 `session/request_permission`（可"总是允许/拒绝"并记忆） | — |
+| 权限控制 | 变更类工具执行前 `session/request_permission`（可"总是允许/拒绝"，按 bash 命令前缀 / 文件目录记忆）；工作区外路径与高危命令强制确认 | — |
 | 生命周期钩子 | `hooks.events.*` 声明外部命令，在 session/prompt/工具/turn 点位拦截、改写参数、注入上下文、审计（见「Hook（生命周期钩子）」） | 默认关闭；`deny`/`ask` 在 auto 模式下同样生效 |
 | LLM 后端 | 任意 OpenAI 兼容 `/chat/completions`（`openai` / `mock` provider），JSON 配置 | 可换 baseURL/model |
 | 取消 | `session/cancel` 中断进行中的 turn | — |
@@ -270,17 +270,30 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 | 工具 | 作用 | 需要权限 |
 |---|---|---|
-| `read_file` | 读文件（可按行截取） | 否 |
-| `list_dir` | 列目录 | 否 |
-| `glob` | 按 glob 找文件 | 否 |
-| `grep` | 按正则搜内容 | 否 |
+| `read_file` | 读文件（可按行截取） | 否（工作区外需要） |
+| `list_dir` | 列目录 | 否（工作区外需要） |
+| `glob` | 按 glob 找文件 | 否（工作区外需要） |
+| `grep` | 按正则搜内容 | 否（工作区外需要） |
 | `write_file` | 写/建文件 | ✅ |
 | `edit_file` | 精确字符串替换 | ✅ |
 | `bash` | 执行 shell 命令 | ✅ |
 | `update_plan` | 发布/更新任务计划（ACP `plan`） | 否 |
 | `use_skill` | 按名加载某个技能的 `SKILL.md` 正文（见「技能」） | 否 |
 
-需要权限的工具在执行前会通过 ACP `session/request_permission` 征求用户同意（可选“总是允许/拒绝”）。此外，每个会话还会动态加入下述 **MCP 工具** 与 **技能**。
+需要权限的工具在执行前会通过 ACP `session/request_permission` 征求用户同意（可选“总是允许/拒绝”）。
+
+**“总是允许/拒绝”按范围记忆，不再覆盖整个工具**：
+
+- `bash` 按命令前缀记忆：对 `npm test` 选“总是允许”只放行之后以 `npm test` 开头的命令，`git push`、`rm …` 等仍会询问；含 `;`、`&&`、`|`、重定向或 `$()` 的复合命令只按完整命令精确记忆。
+- 文件工具按目录记忆：在工作区内对 `src/a.ts` 选“总是允许”只覆盖 `src/` 目录子树；工作区外只记该精确路径。
+- 弹窗里的“总是允许/拒绝”选项会注明本次记忆的范围。
+
+**以下情况无论权限模式（含 auto / Full Access）都会强制弹窗**，只读工具也不例外：
+
+- 路径位于工作区（会话 cwd，按真实路径比较，软链接不能绕过）之外——如读取 `~/.ssh`、改写 `~/.bashrc`；`glob`/`grep` 的模式为绝对路径或含 `..` 时同样处理；`bash` 的 `cwd` 在工作区外时也会询问。
+- 高危命令：`rm -rf`、`sudo`、`curl … | sh`、`mkfs`、`dd of=/dev/…`、fork 炸弹、`chmod -R` 根目录/主目录、`git push --force`、`git reset --hard`、`git clean -f`、`shutdown`/`reboot` 等。这类命令还会**忽略已记住的“总是允许”**，每次都要确认。这是尽力而为的特征检测，不是沙箱。
+
+此外，每个会话还会动态加入下述 **MCP 工具** 与 **技能**。
 
 ## MCP 工具
 
@@ -512,6 +525,7 @@ npm run smoke:tui    # TUI 层 headless 冒烟（命令/输入/通知映射/内�
 npm run smoke:hooks  # Hook 层冒烟（拦截/改写/ask/超时/取消/路径基准/项目级 hooks/配置分层，89 项断言）
 npm run smoke:reliability # 截断/空响应/Schema/超时/取消与断连回归
 npm run smoke:setup  # setup 向导（headless 路径/验证回退/保留旧配置/权限）
+npm run smoke:permissions # 细粒度权限记忆 + 工作区边界 + 高危命令强制确认
 npm run smoke:auth   # 未配置或凭据无效时的 ACP 握手、认证拒绝、环境变量启动与 CLI
 ```
 

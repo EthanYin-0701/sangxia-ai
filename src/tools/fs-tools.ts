@@ -3,6 +3,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { glob as tinyglob } from "tinyglobby";
 import type { Session } from "../session.js";
 import type { Tool, ToolContext } from "../harness/tool.js";
+import { canonicalPath, isWithin, pathPermissionScope } from "./scope.js";
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**"];
 
@@ -64,6 +65,7 @@ const readFileTool: Tool = {
   },
   title: (a) => `读取 ${a.path}`,
   locations: (a, s) => [{ path: abs(s, String(a.path)) }],
+  permissionScope: (a, s) => pathPermissionScope("read_file", s, abs(s, String(a.path))),
   run: async (a, ctx) => {
     const path = abs(ctx.session, String(a.path));
     const content = await readText(ctx, path, a.line, a.limit);
@@ -86,6 +88,7 @@ const writeFileTool: Tool = {
   },
   title: (a) => `写入 ${a.path}`,
   locations: (a, s) => [{ path: abs(s, String(a.path)) }],
+  permissionScope: (a, s) => pathPermissionScope("write_file", s, abs(s, String(a.path))),
   run: async (a, ctx) => {
     const path = abs(ctx.session, String(a.path));
     const content = String(a.content ?? "");
@@ -112,6 +115,7 @@ const editFileTool: Tool = {
   },
   title: (a) => `编辑 ${a.path}`,
   locations: (a, s) => [{ path: abs(s, String(a.path)) }],
+  permissionScope: (a, s) => pathPermissionScope("edit_file", s, abs(s, String(a.path))),
   run: async (a, ctx) => {
     const path = abs(ctx.session, String(a.path));
     const oldStr = String(a.old_string ?? "");
@@ -147,6 +151,7 @@ const listDirTool: Tool = {
     properties: { path: { type: "string", description: "目录路径(相对或绝对，可选)" } },
   },
   title: (a) => `列目录 ${a.path ?? "."}`,
+  permissionScope: (a, s) => pathPermissionScope("list_dir", s, a.path ? abs(s, String(a.path)) : s.cwd, { isDir: true }),
   run: async (a, ctx) => {
     const dir = a.path ? abs(ctx.session, String(a.path)) : ctx.session.cwd;
     const entries = await readdir(dir, { withFileTypes: true });
@@ -172,6 +177,8 @@ const globTool: Tool = {
     required: ["pattern"],
   },
   title: (a) => `查找 ${a.pattern}`,
+  permissionScope: (a, s) =>
+    pathPermissionScope("glob", s, a.path ? abs(s, String(a.path)) : s.cwd, { isDir: true, pattern: String(a.pattern) }),
   run: async (a, ctx) => {
     const cwd = a.path ? abs(ctx.session, String(a.path)) : ctx.session.cwd;
     const matches = await tinyglob(String(a.pattern), {
@@ -206,6 +213,11 @@ const grepTool: Tool = {
     required: ["pattern"],
   },
   title: (a) => `搜索 /${a.pattern}/`,
+  permissionScope: (a, s) =>
+    pathPermissionScope("grep", s, a.path ? abs(s, String(a.path)) : s.cwd, {
+      isDir: true,
+      ...(a.glob ? { pattern: String(a.glob) } : {}),
+    }),
   run: async (a, ctx) => {
     const root = a.path ? abs(ctx.session, String(a.path)) : ctx.session.cwd;
     let re: RegExp;
@@ -222,9 +234,14 @@ const grepTool: Tool = {
       ignore: IGNORE,
     });
 
+    // SA-1: a search approved as "inside the workspace" must not read through
+    // symlinks that point outside it.
+    const workspace = await canonicalPath(ctx.session.cwd);
+    const confined = isWithin(workspace, await canonicalPath(root));
     const results: string[] = [];
     const MAX = 200;
     outer: for (const file of files.slice(0, 5000)) {
+      if (confined && !isWithin(workspace, await canonicalPath(file))) continue;
       let text: string;
       try {
         text = await readFile(file, "utf8");

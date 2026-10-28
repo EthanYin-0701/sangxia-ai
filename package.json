@@ -25,6 +25,7 @@
     "smoke:hooks": "npm run build && node scripts/smoke-hooks.mjs",
     "smoke:setup": "npm run build && node scripts/smoke-setup.mjs",
     "smoke:auth": "npm run build && node scripts/smoke-auth.mjs",
+    "smoke:permissions": "npm run build && node scripts/smoke-permissions.mjs",
     "prepublishOnly": "npm run typecheck && npm run build",
     "smoke:model-config": "npm run build && node scripts/smoke-model-config.mjs"
   },

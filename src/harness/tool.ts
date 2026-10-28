@@ -26,6 +26,30 @@ export interface ToolResult {
 }
 
 /**
+ * What a single invocation's permission decision is about (SA-1).
+ *
+ * "Always allow/reject" used to be remembered per tool name, so one approved
+ * `npm test` silently approved every later `bash` call. A scope narrows the
+ * memory to e.g. `bash` + command prefix or `write_file` + directory.
+ */
+export interface PermissionScope {
+  /** Memory keys consulted for this call, most specific first. */
+  lookup: string[];
+  /** Key written when the user picks "always allow / always reject". */
+  remember: string;
+  /** Human-readable scope shown next to the "always" options. */
+  label?: string;
+  /**
+   * Reason this call must prompt even in `auto` mode and for
+   * `needsPermission: false` tools (path outside the workspace, high-risk
+   * command). Shown in the permission title.
+   */
+  forceAsk?: string;
+  /** Ignore remembered decisions this once (high-risk commands). */
+  ignoreRemembered?: boolean;
+}
+
+/**
  * A capability the agent exposes to the LLM as a callable function.
  *
  * `args` is typed as `any` deliberately: it's whatever the model produced,
@@ -53,6 +77,13 @@ export interface Tool {
   /** File locations this call touches, enabling client "follow-along". */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   locations?(args: any, session: Session): { path: string; line?: number }[];
+
+  /**
+   * Fine-grained permission scope for one invocation. Unset = the whole tool
+   * is one scope (MCP tools, `use_skill`, …), keyed by `name`.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  permissionScope?(args: any, session: Session): PermissionScope | Promise<PermissionScope>;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   run(args: any, ctx: ToolContext): Promise<ToolResult>;
