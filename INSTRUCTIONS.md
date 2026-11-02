@@ -515,7 +515,9 @@ sangxia tui --permission-mode auto   # 直接以 FULL ACCESS 启动（首帧即�
 
 ```bash
 npm run dev         # tsx 直跑 src/index.ts
-npm run typecheck   # 仅类型检查
+npm run typecheck   # 仅类型检查（含 test/）
+npm run lint        # ESLint（typescript-eslint 推荐规则）
+npm test            # 单元测试（node:test，test/unit/，无需先 build）
 npm run build       # 编译到 dist/
 npm run smoke        # ACP 握手 + 工具 + 权限流冒烟（mock provider）
 npm run smoke:openai # 真实 OpenAIProvider 流式路径（本地假服务器）

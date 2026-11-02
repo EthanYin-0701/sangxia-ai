@@ -9,12 +9,14 @@ Sangxia（sangxia-ai）是 Node.js/TypeScript 写的 ACP（Agent Client Protocol
 - TypeScript 5.6+、Node.js >= 20、ESM + `NodeNext`（相对导入带 `.js`），`strict` + `noUncheckedIndexedAccess`。
 - 依赖：`@agentclientprotocol/sdk@0.14.1`（固定版本）、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`。
 - `src/config.ts` 用 `zod/v3`（依赖 v3 嵌套 `.default({})` 语义）；改用 v4 API 前须迁移 `.prefault({})` / `z.record(k, v)` 并对比解析结果。
-- 无单元测试框架，测试是 `scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。
+- 单元测试：`test/unit/*.test.ts`（`node:test`，经 tsx 直接导入 `src/`，无需 build）；冒烟：`scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。CI 见 `.github/workflows/ci.yml`。
 
 ## 常用命令
 
 ```bash
-npm run typecheck     # 提交前必跑
+npm run typecheck     # 提交前必跑（含 test/）
+npm run lint          # ESLint
+npm test              # 单元测试（无需 build）
 npm run build         # 编译到 dist/
 npm run check:docs    # 文档一致性：路径/脚本存在、本文件体积预算
 npm run smoke         # 离线 E2E：ACP 握手 + 工具 + 权限流（mock provider）

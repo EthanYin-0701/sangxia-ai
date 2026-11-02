@@ -11,6 +11,7 @@
 // Zero-width: nonspacing/enclosing combining marks, format chars (joiners,
 // bidi controls, variation selectors), ZWJ. Approximated with Unicode
 // property escapes (Node 20+ supports \p{...} with the u flag).
+// eslint-disable-next-line no-misleading-character-class -- ZWJ / VS16 are matched as standalone zero-width chars on purpose
 const ZW_RE = /[\p{Mn}\p{Me}\p{Cf}\u200d\ufe0f]/u;
 
 // East Asian Wide / Fullwidth + common emoji blocks (approximate EAW=W|F).
