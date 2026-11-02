@@ -7,6 +7,12 @@ export interface ToolContext {
   conn: AgentSideConnection;
   session: Session;
   signal: AbortSignal;
+  /**
+   * ID of the ACP tool call being executed (already announced to the client),
+   * so a tool that issues its own client request — e.g. `ask_user`'s
+   * `session/request_permission` — can attach it to its own tool row.
+   */
+  toolCallId?: string;
 }
 
 /** Raised when the harness-level tool deadline fires (M3). */

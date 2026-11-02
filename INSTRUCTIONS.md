@@ -256,6 +256,8 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 |---|---|---|
 | 文件操作 | `read_file` / `list_dir` / `glob` / `grep` / `write_file` / `edit_file` | 读类在工作区内免权限；写/改需权限；工作区外一律确认 |
 | 命令执行 | `bash` | 需权限 |
+| 网页拉取 | `fetch_url`：HTTP(S) GET，HTML 转 Markdown；只跟随同源重定向 | 需权限（按源站记忆） |
+| 向用户提问 | `ask_user`：回合内选择题，经 `session/request_permission` 展示选项 | 免权限（弹窗即问题本身） |
 | 任务计划 | `update_plan`（ACP `plan`） | 免权限 |
 | 技能 (Skills) | `use_skill` 按需加载 `SKILL.md`；启动时扫描项目/全局技能目录并注入清单 | 免权限 |
 | MCP 工具 | 接入 `session/new` 传入的 MCP servers（stdio/http/sse），命名 `mcp__<server>__<tool>` | 默认需权限 |
@@ -277,7 +279,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 | `write_file` | 写/建文件 | ✅ |
 | `edit_file` | 精确字符串替换 | ✅ |
 | `bash` | 执行 shell 命令 | ✅ |
+| `fetch_url` | 拉取网页/文本资源，HTML 转 Markdown（≤2MB，默认返回 ≤5 万字符，保留头尾） | ✅（按源站记忆） |
 | `update_plan` | 发布/更新任务计划（ACP `plan`） | 否 |
+| `ask_user` | 回合内向用户提 2–6 个选项的选择题并等待回答 | 否 |
 | `use_skill` | 按名加载某个技能的 `SKILL.md` 正文（见「技能」） | 否 |
 
 需要权限的工具在执行前会通过 ACP `session/request_permission` 征求用户同意（可选“总是允许/拒绝”）。
@@ -286,6 +290,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 - `bash` 按命令前缀记忆：对 `npm test` 选“总是允许”只放行之后以 `npm test` 开头的命令，`git push`、`rm …` 等仍会询问；含 `;`、`&&`、`|`、重定向或 `$()` 的复合命令只按完整命令精确记忆。
 - 文件工具按目录记忆：在工作区内对 `src/a.ts` 选“总是允许”只覆盖 `src/` 目录子树；工作区外只记该精确路径。
+- `fetch_url` 按源站（协议 + 主机 + 端口）记忆；跨源重定向不会自动跟随，模型需用新地址重新调用（重新走权限）。
+
+**`ask_user` 的限制**：ACP 没有专门的提问请求，`ask_user` 复用权限弹窗展示选项，因此只能选择、不能输入自由文本；选项末尾固定有「以上都不是（我来补充说明）」，用户选它（TUI 中按 Esc 同效）或关闭弹窗时，模型会结束回合改用文字询问。等待回答的上限是 30 分钟，取消 turn 会立即停止等待。
 - 弹窗里的“总是允许/拒绝”选项会注明本次记忆的范围。
 
 **以下情况无论权限模式（含 auto / Full Access）都会强制弹窗**，只读工具也不例外：

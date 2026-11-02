@@ -747,6 +747,8 @@ function defaultSystemPrompt(cwd: string): string {
     "- 修改文件优先用 edit_file 做最小化的精确改动；创建新文件用 write_file。",
     "- 需要运行命令(构建/测试/git 等)时用 bash。",
     "- 任务复杂时用 update_plan 拆解步骤并随进度更新状态。",
+    "- 需要查阅网页文档/Issue 时用 fetch_url。",
+    "- 需求有歧义、或继续前必须由用户在几个方案中拍板时，用 ask_user 提问，不要猜；能自己查清的不要问。",
     "- 涉及项目架构、重要决策或未完成事项时，完成任务后更新 AGENTS.md 或 .sangxia/memory.md。",
     "- 路径可用相对当前工作目录的写法。",
     "- 回答简洁，用中文。完成后简要说明做了什么。" +
