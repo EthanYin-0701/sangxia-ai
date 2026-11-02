@@ -128,7 +128,11 @@ function stripWrappers(tokens: string[]): string[] {
 
 /** `/`, `/*`, `~`, `$HOME`, `*`, `.`, `..` or a top-level system dir like `/etc`. */
 function isCriticalTarget(t: string): boolean {
-  return /^(\/\*?|~\/?\*?|\$\{?HOME\}?\/?\*?|\*|\.\/?\*?|\.\.\/?|\/[^/\s]+\/?\*?)$/.test(t);
+  return (
+    /^(\/\*?|~\/?\*?|\$\{?HOME\}?\/?\*?|\*|\.\/?\*?|\.\.\/?|\/[^/\s]+\/?\*?)$/.test(t) ||
+    // Windows: drive root or top-level dir (`C:\`, `C:\Windows`), `$env:USERPROFILE`, `~\`, `.\`, `..\`.
+    /^([a-z]:[\\/]?([^\\/\s]+[\\/]?)?\*?|\$env:(userprofile|systemroot|windir|homedrive)[\\/]?\*?|~\\\*?|\.\\\*?|\.\.\\)$/i.test(t)
+  );
 }
 
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
@@ -177,6 +181,15 @@ export function detectDangerousCommand(command: string): string | undefined {
     if (/^mkfs(\.|$)/.test(cmd) || ["mke2fs", "wipefs", "fdisk", "sfdisk", "parted"].includes(cmd)) return `高危命令：${cmd} 格式化/改写磁盘`;
     if (cmd === "dd" && args.some((a) => a.startsWith("of=/dev/"))) return "高危命令：dd 写设备";
     if (["shutdown", "reboot", "halt", "poweroff"].includes(cmd)) return `高危命令：${cmd}`;
+    // PowerShell (Windows shell of the `bash` tool): cmdlets/aliases are case-insensitive.
+    const psCmd = cmd.toLowerCase();
+    const psFlag = (name: string) => flags.some((f) => f.length > 1 && name.startsWith(f.slice(1).toLowerCase()));
+    if (["remove-item", "rm", "ri", "del", "erase", "rd", "rmdir"].includes(psCmd) && psFlag("recurse") && (psFlag("force") || targets.some(isCriticalTarget))) {
+      return `高危命令：${cmd} 递归删除`;
+    }
+    if (["format-volume", "clear-disk", "initialize-disk", "remove-partition", "stop-computer", "restart-computer"].includes(psCmd)) {
+      return `高危命令：${cmd}`;
+    }
     if (cmd === "git") {
       const sub = args.find((a) => !a.startsWith("-"));
       if (sub === "push" && args.some((a) => a === "-f" || a === "--force" || a.startsWith("--force-with-lease") || /^\+/.test(a))) return "高危命令：git 强制推送";

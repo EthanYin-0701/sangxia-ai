@@ -190,7 +190,9 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 **工具超时（deadline）**：单次工具调用受 `agent.toolTimeoutMs`（默认 300s）约束，工具可以用 `tool.timeoutMs`、单次调用可以用参数（如 `bash` 的 `timeout`，其自己的缺省是 120s）覆盖；超时后返回 `Error: 工具执行超时（Xms）已终止…`，该回合继续（模型可自行缩小范围或重试），只有用户取消才会中止整轮。超时 / 取消同时可能触发时以「取消」为准。deadline 只保证 harness 不再等待：非可中断的工具（纯读文件等）底层操作可能仍在后台跑完，harness 不会假装杀掉了它。
 
-`bash` 本地回退路径用独立进程组启动 shell，超时或取消时 `SIGKILL` **整个进程组**，避免 `npm run …` 之类的孙进程继续存活（POSIX 语义；Windows 上回退为只杀直接子进程）。客户端终端路径同样受 `timeout` 约束，超时会调用 `terminal.kill()`，但其尾部输出的保真度取决于客户端实现。
+`bash` 本地回退路径用独立进程组启动 shell，超时或取消时 `SIGKILL` **整个进程组**，避免 `npm run …` 之类的孙进程继续存活（POSIX 语义；Windows 上用 `taskkill /T /F` 结束整棵进程树）。
+
+`bash` 工具按操作系统选择 shell：macOS/Linux 为 `bash -lc`，Windows 为 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command`（`Bypass` 仅作用于该进程，用于放行 `npm.ps1` 等脚本；并强制 UTF-8 输出避免中文乱码）。客户端终端与本地回退两条路径一致；工具描述与系统提示会告诉模型当前 shell 的语法。环境变量继承自 Sangxia 进程（即启动它的编辑器），每次调用是独立进程，设置的变量不会保留到下一次。高危命令检测同时覆盖 PowerShell 的 `Remove-Item -Recurse -Force`、`Format-Volume` 等。客户端终端路径同样受 `timeout` 约束，超时会调用 `terminal.kill()`，但其尾部输出的保真度取决于客户端实现。
 
 **Prompt 规模估算**：每次请求前会按启发式（ASCII 约 4 字符/token、非 ASCII 约 1.5 字符/token，加每消息开销与工具 schema）估算 prompt token 数并写日志（`estimatedPromptTokens=… rawEstimate=… lastPromptTokens=…`）。若后端返回 `usage.prompt_tokens`（需 `streamIncludeUsage: true`），下一次估算会用实测值与上次估算的比值做校准（比例夹在 0.5×–2× 之间，防单次异常值）。**这只是启发式，仅用于阈值判断和排障，不参与发送内容**。
 
