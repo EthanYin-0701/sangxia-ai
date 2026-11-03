@@ -23,16 +23,24 @@ sudo mkdir -p "$TEXTFILE_DIR"
 sudo chown -R "$(whoami)" "$TEXTFILE_DIR"
 
 # 2. 按需安装 jq, curl, grafana-alloy (幂等)
-if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
   sudo apt-get update -qq
   sudo apt-get install -y -qq jq curl ca-certificates gnupg
 fi
 
 if ! command -v alloy >/dev/null 2>&1; then
+  KEY_DIR="$(mktemp -d)"
+  trap 'rm -rf "$KEY_DIR"' EXIT
+  # 分步执行：POSIX sh 的 set -e 无法捕获管道中间的下载/验签失败。
+  if ! curl --fail --silent --show-error --location https://apt.grafana.com/gpg.key -o "$KEY_DIR/grafana.asc"; then
+    echo "[air-startup] Cannot download Grafana signing key. Check Air Cloud proxy access to apt.grafana.com." >&2
+    exit 1
+  fi
+  gpg --batch --yes --dearmor --output "$KEY_DIR/grafana.gpg" "$KEY_DIR/grafana.asc"
   sudo mkdir -p /etc/apt/keyrings/
-  wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg >/dev/null
+  sudo install -m 0644 "$KEY_DIR/grafana.gpg" /etc/apt/keyrings/grafana.gpg
   echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list >/dev/null
-  sudo apt-get update -qq
+  sudo apt-get update -qq -o APT::Update::Error-Mode=any
   sudo apt-get install -y -qq alloy
 fi
 
