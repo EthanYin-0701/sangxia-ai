@@ -97,15 +97,19 @@ export async function pathPermissionScope(
 
 // ── bash ──
 
-/** Shell syntax that chains/redirects/substitutes: such a command is only ever remembered verbatim. */
-const COMPOUND = /[;&|<>`\n\r]|\$\(/;
+/**
+ * Shell syntax that chains/redirects/substitutes: such a command is only ever
+ * remembered verbatim. Parentheses count: PowerShell evaluates `(...)` and
+ * `@(...)` even as arguments to a native command, and bash `(`/`$(` is a subshell.
+ */
+const COMPOUND = /[;&|<>`\n\r()]/;
 /** A second token that looks like a subcommand (`npm test`, `git status`). */
 const SUBCOMMAND = /^[a-zA-Z][\w:.-]*$/;
 
-/** Split into command segments (on `;`, `&&`, `||`, `|`, `&`, newlines) and whitespace tokens. */
+/** Split into command segments (on `;`, `&&`, `||`, `|`, `&`, newlines, parentheses) and whitespace tokens. */
 function segments(command: string): string[][] {
   return command
-    .split(/&&|\|\||[;|&\n\r]/)
+    .split(/&&|\|\||[;|&\n\r()]/)
     .map((s) => s.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^["']|["']$/g, "")))
     .filter((t) => t.length > 0);
 }

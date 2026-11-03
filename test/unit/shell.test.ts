@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { detectDangerousCommand } from "../../src/tools/scope.js";
+import { commandPrefix, detectDangerousCommand } from "../../src/tools/scope.js";
 import { resolveShell, shellSyntaxHint } from "../../src/tools/shell.js";
 
 describe("resolveShell", () => {
@@ -49,5 +49,28 @@ describe("detectDangerousCommand (PowerShell)", () => {
     assert.equal(detectDangerousCommand("Remove-Item -Recurse .\\dist"), undefined);
     assert.equal(detectDangerousCommand("Get-ChildItem -Recurse -Force"), undefined);
     assert.equal(detectDangerousCommand("npm test"), undefined);
+  });
+});
+
+describe("subexpressions in arguments", () => {
+  // PowerShell evaluates `(...)` / `@(...)` even as arguments to a native
+  // command, so they must neither keep a rememberable prefix nor hide the
+  // inner command from high-risk detection.
+  const cases = [
+    "npm test (Remove-Item -Recurse -Force C:\\)",
+    "npm test @(Remove-Item -Recurse -Force C:\\)",
+    "Write-Output (Format-Volume -DriveLetter D)",
+    "npm test $(rm -rf /)",
+  ];
+  for (const command of cases) {
+    it(`gets no prefix and is flagged: ${command}`, () => {
+      assert.equal(commandPrefix(command), undefined);
+      assert.ok(detectDangerousCommand(command));
+    });
+  }
+
+  it("still gives simple commands a prefix", () => {
+    assert.equal(commandPrefix("npm test"), "npm test");
+    assert.equal(commandPrefix("git status --short"), "git status");
   });
 });

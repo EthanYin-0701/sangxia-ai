@@ -87,3 +87,18 @@ describe("htmlToMarkdown inline markers", () => {
     assert.equal(md("<p><b>bold<i>both</p><p>plain</b></i> text</p>"), "**bold*both***\n\nplain text");
   });
 });
+
+describe("htmlToMarkdown performance", () => {
+  // Reading the accumulated buffer back (`/\s$/.test(out)`) flattened the
+  // string rope on every text node, making conversion quadratic: ~1.1 MB of
+  // tag-dense HTML took ~15 s and blocked the event loop.
+  it("converts ~1 MB of tag-dense HTML in linear time", () => {
+    const n = 30_000;
+    const html = `<body>${"<div><a href='/x'>w</a> <span>v</span> <b>x</b></div>".repeat(n)}</body>`;
+    const start = performance.now();
+    const { markdown } = htmlToMarkdown(html, "https://e.com/");
+    const elapsed = performance.now() - start;
+    assert.equal(markdown, Array(n).fill("[w](https://e.com/x) v **x**").join("\n\n"));
+    assert.ok(elapsed < 2000, `took ${Math.round(elapsed)} ms`);
+  });
+});

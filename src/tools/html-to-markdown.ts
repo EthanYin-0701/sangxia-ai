@@ -68,6 +68,11 @@ function resolveUrl(href: string | undefined, base: string | undefined): string 
 interface Frame {
   tag: string;
   out: string;
+  /**
+   * Whether `out` ends in whitespace. Tracked on write because reading `out`
+   * back flattens the string rope, which makes conversion quadratic.
+   */
+  endsWs?: boolean;
   href?: string;
   /** `table` frames: collected rows; `tr` frames: collected cells. */
   rows?: { cells: string[]; header: boolean }[];
@@ -98,7 +103,10 @@ export function htmlToMarkdown(html: string, baseUrl?: string): HtmlConversion {
 
   const top = () => stack[stack.length - 1]!;
   const emit = (text: string) => {
-    top().out += text;
+    if (!text) return;
+    const f = top();
+    f.out += text;
+    f.endsWs = /\s$/.test(text);
   };
   /** Inline markers (`**`, `*`, `~~`, `` ` ``) opened and not yet closed. */
   const inline: string[] = [];
@@ -185,7 +193,7 @@ export function htmlToMarkdown(html: string, baseUrl?: string): HtmlConversion {
     }
     // Collapse like a browser; no leading space at a line/frame start or after one.
     const collapsed = text.replace(/\s+/g, " ");
-    emit(top().out === "" || /\s$/.test(top().out) ? collapsed.trimStart() : collapsed);
+    emit(top().out.length === 0 || top().endsWs ? collapsed.trimStart() : collapsed);
   };
 
   for (const m of source.matchAll(TAG_RE)) {
