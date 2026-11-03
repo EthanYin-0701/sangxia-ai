@@ -50,6 +50,7 @@ export interface AgentHandle {
 export class TuiBridge {
   readonly #events: BridgeEvents;
   readonly #clientConn: ClientSideConnection;
+  // eslint-disable-next-line no-unused-private-class-members -- keeps the agent side of the in-process connection referenced
   readonly #agentSide: AgentSideConnection;
   #agent: SangxiaAgent | null = null;
   /** Settles the currently-pending permission request (if any). */

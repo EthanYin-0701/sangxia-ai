@@ -614,7 +614,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     dispatched = true;
     session.startedToolCalls.add(toolCallId);
     await persistToolEvent(session.id, { t: "tool_started", toolCallId, name: tool.name });
-    const pending = tool.run(args, { conn, session, signal: toolSignal.signal });
+    const pending = tool.run(args, { conn, session, signal: toolSignal.signal, toolCallId });
     pending.catch(() => {}); // losing the race must not surface as unhandled
     const result = await Promise.race([
       pending,

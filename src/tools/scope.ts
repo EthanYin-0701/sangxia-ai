@@ -97,15 +97,19 @@ export async function pathPermissionScope(
 
 // ── bash ──
 
-/** Shell syntax that chains/redirects/substitutes: such a command is only ever remembered verbatim. */
-const COMPOUND = /[;&|<>`\n\r]|\$\(/;
+/**
+ * Shell syntax that chains/redirects/substitutes: such a command is only ever
+ * remembered verbatim. Parentheses count: PowerShell evaluates `(...)` and
+ * `@(...)` even as arguments to a native command, and bash `(`/`$(` is a subshell.
+ */
+const COMPOUND = /[;&|<>`\n\r()]/;
 /** A second token that looks like a subcommand (`npm test`, `git status`). */
 const SUBCOMMAND = /^[a-zA-Z][\w:.-]*$/;
 
-/** Split into command segments (on `;`, `&&`, `||`, `|`, `&`, newlines) and whitespace tokens. */
+/** Split into command segments (on `;`, `&&`, `||`, `|`, `&`, newlines, parentheses) and whitespace tokens. */
 function segments(command: string): string[][] {
   return command
-    .split(/&&|\|\||[;|&\n\r]/)
+    .split(/&&|\|\||[;|&\n\r()]/)
     .map((s) => s.trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^["']|["']$/g, "")))
     .filter((t) => t.length > 0);
 }
@@ -128,7 +132,11 @@ function stripWrappers(tokens: string[]): string[] {
 
 /** `/`, `/*`, `~`, `$HOME`, `*`, `.`, `..` or a top-level system dir like `/etc`. */
 function isCriticalTarget(t: string): boolean {
-  return /^(\/\*?|~\/?\*?|\$\{?HOME\}?\/?\*?|\*|\.\/?\*?|\.\.\/?|\/[^/\s]+\/?\*?)$/.test(t);
+  return (
+    /^(\/\*?|~\/?\*?|\$\{?HOME\}?\/?\*?|\*|\.\/?\*?|\.\.\/?|\/[^/\s]+\/?\*?)$/.test(t) ||
+    // Windows: drive root or top-level dir (`C:\`, `C:\Windows`), `$env:USERPROFILE`, `~\`, `.\`, `..\`.
+    /^([a-z]:[\\/]?([^\\/\s]+[\\/]?)?\*?|\$env:(userprofile|systemroot|windir|homedrive)[\\/]?\*?|~\\\*?|\.\\\*?|\.\.\\)$/i.test(t)
+  );
 }
 
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
@@ -177,6 +185,15 @@ export function detectDangerousCommand(command: string): string | undefined {
     if (/^mkfs(\.|$)/.test(cmd) || ["mke2fs", "wipefs", "fdisk", "sfdisk", "parted"].includes(cmd)) return `高危命令：${cmd} 格式化/改写磁盘`;
     if (cmd === "dd" && args.some((a) => a.startsWith("of=/dev/"))) return "高危命令：dd 写设备";
     if (["shutdown", "reboot", "halt", "poweroff"].includes(cmd)) return `高危命令：${cmd}`;
+    // PowerShell (Windows shell of the `bash` tool): cmdlets/aliases are case-insensitive.
+    const psCmd = cmd.toLowerCase();
+    const psFlag = (name: string) => flags.some((f) => f.length > 1 && name.startsWith(f.slice(1).toLowerCase()));
+    if (["remove-item", "rm", "ri", "del", "erase", "rd", "rmdir"].includes(psCmd) && psFlag("recurse") && (psFlag("force") || targets.some(isCriticalTarget))) {
+      return `高危命令：${cmd} 递归删除`;
+    }
+    if (["format-volume", "clear-disk", "initialize-disk", "remove-partition", "stop-computer", "restart-computer"].includes(psCmd)) {
+      return `高危命令：${cmd}`;
+    }
     if (cmd === "git") {
       const sub = args.find((a) => !a.startsWith("-"));
       if (sub === "push" && args.some((a) => a === "-f" || a === "--force" || a.startsWith("--force-with-lease") || /^\+/.test(a))) return "高危命令：git 强制推送";

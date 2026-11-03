@@ -350,7 +350,7 @@ function readConfigFile(path: string): unknown {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`读取/解析配置文件失败 (${path}): ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`读取/解析配置文件失败 (${path}): ${e instanceof Error ? e.message : String(e)}`, { cause: e });
   }
 }
 

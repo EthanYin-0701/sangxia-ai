@@ -166,6 +166,7 @@ export class OpenAIProvider implements LLMProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stream = (await this.#client.chat.completions.create(request as any, {
         signal: controller.signal,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- chunks carry vendor fields (reasoning_content, usage extras)
       })) as unknown as AsyncIterable<any>;
 
       // Accumulate streamed tool calls, keyed by their delta index.

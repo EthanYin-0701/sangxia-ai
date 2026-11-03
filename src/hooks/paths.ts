@@ -70,7 +70,7 @@ export function assertValidHookEntries(entries: HookEntry[], where: string): voi
       try {
         new RegExp(entry.matcher);
       } catch (e) {
-        throw new Error(`${where}: hook "${label}" 的 matcher 不是合法正则 (${entry.matcher}): ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`${where}: hook "${label}" 的 matcher 不是合法正则 (${entry.matcher}): ${e instanceof Error ? e.message : String(e)}`, { cause: e });
       }
     }
     if (entry.timeoutMs !== undefined && !(Number.isFinite(entry.timeoutMs) && entry.timeoutMs > 0)) {
@@ -93,7 +93,7 @@ export function resolveHookCommands(entries: HookEntry[], baseDir: string, where
     const parts = entry.command.trim().split(/\s+/);
     const expanded = expandHome(parts[0]!);
     const absolute = isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
-    let isFile = false;
+    let isFile: boolean;
     try {
       isFile = existsSync(absolute) && statSync(absolute).isFile();
     } catch {

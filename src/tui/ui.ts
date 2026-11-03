@@ -110,6 +110,7 @@ export function wrapText(text: string, width: number): string[] {
 }
 
 export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex -- matching the ESC byte of SGR sequences is the point
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 

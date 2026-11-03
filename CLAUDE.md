@@ -12,7 +12,9 @@ Sangxia (`sangxia-ai`) is a coding AI agent written in TypeScript that speaks th
 
 ```bash
 npm run dev           # tsx src/index.ts (speaks ACP on stdio — not an interactive REPL)
-npm run typecheck     # tsc --noEmit; run before every commit
+npm run typecheck     # tsc --noEmit (src + test/); run before every commit
+npm run lint          # ESLint (typescript-eslint recommended) over src/ and test/
+npm test              # node:test unit tests in test/unit/ via tsx — no build needed
 npm run build         # compile to dist/
 npm run smoke         # offline E2E: ACP handshake + tools + permission flow (mock provider)
 npm run smoke:openai  # real OpenAIProvider streaming path against a fake local server
@@ -22,7 +24,7 @@ npm run check:docs    # doc drift check for CLAUDE.md / AGENTS.md (paths, npm sc
 #       smoke:setup / smoke:auth / smoke:model-config / smoke:check-docs — see package.json
 ```
 
-There is no unit-test framework. Tests are the standalone `scripts/smoke-*.mjs` scripts (one per `smoke*` npm script), which act as ACP clients against the compiled `dist/` (most spawn `dist/index.js` as a subprocess). To run one alone: `npm run build && node scripts/smoke.mjs` — they import from `dist/`, so a stale build silently tests old code.
+Two kinds of tests. **Unit tests** (`test/unit/*.test.ts`, `node:test` + `node:assert`) import `src/` directly through tsx, so they need no build; one file alone: `node --import tsx --test test/unit/truncate.test.ts`. Prefer them for deterministic logic (harness helpers, HTML conversion, tool `run` with a fake `ToolContext`). **Smoke tests** are the standalone `scripts/smoke-*.mjs` scripts (one per `smoke*` npm script), which act as ACP clients against the compiled `dist/` (most spawn `dist/index.js` as a subprocess). To run one alone: `npm run build && node scripts/smoke.mjs` — they import from `dist/`, so a stale build silently tests old code. CI (`.github/workflows/ci.yml`) runs typecheck, lint, unit tests, check:docs, build and every smoke script on Node 22 and 24.
 
 Running the agent for real needs config: `cp sangxia.config.example.json sangxia.config.json` and `export OPENAI_API_KEY=...` (the file references it as `${OPENAI_API_KEY}`). The smoke tests need neither — they write their own `mock`-provider config to a temp dir.
 

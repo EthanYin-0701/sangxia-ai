@@ -115,6 +115,7 @@ async function verifyProvider(baseURL: string, apiKey: string, model: string): P
   } catch (e) {
     // Never print response bodies, URLs with credentials, or request headers.
     const status = e instanceof Error && /^HTTP \d+$/.test(e.message) ? e.message : "网络错误或超时";
+    // eslint-disable-next-line preserve-caught-error -- the cause may carry URLs/headers; keep it out on purpose
     throw new Error(`连通性验证失败（${status}）；旧配置未改动。可检查配置后重试，或使用 --skip-verify。`);
   }
 }

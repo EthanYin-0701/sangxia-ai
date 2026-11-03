@@ -262,7 +262,7 @@ function loadProjectEntries(
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`项目级 hooks 文件无法解析 (${path}): ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`项目级 hooks 文件无法解析 (${path}): ${e instanceof Error ? e.message : String(e)}`, { cause: e });
   }
   const data = interpolateEnv(raw) as { events?: Record<string, unknown> };
   if (data?.events && typeof data.events === "object") {

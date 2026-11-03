@@ -4,9 +4,13 @@ import type { Session } from "../session.js";
 import type { Tool, ToolContext, ToolResult } from "../harness/tool.js";
 import { createHeadTailBuffer, truncateMiddle } from "../harness/truncate.js";
 import { bashPermissionScope } from "./scope.js";
+import { resolveShell, shellSyntaxHint, type ShellSpec } from "./shell.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const OUTPUT_BYTE_LIMIT = 1_000_000;
+const IS_WINDOWS = process.platform === "win32";
+/** Chosen once per process: the agent and its stdio client run on the same OS. */
+const SHELL: ShellSpec = resolveShell();
 
 function abs(session: Session, p: string): string {
   return isAbsolute(p) ? p : resolve(session.cwd, p);
@@ -17,8 +21,8 @@ function abs(session: Session, p: string): string {
 async function runViaClientTerminal(command: string, cwd: string, timeoutMs: number, ctx: ToolContext): Promise<ToolResult> {
   const terminal = await ctx.conn.createTerminal({
     sessionId: ctx.session.id,
-    command: "bash",
-    args: ["-lc", command],
+    command: SHELL.command,
+    args: SHELL.args(command),
     cwd,
     outputByteLimit: OUTPUT_BYTE_LIMIT,
   });
@@ -80,10 +84,13 @@ function runViaChildProcess(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   return new Promise((resolvePromise) => {
-    // M3: `detached: true` puts the shell in its own process group, so we can
-    // kill the *tree* — with `shell: true` a plain child.kill() only reaps the
-    // wrapper shell while `npm run …`'s node grandchildren keep running.
-    const child = spawn(command, { shell: true, cwd, detached: true });
+    // Spawn the per-OS shell explicitly (not `shell: true`, which is cmd.exe on
+    // Windows and would contradict the tool description).
+    // M3: on POSIX `detached: true` puts the shell in its own process group, so
+    // we can kill the *tree* — a plain child.kill() only reaps the wrapper shell
+    // while `npm run …`'s node grandchildren keep running. On Windows `detached`
+    // would open a new console window instead; the tree is killed via taskkill.
+    const child = spawn(SHELL.command, SHELL.args(command), { cwd, detached: !IS_WINDOWS, windowsHide: true });
     // H3③: keep both ends of the output instead of swallowing everything after
     // the limit — test/build failures are reported at the tail.
     const buffer = createHeadTailBuffer(OUTPUT_BYTE_LIMIT);
@@ -92,10 +99,17 @@ function runViaChildProcess(
     child.stderr?.on("data", append);
 
     const killTree = () => {
+      if (child.pid === undefined) return;
+      if (IS_WINDOWS) {
+        // No process groups on Windows: `taskkill /T` walks the child tree.
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        killer.on("error", () => child.kill("SIGKILL"));
+        return;
+      }
       try {
-        process.kill(-child.pid!, "SIGKILL");
+        process.kill(-child.pid, "SIGKILL");
       } catch {
-        // Windows has no process groups (and -pid may already be gone).
+        // -pid may already be gone.
         child.kill("SIGKILL");
       }
     };
@@ -133,7 +147,8 @@ function runViaChildProcess(
 export const bashTool: Tool = {
   name: "bash",
   description:
-    "在 shell 中执行命令(bash -lc)。用于构建、测试、git、安装依赖等。返回退出码与合并的 stdout/stderr。",
+    `在 shell 中执行命令（当前系统：${SHELL.label}）。用于构建、测试、git、安装依赖等。返回退出码与合并的 stdout/stderr。` +
+    `${shellSyntaxHint(SHELL)}每次调用都是独立进程，设置的环境变量不会保留到下一次调用。`,
   kind: "execute",
   needsPermission: true,
   parameters: {

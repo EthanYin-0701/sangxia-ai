@@ -9,12 +9,14 @@ Sangxia（sangxia-ai）是 Node.js/TypeScript 写的 ACP（Agent Client Protocol
 - TypeScript 5.6+、Node.js >= 20、ESM + `NodeNext`（相对导入带 `.js`），`strict` + `noUncheckedIndexedAccess`。
 - 依赖：`@agentclientprotocol/sdk@0.14.1`（固定版本）、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`。
 - `src/config.ts` 用 `zod/v3`（依赖 v3 嵌套 `.default({})` 语义）；改用 v4 API 前须迁移 `.prefault({})` / `z.record(k, v)` 并对比解析结果。
-- 无单元测试框架，测试是 `scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。
+- 单元测试：`test/unit/*.test.ts`（`node:test`，经 tsx 直接导入 `src/`，无需 build）；冒烟：`scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。CI 见 `.github/workflows/ci.yml`。
 
 ## 常用命令
 
 ```bash
-npm run typecheck     # 提交前必跑
+npm run typecheck     # 提交前必跑（含 test/）
+npm run lint          # ESLint
+npm test              # 单元测试（无需 build）
 npm run build         # 编译到 dist/
 npm run check:docs    # 文档一致性：路径/脚本存在、本文件体积预算
 npm run smoke         # 离线 E2E：ACP 握手 + 工具 + 权限流（mock provider）
@@ -44,7 +46,7 @@ scripts/           冒烟测试、check-docs.mjs、install-skills.sh；skills/ �
 3. **密钥与产物**：`sangxia.config.json` 与 `dist/` 已 gitignore，不提交、不手改；密钥用 `${ENV_VAR}` 引用。
 4. **记忆维护**：项目背景、决策、待办写 `.sangxia/memory.md`（本地文件，不入库）；本文件只放长期有效的规则，保持精简（每次请求都会全文进入 system prompt，`check:docs` 设有体积上限）。
 5. **`tool_calls` 必须配对**：每个 assistant `tool_calls` 都要有对应 tool 结果，`executeToolCall` 的每条路径（含权限拒绝、取消、超时、hook deny）都要回填；`runTurn` 开头的 `sanitizeHistory` 是兜底，不可删。
-6. **权限**：变更类工具（write/edit/bash/MCP）执行前走 `session/request_permission`，只读工具和 `update_plan`/`use_skill` 免权限。所有工具参数先过 JSON Schema 校验，非法参数和截断响应里的工具调用不执行。"总是允许/拒绝"按 `Tool.permissionScope` 的范围记忆（bash 按命令前缀、文件按目录）；工作区外路径与高危命令强制弹窗（`forceAsk`：即便 auto 模式、即便只读工具也弹窗，高危命令还忽略已记住的决策）。新增碰文件/跑命令的工具必须实现 `permissionScope`（复用 `tools/scope.ts`），并优先用客户端能力（`readTextFile`/`writeTextFile`/`createTerminal`），无能力时回退 Node。
+6. **权限**：变更类工具（write/edit/bash/MCP）执行前走 `session/request_permission`，只读工具和 `update_plan`/`use_skill`/`ask_user` 免权限；`fetch_url` 需权限、按源站记忆、只跟随同源重定向。所有工具参数先过 JSON Schema 校验，非法参数和截断响应里的工具调用不执行。"总是允许/拒绝"按 `Tool.permissionScope` 的范围记忆（bash 按命令前缀、文件按目录）；工作区外路径与高危命令强制弹窗（`forceAsk`：即便 auto 模式、即便只读工具也弹窗，高危命令还忽略已记住的决策）。新增碰文件/跑命令的工具必须实现 `permissionScope`（复用 `tools/scope.ts`），并优先用客户端能力（`readTextFile`/`writeTextFile`/`createTerminal`），无能力时回退 Node。
 7. **会话隔离**：工具集按会话组装（内置 + 技能 + MCP）；MCP server 失败只告警跳过，远程工具命名 `mcp__<server>__<tool>`。
 8. **持久化**：`persistence.ts` 是唯一写入口，append-only JSONL，不要退回全量重写快照；`tool_started` 必须在 `tool.run` 之前落盘。来自客户端的 session ID 拼路径前必过 `/^[a-zA-Z0-9-]+$/`。
 9. **超时与重试**：工具 deadline 必须 race 工具 promise（只 abort 不够），用户取消优先于超时。LLM 只重试首个 delta 之前的瞬时失败（网络/408/409/429/5xx，尊重 `Retry-After`），SDK `maxRetries` 保持 0。
