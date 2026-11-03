@@ -22,26 +22,80 @@ TEXTFILE_DIR="/var/lib/alloy/textfile"
 sudo mkdir -p "$TEXTFILE_DIR"
 sudo chown -R "$(whoami)" "$TEXTFILE_DIR"
 
-# 2. 按需安装 jq, curl, grafana-alloy (幂等)
-if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+# 2. 按需安装 jq, curl, gpg, unzip, grafana-alloy (幂等)
+if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 \
+  || ! command -v gpg >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1; then
   sudo apt-get update -qq
-  sudo apt-get install -y -qq jq curl ca-certificates gnupg
+  sudo apt-get install -y -qq jq curl ca-certificates gnupg unzip
 fi
 
-if ! command -v alloy >/dev/null 2>&1; then
+# 安装方式 A（首选）：Grafana 官方 apt 源。
+# 注意：函数在 if 条件里调用时 set -e 不生效，所以每一步都要显式 || return 1。
+install_alloy_from_apt() {
   KEY_DIR="$(mktemp -d)"
-  trap 'rm -rf "$KEY_DIR"' EXIT
   # 分步执行：POSIX sh 的 set -e 无法捕获管道中间的下载/验签失败。
   if ! curl --fail --silent --show-error --location https://apt.grafana.com/gpg.key -o "$KEY_DIR/grafana.asc"; then
-    echo "[air-startup] Cannot download Grafana signing key. Check Air Cloud proxy access to apt.grafana.com." >&2
-    exit 1
+    echo "[air-startup] Cannot download Grafana signing key from apt.grafana.com (proxy blocked?)." >&2
+    rm -rf "$KEY_DIR"
+    return 1
   fi
-  gpg --batch --yes --dearmor --output "$KEY_DIR/grafana.gpg" "$KEY_DIR/grafana.asc"
+  if ! gpg --batch --yes --dearmor --output "$KEY_DIR/grafana.gpg" "$KEY_DIR/grafana.asc"; then
+    rm -rf "$KEY_DIR"
+    return 1
+  fi
   sudo mkdir -p /etc/apt/keyrings/
   sudo install -m 0644 "$KEY_DIR/grafana.gpg" /etc/apt/keyrings/grafana.gpg
+  rm -rf "$KEY_DIR"
   echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list >/dev/null
-  sudo apt-get update -qq -o APT::Update::Error-Mode=any
-  sudo apt-get install -y -qq alloy
+  if ! sudo apt-get update -qq -o APT::Update::Error-Mode=any || ! sudo apt-get install -y -qq alloy; then
+    # 失败时移除 Grafana 源，避免污染后续所有 apt-get update。
+    sudo rm -f /etc/apt/sources.list.d/grafana.list
+    return 1
+  fi
+}
+
+# 安装方式 B（回退）：GitHub Releases 二进制。Air Cloud 代理常常拦截 apt.grafana.com 但放行 github.com。
+# 可通过 ALLOY_VERSION=v1.21.3 固定版本；默认解析最新 release。
+install_alloy_from_github() {
+  case "$(uname -m)" in
+    x86_64|amd64) ALLOY_ARCH="amd64" ;;
+    aarch64|arm64) ALLOY_ARCH="arm64" ;;
+    *) echo "[air-startup] Unsupported architecture for Alloy binary: $(uname -m)" >&2; return 1 ;;
+  esac
+  ALLOY_VERSION="${ALLOY_VERSION:-}"
+  if [ -z "$ALLOY_VERSION" ]; then
+    ALLOY_VERSION="$(curl --fail --silent --location -o /dev/null -w '%{url_effective}' \
+      https://github.com/grafana/alloy/releases/latest 2>/dev/null | sed -n 's#.*/tag/\(v[0-9][0-9.]*\)$#\1#p')"
+  fi
+  # 解析失败时退回到一个已知可用的版本。
+  ALLOY_VERSION="${ALLOY_VERSION:-v1.21.3}"
+  DL_DIR="$(mktemp -d)"
+  ALLOY_URL="https://github.com/grafana/alloy/releases/download/${ALLOY_VERSION}/alloy-linux-${ALLOY_ARCH}.zip"
+  echo "[air-startup] Downloading Alloy ${ALLOY_VERSION} (${ALLOY_ARCH}) from GitHub Releases..."
+  if ! curl --fail --silent --show-error --location "$ALLOY_URL" -o "$DL_DIR/alloy.zip"; then
+    echo "[air-startup] Cannot download ${ALLOY_URL}" >&2
+    rm -rf "$DL_DIR"
+    return 1
+  fi
+  # zip 内只有一个文件：alloy-linux-<arch>
+  if ! unzip -q -o "$DL_DIR/alloy.zip" -d "$DL_DIR" || [ ! -f "$DL_DIR/alloy-linux-${ALLOY_ARCH}" ]; then
+    echo "[air-startup] Unexpected Alloy archive layout." >&2
+    rm -rf "$DL_DIR"
+    return 1
+  fi
+  sudo install -m 0755 "$DL_DIR/alloy-linux-${ALLOY_ARCH}" /usr/local/bin/alloy
+  rm -rf "$DL_DIR"
+}
+
+if ! command -v alloy >/dev/null 2>&1; then
+  if install_alloy_from_apt; then
+    echo "[air-startup] Installed Grafana Alloy from apt.grafana.com."
+  elif install_alloy_from_github; then
+    echo "[air-startup] apt.grafana.com unavailable; installed Grafana Alloy from GitHub Releases."
+  else
+    echo "[air-startup] Failed to install Grafana Alloy via both apt.grafana.com and GitHub Releases. Check Air Cloud proxy access." >&2
+    exit 1
+  fi
 fi
 
 # 3. 采集 Air Cloud 自身 Agent (Junie / Claude / Codex) 的运行状态与起止时间
@@ -142,6 +196,9 @@ EOF
   if ! pgrep -x "alloy" >/dev/null 2>&1; then
     nohup alloy run /etc/alloy/config.alloy --storage.path=/tmp/alloy-data >/tmp/alloy.log 2>&1 &
   fi
+else
+  echo "[air-startup] WARNING: PROMETHEUS_REMOTE_WRITE_URL is empty; Alloy will NOT start and no metrics will reach Grafana." >&2
+  echo "[air-startup]          Set PROMETHEUS_REMOTE_WRITE_URL / PROMETHEUS_USER / PROMETHEUS_PASSWORD in the Air env config or at the top of this script." >&2
 fi
 
 # 5. 自动向已就绪的 Grafana 实例注册/更新 Air Cloud 监控 Dashboard（可选）
@@ -205,4 +262,6 @@ if [ -n "${GRAFANA_URL:-}" ] && [ -n "${GRAFANA_SERVICE_TOKEN:-}" ]; then
         ]
       }
     }' >/dev/null || true
+else
+  echo "[air-startup] NOTE: GRAFANA_URL / GRAFANA_SERVICE_TOKEN not set; skipping dashboard registration (uid sangxia-air-cloud-monitor)." >&2
 fi
