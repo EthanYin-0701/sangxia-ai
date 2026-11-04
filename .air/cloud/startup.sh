@@ -179,6 +179,7 @@ prometheus.scrape "air_cloud_scrape" {
 prometheus.remote_write "grafana_ready" {
   endpoint {
     url = env("PROMETHEUS_REMOTE_WRITE_URL")
+    proxy_from_environment = true
     // !!!!!! 如果你的自建 Prometheus 不需要账号密码认证，可以删掉下面整个 basic_auth { ... } 块
     basic_auth {
       username = env("PROMETHEUS_USER")
@@ -192,6 +193,8 @@ prometheus.remote_write "grafana_ready" {
   }
 }
 EOF
+  sudo chmod 755 /etc/alloy
+  sudo chmod 644 /etc/alloy/config.alloy
 
   if ! pgrep -x "alloy" >/dev/null 2>&1; then
     nohup alloy run /etc/alloy/config.alloy --storage.path=/tmp/alloy-data >/tmp/alloy.log 2>&1 &
