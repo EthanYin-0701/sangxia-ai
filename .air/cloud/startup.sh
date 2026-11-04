@@ -119,6 +119,15 @@ make_labels() {
     "$(escape_label "$HOST_NAME")" "$(escape_label "$1")" \
     "$(escape_label "$2")" "$3" "$(escape_label "$4")"
 }
+# emit_process_state <running 0|1> <session_id> <agent_type>
+emit_process_state() {
+  LABELS="$(make_labels sangxia-ai "$2" "$3" "$DEFAULT_MODEL")"
+  printf '%s\n' "air_cloud_agent_state{${LABELS}} $1" >> "$TMP_FILE"
+  if [ "$1" -eq 1 ]; then
+    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+  fi
+}
 
 while true; do
   TMP_FILE="${OUT_FILE}.tmp"
@@ -130,9 +139,12 @@ while true; do
   CLAUDE_RUNNING=0
   CODEX_RUNNING=0
 
-  pgrep -f "junie" >/dev/null 2>&1 && JUNIE_RUNNING=1
-  pgrep -f "claude" >/dev/null 2>&1 && CLAUDE_RUNNING=1
-  pgrep -f "codex" >/dev/null 2>&1 && CODEX_RUNNING=1
+  # Match the executable name only (bare or path-prefixed, optionally .exe/.js);
+  # a plain substring match hits unrelated processes such as the Air sidecar
+  # supervisor, whose inline script mentions "junie-live".
+  pgrep -f '(^|[ /])junie(\.exe|\.js)?( |$)' >/dev/null 2>&1 && JUNIE_RUNNING=1
+  pgrep -f '(^|[ /])claude(\.exe|\.js)?( |$)' >/dev/null 2>&1 && CLAUDE_RUNNING=1
+  pgrep -f '(^|[ /])codex(\.exe|\.js)?( |$)' >/dev/null 2>&1 && CODEX_RUNNING=1
 
   DEFAULT_MODEL="${AIR_LLM_MODEL:-default}"
 
@@ -163,27 +175,12 @@ while true; do
   fi
 
   # 2. 其它 Agent 或无历史记录时的补充/兜底指标
-  if [ "$CLAUDE_RUNNING" -eq 1 ]; then
-    LABELS="$(make_labels sangxia-ai "claude-${HOST_NAME}" claude-code "$DEFAULT_MODEL")"
-    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
-  fi
-
-  if [ "$CODEX_RUNNING" -eq 1 ]; then
-    LABELS="$(make_labels sangxia-ai "codex-${HOST_NAME}" codex "$DEFAULT_MODEL")"
-    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
-  fi
-
   # Running state is process-level, separate from historical session metadata.
-  if [ "$JUNIE_RUNNING" -eq 1 ]; then
-    LABELS="$(make_labels sangxia-ai "$HOST_NAME" junie "$DEFAULT_MODEL")"
-    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
-  fi
+  # The state series is always written (0=IDLE, 1=RUNNING) so a stopped agent
+  # shows as idle instead of the series going stale; timestamps only while running.
+  emit_process_state "$CLAUDE_RUNNING" "claude-${HOST_NAME}" claude-code
+  emit_process_state "$CODEX_RUNNING" "codex-${HOST_NAME}" codex
+  emit_process_state "$JUNIE_RUNNING" "$HOST_NAME" junie
 
   mv "$TMP_FILE" "$OUT_FILE"
   sleep 5
@@ -194,7 +191,9 @@ sudo chmod +x /usr/local/bin/air-agent-collector.sh
 # Replace the collector so reruns apply the updated script and environment.
 COLLECTOR_PIDS="$(pgrep -f '^([^ ]*/)?(sh|dash) /usr/local/bin/air-agent-collector.sh$' || true)"
 if [ -n "$COLLECTOR_PIDS" ]; then
-  kill $COLLECTOR_PIDS
+  # The match also catches short-lived $(...) subshells of the collector that may
+  # exit before kill runs; don't let that abort the whole script under set -e.
+  kill $COLLECTOR_PIDS 2>/dev/null || true
   sleep 1
 fi
 nohup /usr/local/bin/air-agent-collector.sh >/tmp/air-agent-collector.log 2>&1 &
@@ -278,9 +277,13 @@ fi
 
 # 5. 自动向已就绪的 Grafana 实例注册/更新 Air Cloud 监控 Dashboard（可选）
 if [ -n "${GRAFANA_URL:-}" ] && [ -n "${GRAFANA_SERVICE_TOKEN:-}" ]; then
-  curl -sS -X POST "${GRAFANA_URL%/}/api/dashboards/db" \
-    -H "Authorization: Bearer ${GRAFANA_SERVICE_TOKEN}" \
+  DASHBOARD_RESP="$(mktemp)"
+  # The token is fed via stdin (-H @-, printf is a shell builtin) so it never shows up in ps.
+  # Failure is reported but non-fatal: the dashboard is optional.
+  if ! printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_TOKEN" | curl --fail-with-body -sS -X POST "${GRAFANA_URL%/}/api/dashboards/db" \
+    -H @- \
     -H "Content-Type: application/json" \
+    -o "$DASHBOARD_RESP" \
     -d '{
       "overwrite": true,
       "dashboard": {
@@ -336,7 +339,12 @@ if [ -n "${GRAFANA_URL:-}" ] && [ -n "${GRAFANA_SERVICE_TOKEN:-}" ]; then
           }
         ]
       }
-    }' >/dev/null || true
+    }'; then
+    echo "[air-startup] WARNING: Failed to register Grafana dashboard at ${GRAFANA_URL%/}:" >&2
+    cat "$DASHBOARD_RESP" >&2
+    echo >&2
+  fi
+  rm -f "$DASHBOARD_RESP"
 else
   echo "[air-startup] NOTE: GRAFANA_URL / GRAFANA_SERVICE_TOKEN not set; skipping dashboard registration (uid sangxia-air-cloud-monitor)." >&2
 fi
