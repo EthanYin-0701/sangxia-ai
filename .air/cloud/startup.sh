@@ -32,7 +32,7 @@ fi
 # 安装方式 A（首选）：Grafana 官方 apt 源。
 # 注意：函数在 if 条件里调用时 set -e 不生效，所以每一步都要显式 || return 1。
 install_alloy_from_apt() {
-  KEY_DIR="$(mktemp -d)"
+  KEY_DIR="$(mktemp -d)" || return 1
   # 分步执行：POSIX sh 的 set -e 无法捕获管道中间的下载/验签失败。
   if ! curl --fail --silent --show-error --location https://apt.grafana.com/gpg.key -o "$KEY_DIR/grafana.asc"; then
     echo "[air-startup] Cannot download Grafana signing key from apt.grafana.com (proxy blocked?)." >&2
@@ -43,10 +43,12 @@ install_alloy_from_apt() {
     rm -rf "$KEY_DIR"
     return 1
   fi
-  sudo mkdir -p /etc/apt/keyrings/
-  sudo install -m 0644 "$KEY_DIR/grafana.gpg" /etc/apt/keyrings/grafana.gpg
+  if ! sudo mkdir -p /etc/apt/keyrings/ || ! sudo install -m 0644 "$KEY_DIR/grafana.gpg" /etc/apt/keyrings/grafana.gpg; then
+    rm -rf "$KEY_DIR"
+    return 1
+  fi
   rm -rf "$KEY_DIR"
-  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list >/dev/null
+  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list >/dev/null || return 1
   if ! sudo apt-get update -qq -o APT::Update::Error-Mode=any || ! sudo apt-get install -y -qq alloy; then
     # 失败时移除 Grafana 源，避免污染后续所有 apt-get update。
     sudo rm -f /etc/apt/sources.list.d/grafana.list
@@ -69,7 +71,7 @@ install_alloy_from_github() {
   fi
   # 解析失败时退回到一个已知可用的版本。
   ALLOY_VERSION="${ALLOY_VERSION:-v1.21.3}"
-  DL_DIR="$(mktemp -d)"
+  DL_DIR="$(mktemp -d)" || return 1
   ALLOY_URL="https://github.com/grafana/alloy/releases/download/${ALLOY_VERSION}/alloy-linux-${ALLOY_ARCH}.zip"
   echo "[air-startup] Downloading Alloy ${ALLOY_VERSION} (${ALLOY_ARCH}) from GitHub Releases..."
   if ! curl --fail --silent --show-error --location "$ALLOY_URL" -o "$DL_DIR/alloy.zip"; then
@@ -83,7 +85,10 @@ install_alloy_from_github() {
     rm -rf "$DL_DIR"
     return 1
   fi
-  sudo install -m 0755 "$DL_DIR/alloy-linux-${ALLOY_ARCH}" /usr/local/bin/alloy
+  if ! sudo install -m 0755 "$DL_DIR/alloy-linux-${ALLOY_ARCH}" /usr/local/bin/alloy; then
+    rm -rf "$DL_DIR"
+    return 1
+  fi
   rm -rf "$DL_DIR"
 }
 
@@ -105,6 +110,16 @@ OUT_FILE="/var/lib/alloy/textfile/air_agent.prom"
 HOST_NAME="$(hostname)"
 ENV_BOOT_TS="$(stat -c %Y /proc/1 2>/dev/null || date +%s)"
 
+# Prometheus labels escape backslashes, double quotes and newlines.
+escape_label() {
+  jq -nr --arg value "$1" '$value | split("\\") | join("\\\\") | split("\"") | join("\\\"") | split("\n") | join("\\n")'
+}
+make_labels() {
+  printf 'host="%s",project="%s",session_id="%s",agent_type="%s",llm_model="%s"' \
+    "$(escape_label "$HOST_NAME")" "$(escape_label "$1")" \
+    "$(escape_label "$2")" "$3" "$(escape_label "$4")"
+}
+
 while true; do
   TMP_FILE="${OUT_FILE}.tmp"
   : > "$TMP_FILE"
@@ -123,7 +138,6 @@ while true; do
 
   # 1. 遍历 ~/.junie/sessions/index.jsonl 中记录的所有会话
   INDEX_FILE="$HOME/.junie/sessions/index.jsonl"
-  RECORDED_SESSIONS=0
 
   if [ -f "$INDEX_FILE" ] && command -v jq >/dev/null 2>&1; then
     while IFS= read -r line; do
@@ -131,7 +145,6 @@ while true; do
       SID=$(echo "$line" | jq -r '.id // .sessionId // empty' 2>/dev/null)
       [ -z "$SID" ] && continue
 
-      RECORDED_SESSIONS=$((RECORDED_SESSIONS + 1))
       PROJ=$(echo "$line" | jq -r '.projectName // .project // "sangxia-ai"' 2>/dev/null)
       MODEL=$(echo "$line" | jq -r '.model // empty' 2>/dev/null)
       [ -z "$MODEL" ] && MODEL="$DEFAULT_MODEL"
@@ -142,33 +155,34 @@ while true; do
       LAST_TS=$(echo "$line" | jq -r '(.updated // .lastActiveTime // 0) / 1000 | floor' 2>/dev/null)
       [ -z "$LAST_TS" ] || [ "$LAST_TS" -le 0 ] && LAST_TS="$NOW_TS"
 
-      LABELS="host=\"${HOST_NAME}\",project=\"${PROJ}\",session_id=\"${SID}\",agent_type=\"junie\",llm_model=\"${MODEL}\""
-      echo "air_cloud_agent_state{${LABELS}} ${JUNIE_RUNNING}" >> "$TMP_FILE"
-      echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${START_TS}" >> "$TMP_FILE"
-      echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${LAST_TS}" >> "$TMP_FILE"
+      LABELS="$(make_labels "$PROJ" "$SID" junie "$MODEL")"
+      # The index has no reliable per-session running signal; expose metadata only.
+      printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${START_TS}" >> "$TMP_FILE"
+      printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${LAST_TS}" >> "$TMP_FILE"
     done < "$INDEX_FILE"
   fi
 
   # 2. 其它 Agent 或无历史记录时的补充/兜底指标
   if [ "$CLAUDE_RUNNING" -eq 1 ]; then
-    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"claude-${HOST_NAME}\",agent_type=\"claude-code\",llm_model=\"${DEFAULT_MODEL}\""
-    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+    LABELS="$(make_labels sangxia-ai "claude-${HOST_NAME}" claude-code "$DEFAULT_MODEL")"
+    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
   fi
 
   if [ "$CODEX_RUNNING" -eq 1 ]; then
-    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"codex-${HOST_NAME}\",agent_type=\"codex\",llm_model=\"${DEFAULT_MODEL}\""
-    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+    LABELS="$(make_labels sangxia-ai "codex-${HOST_NAME}" codex "$DEFAULT_MODEL")"
+    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
   fi
 
-  if [ "$RECORDED_SESSIONS" -eq 0 ] && [ "$JUNIE_RUNNING" -eq 1 ]; then
-    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"${HOST_NAME}\",agent_type=\"junie\",llm_model=\"${DEFAULT_MODEL}\""
-    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
-    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
-    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+  # Running state is process-level, separate from historical session metadata.
+  if [ "$JUNIE_RUNNING" -eq 1 ]; then
+    LABELS="$(make_labels sangxia-ai "$HOST_NAME" junie "$DEFAULT_MODEL")"
+    printf '%s\n' "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    printf '%s\n' "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
   fi
 
   mv "$TMP_FILE" "$OUT_FILE"
@@ -177,9 +191,13 @@ done
 EOF
 sudo chmod +x /usr/local/bin/air-agent-collector.sh
 
-if ! pgrep -f "/usr/local/bin/air-agent-collector.sh" >/dev/null 2>&1; then
-  nohup /usr/local/bin/air-agent-collector.sh >/tmp/air-agent-collector.log 2>&1 &
+# Replace the collector so reruns apply the updated script and environment.
+COLLECTOR_PIDS="$(pgrep -f '^([^ ]*/)?(sh|dash) /usr/local/bin/air-agent-collector.sh$' || true)"
+if [ -n "$COLLECTOR_PIDS" ]; then
+  kill $COLLECTOR_PIDS
+  sleep 1
 fi
+nohup /usr/local/bin/air-agent-collector.sh >/tmp/air-agent-collector.log 2>&1 &
 
 # 4. 启动 Grafana Alloy 推送 Air Cloud 的 CPU / 内存 / 网络 及 Agent 指标
 if [ -n "${PROMETHEUS_REMOTE_WRITE_URL:-}" ]; then
@@ -218,8 +236,40 @@ EOF
   sudo chmod 755 /etc/alloy
   sudo chmod 644 /etc/alloy/config.alloy
 
-  if ! pgrep -x "alloy" >/dev/null 2>&1; then
-    nohup alloy run /etc/alloy/config.alloy --storage.path=/tmp/alloy-data >/tmp/alloy.log 2>&1 &
+  # Stop the package service so it cannot race our environment-configured instance.
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    if systemctl is-active --quiet alloy; then
+      sudo systemctl stop alloy
+    fi
+  fi
+  # Only replace the instance owned by this script, never an unrelated Alloy.
+  ALLOY_PID_FILE=/tmp/air-alloy.pid
+  if [ -f "$ALLOY_PID_FILE" ]; then
+    ALLOY_PID="$(cat "$ALLOY_PID_FILE")"
+    case "$ALLOY_PID" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ -r "/proc/$ALLOY_PID/cmdline" ] && tr '\000' ' ' < "/proc/$ALLOY_PID/cmdline" | grep -q 'alloy run /etc/alloy/config.alloy --storage.path=/tmp/alloy-data'; then
+          kill "$ALLOY_PID"
+          for attempt in 1 2 3 4 5; do
+            kill -0 "$ALLOY_PID" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$ALLOY_PID" 2>/dev/null; then
+            echo "[air-startup] Previous Alloy has not stopped." >&2
+            exit 1
+          fi
+        fi
+        ;;
+    esac
+  fi
+  nohup alloy run /etc/alloy/config.alloy --storage.path=/tmp/alloy-data >/tmp/alloy.log 2>&1 &
+  ALLOY_PID=$!
+  printf '%s\n' "$ALLOY_PID" > "$ALLOY_PID_FILE"
+  sleep 1
+  if ! kill -0 "$ALLOY_PID" 2>/dev/null; then
+    echo "[air-startup] Alloy failed to start; see /tmp/alloy.log." >&2
+    exit 1
   fi
 else
   echo "[air-startup] WARNING: PROMETHEUS_REMOTE_WRITE_URL is empty; Alloy will NOT start and no metrics will reach Grafana." >&2
