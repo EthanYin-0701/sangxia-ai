@@ -6,12 +6,12 @@ echo "[air-startup] Starting Air Cloud environment & agent monitoring..."
 # ==============================================================================
 # !!!!!! 【手工填写区】如果你没有在 Air 网页端配置环境变量，请直接修改下面引号中的默认值
 # ==============================================================================
-export PROMETHEUS_REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
-export PROMETHEUS_USER="${PROMETHEUS_USER:-}"
-export PROMETHEUS_PASSWORD="${PROMETHEUS_PASSWORD:-}"
-export GRAFANA_URL="${GRAFANA_URL:-}"
-export GRAFANA_SERVICE_TOKEN="${GRAFANA_SERVICE_TOKEN:-}"
-export AIR_LLM_MODEL="${AIR_LLM_MODEL:-gemini-default}"
+# export PROMETHEUS_REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
+# export PROMETHEUS_USER="${PROMETHEUS_USER:-}"
+# export PROMETHEUS_PASSWORD="${PROMETHEUS_PASSWORD:-}"
+# export GRAFANA_URL="${GRAFANA_URL:-}"
+# export GRAFANA_SERVICE_TOKEN="${GRAFANA_SERVICE_TOKEN:-}"
+# export AIR_LLM_MODEL="${AIR_LLM_MODEL:-gemini-default}"
 
 # ==============================================================================
 # 以下内容全部自动运行，无需手工修改
