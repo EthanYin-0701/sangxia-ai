@@ -110,44 +110,66 @@ while true; do
   : > "$TMP_FILE"
   NOW_TS="$(date +%s)"
 
-  # 自动识别当前 Air Cloud 中正在运行的平台 Agent 类型与状态
-  AGENT_TYPE="junie"
-  LLM_MODEL="${AIR_LLM_MODEL:-default}"
-  STATE=0 # 0=IDLE, 1=RUNNING
+  # 识别不同平台 Agent 的运行状态
+  JUNIE_RUNNING=0
+  CLAUDE_RUNNING=0
+  CODEX_RUNNING=0
 
-  if pgrep -f "junie" >/dev/null 2>&1; then
-    AGENT_TYPE="junie"
-    STATE=1
-  elif pgrep -f "claude" >/dev/null 2>&1; then
-    AGENT_TYPE="claude-code"
-    STATE=1
-  elif pgrep -f "codex" >/dev/null 2>&1; then
-    AGENT_TYPE="codex"
-    STATE=1
-  fi
+  pgrep -f "junie" >/dev/null 2>&1 && JUNIE_RUNNING=1
+  pgrep -f "claude" >/dev/null 2>&1 && CLAUDE_RUNNING=1
+  pgrep -f "codex" >/dev/null 2>&1 && CODEX_RUNNING=1
 
-  # 自动从 ~/.junie/sessions/index.jsonl 提取精确的会话 ID、开始/更新时间
+  DEFAULT_MODEL="${AIR_LLM_MODEL:-default}"
+
+  # 1. 遍历 ~/.junie/sessions/index.jsonl 中记录的所有会话
   INDEX_FILE="$HOME/.junie/sessions/index.jsonl"
-  if [ -f "$INDEX_FILE" ]; then
-    LAST_LINE=$(tail -n 1 "$INDEX_FILE" 2>/dev/null || true)
-    if [ -n "$LAST_LINE" ]; then
-      SID=$(echo "$LAST_LINE" | jq -r '.id // .sessionId // "air-session"')
-      START_TS=$(stat -c %W "$INDEX_FILE" 2>/dev/null || echo "$ENV_BOOT_TS")
-      [ "$START_TS" -le 0 ] && START_TS="$ENV_BOOT_TS"
-      END_TS=$(stat -c %Y "$INDEX_FILE" 2>/dev/null || echo "$NOW_TS")
-    fi
+  RECORDED_SESSIONS=0
+
+  if [ -f "$INDEX_FILE" ] && command -v jq >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      SID=$(echo "$line" | jq -r '.id // .sessionId // empty' 2>/dev/null)
+      [ -z "$SID" ] && continue
+
+      RECORDED_SESSIONS=$((RECORDED_SESSIONS + 1))
+      PROJ=$(echo "$line" | jq -r '.projectName // .project // "sangxia-ai"' 2>/dev/null)
+      MODEL=$(echo "$line" | jq -r '.model // empty' 2>/dev/null)
+      [ -z "$MODEL" ] && MODEL="$DEFAULT_MODEL"
+
+      START_TS=$(echo "$line" | jq -r '(.created // .startTime // 0) / 1000 | floor' 2>/dev/null)
+      [ -z "$START_TS" ] || [ "$START_TS" -le 0 ] && START_TS="$ENV_BOOT_TS"
+
+      LAST_TS=$(echo "$line" | jq -r '(.updated // .lastActiveTime // 0) / 1000 | floor' 2>/dev/null)
+      [ -z "$LAST_TS" ] || [ "$LAST_TS" -le 0 ] && LAST_TS="$NOW_TS"
+
+      LABELS="host=\"${HOST_NAME}\",project=\"${PROJ}\",session_id=\"${SID}\",agent_type=\"junie\",llm_model=\"${MODEL}\""
+      echo "air_cloud_agent_state{${LABELS}} ${JUNIE_RUNNING}" >> "$TMP_FILE"
+      echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${START_TS}" >> "$TMP_FILE"
+      echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${LAST_TS}" >> "$TMP_FILE"
+    done < "$INDEX_FILE"
   fi
 
-  SID="${SID:-$HOST_NAME}"
-  START_TS="${START_TS:-$ENV_BOOT_TS}"
-  END_TS="${END_TS:-$NOW_TS}"
+  # 2. 其它 Agent 或无历史记录时的补充/兜底指标
+  if [ "$CLAUDE_RUNNING" -eq 1 ]; then
+    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"claude-${HOST_NAME}\",agent_type=\"claude-code\",llm_model=\"${DEFAULT_MODEL}\""
+    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+  fi
 
-  # !!!!!! 如果后续把这个脚本复用到其它项目，可把下面的 project="sangxia-ai" 改成对应项目名
-  LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"${SID}\",agent_type=\"${AGENT_TYPE}\",llm_model=\"${LLM_MODEL}\""
+  if [ "$CODEX_RUNNING" -eq 1 ]; then
+    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"codex-${HOST_NAME}\",agent_type=\"codex\",llm_model=\"${DEFAULT_MODEL}\""
+    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+  fi
 
-  echo "air_cloud_agent_state{${LABELS}} ${STATE}" >> "$TMP_FILE"
-  echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${START_TS}" >> "$TMP_FILE"
-  echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${END_TS}" >> "$TMP_FILE"
+  if [ "$RECORDED_SESSIONS" -eq 0 ] && [ "$JUNIE_RUNNING" -eq 1 ]; then
+    LABELS="host=\"${HOST_NAME}\",project=\"sangxia-ai\",session_id=\"${HOST_NAME}\",agent_type=\"junie\",llm_model=\"${DEFAULT_MODEL}\""
+    echo "air_cloud_agent_state{${LABELS}} 1" >> "$TMP_FILE"
+    echo "air_cloud_agent_start_timestamp_seconds{${LABELS}} ${ENV_BOOT_TS}" >> "$TMP_FILE"
+    echo "air_cloud_agent_last_active_timestamp_seconds{${LABELS}} ${NOW_TS}" >> "$TMP_FILE"
+  fi
 
   mv "$TMP_FILE" "$OUT_FILE"
   sleep 5
