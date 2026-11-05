@@ -76,6 +76,14 @@ export interface Tool {
    */
   readonly timeoutMs?: number;
 
+  /**
+   * Per-call deadline (ms) taken from the call's own arguments, for tools whose
+   * schema defines that meaning (`bash.timeout`). SA-24: the harness must not
+   * read `args.timeout` generically — MCP tools often take seconds there.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  timeoutFromArgs?(args: any): number | undefined;
+
   /** Human-readable one-line title for a specific invocation (shown in the client). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   title(args: any): string;

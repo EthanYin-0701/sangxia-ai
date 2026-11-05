@@ -160,6 +160,7 @@ export const bashTool: Tool = {
     },
     required: ["command"],
   },
+  timeoutFromArgs: (a) => (typeof a.timeout === "number" && a.timeout > 0 ? a.timeout : undefined),
   title: (a) => `执行 ${String(a.command).split("\n")[0]}`,
   permissionScope: (a, s) => bashPermissionScope("bash", s, String(a.command ?? ""), a.cwd ? abs(s, String(a.cwd)) : s.cwd),
   run: async (a, ctx) => {

@@ -115,7 +115,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
   "agent": {
     "maxIterations": 120,                  // 单轮最多迭代次数
     "historyWarningMessages": 400,         // 历史消息数告警阈值（不自动裁剪）
-    "toolTimeoutMs": 300000,               // 单次工具执行的默认 deadline（工具自身 timeoutMs / timeout 参数优先）
+    "toolTimeoutMs": 300000,               // 单次工具执行的默认 deadline（工具自身 timeoutMs 与 bash 的 timeout 参数优先；MCP 工具的同名参数不参与）
     "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）
     "systemPrompt": null                   // null 使用内置默认提示词
   },
@@ -228,7 +228,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 ```
 
 - 崩溃只会留下一个写了一半的**末行**，读取时忽略；中间的坏行跳过并告警。
-- `tool_started` 是判断"工具到底跑没跑"的唯一证据：进程被中断后重新加载会话时，启动过但结果缺失的调用会被修补成「结果未知…请先核实外部状态」，未启动过的则修补成「未执行…可以安全重试」。日志里没有任何 `tool_started`（旧格式）时一律按保守的「结果未知」处理。
+- `tool_started` 是判断"工具到底跑没跑"的唯一证据：进程被中断后重新加载会话时，启动过但结果缺失的调用会被修补成「结果未知…请先核实外部状态」，未启动过的则修补成「未执行…可以安全重试」。日志里没有任何 `tool_started`（旧格式）时一律按保守的「结果未知」处理。同一轮内用户取消时同理：已开始执行的工具回填「结果未知…请先核实」，尚未开始的才回填「未执行」。
 - 兼容旧格式：存在 `<sessionId>.json` 快照时会在首次读取时迁移为 JSONL（原文件删除），此后只写 JSONL。
 - `sessionId` 来自客户端，写文件前会过白名单校验（`^[a-zA-Z0-9-]+$`）防路径注入。
 
