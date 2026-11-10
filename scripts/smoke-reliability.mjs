@@ -640,7 +640,11 @@ try {
     });
     assert.equal(r.stopReason, "cancelled");
     assert.ok(sawAbort, "the tool must observe the abort");
-    assert.match(r.session.messages.find((m) => m.role === "tool").content, /turn 被取消/);
+    const content = r.session.messages.find((m) => m.role === "tool").content;
+    assert.match(content, /turn 被取消/);
+    // SA-29: the tool was already dispatched, so this must not claim "never ran".
+    assert.match(content, /结果未知/);
+    assert.ok(!content.includes("未执行"));
   });
   await check("per-model maxTokens overrides the global output budget", async () => {
     const { OpenAIProvider } = await import("../dist/llm/openai.js");

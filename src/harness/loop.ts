@@ -58,6 +58,16 @@ const WAIT_NOTICE_INTERVAL_MS = 20_000;
  *  - no evidence at all (empty set, e.g. a log written before started events
  *    existed) → stay conservative: treat the result as unknown.
  */
+/**
+ * Tool-result text for a call that was dispatched (`tool.run` called) but
+ * whose result was lost. SA-29: the in-turn cancel path and `sanitizeHistory`
+ * see the same evidence and must give the model the same advice — never
+ * "未执行", which invites a blind retry of a side effect that may have happened.
+ */
+const UNKNOWN_RESULT_ADVICE = "若该操作可能有副作用，请先核实外部状态，再决定是否重试。";
+const UNKNOWN_RESULT_CRASHED = `Error: 该工具调用的结果未知（进程在工具执行期间中断）。${UNKNOWN_RESULT_ADVICE}`;
+const UNKNOWN_RESULT_CANCELLED = `Error: 该工具调用的结果未知（工具已开始执行时 turn 被取消）。${UNKNOWN_RESULT_ADVICE}`;
+
 export function sanitizeHistory(
   messages: ChatMessage[],
   startedToolCalls: ReadonlySet<string> = new Set(),
@@ -70,9 +80,7 @@ export function sanitizeHistory(
   const hasEvidence = startedToolCalls.size > 0;
 
   const placeholder = (id: string): string =>
-    !hasEvidence || startedToolCalls.has(id)
-      ? "Error: 该工具调用的结果未知（进程在工具执行期间中断）。若该操作可能有副作用，请先核实外部状态，再决定是否重试。"
-      : "Error: 该工具调用未执行（turn 被取消或中断），可以安全重试。";
+    !hasEvidence || startedToolCalls.has(id) ? UNKNOWN_RESULT_CRASHED : "Error: 该工具调用未执行（turn 被取消或中断），可以安全重试。";
 
   const flushPending = () => {
     if (pending && pending.length > 0) {
@@ -590,7 +598,9 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
 
   // Run it, under a harness-level deadline (M3). Tools had no watchdog at all
   // while the LLM had two, so a hung tool blocked the turn forever.
-  const requestTimeout = Number(args.timeout);
+  // SA-24: only a tool that declares the meaning of its arguments may set the
+  // deadline from them; anything else (MCP schemas) uses the static default.
+  const requestTimeout = Number(tool.timeoutFromArgs?.(args));
   const configTimeout = Number(config.toolTimeoutMs);
   const effectiveTimeout = Number.isFinite(requestTimeout) && requestTimeout > 0
     ? requestTimeout
@@ -663,8 +673,14 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     if (signal.aborted) {
       // Still close the tool_call, or the assistant's tool_calls would be
       // missing a response (the caller only fills in the *remaining* calls).
+      // SA-29: `dispatched` is true here unless `throwIfAborted` fired before
+      // tool.run, so the side effect may already have happened.
       logger.info(`turn ${session.id} cancelled during tool ${tool.name}`);
-      await pushToolResult(session, toolCallId, "Error: 工具调用未执行（turn 被取消）");
+      await pushToolResult(
+        session,
+        toolCallId,
+        dispatched ? UNKNOWN_RESULT_CANCELLED : "Error: 工具调用未执行（turn 被取消）",
+      );
       await finishTool(toolCallId, "failed");
       return;
     }

@@ -135,7 +135,10 @@ const editFileTool: Tool = {
       };
     }
 
-    const next = replaceAll ? current.split(oldStr).join(newStr) : current.replace(oldStr, newStr);
+    // SA-22: a string replacement would expand `$$` / `$&` / `$'` / `` $` `` in
+    // new_string; split/join inserts it verbatim (and count === 1 here unless
+    // replace_all, so it is the same single replacement).
+    const next = current.split(oldStr).join(newStr);
     await writeText(ctx, path, next);
     return { output: `已编辑 ${path}（替换 ${replaceAll ? count : 1} 处）` };
   },
@@ -165,7 +168,7 @@ const listDirTool: Tool = {
 const globTool: Tool = {
   name: "glob",
   description:
-    "按 glob 模式查找文件(如 'src/**/*.ts')。返回匹配的绝对路径。自动忽略 node_modules/.git/dist。",
+    "按 glob 模式查找文件(如 'src/**/*.ts')。返回匹配的绝对路径(包含以 . 开头的文件和目录)。自动忽略 node_modules/.git/dist/.next。",
   kind: "search",
   needsPermission: false,
   parameters: {
@@ -184,7 +187,7 @@ const globTool: Tool = {
     const matches = await tinyglob(String(a.pattern), {
       cwd,
       absolute: true,
-      dot: false,
+      dot: true, // SA-28: .github/, .sangxia/, .eslintrc… must be findable; IGNORE still drops .git
       ignore: IGNORE,
     });
     if (matches.length === 0) return { output: "(无匹配)" };
@@ -200,7 +203,7 @@ const globTool: Tool = {
 const grepTool: Tool = {
   name: "grep",
   description:
-    "在文件内容中按正则搜索，返回 path:line: 匹配行。可用 glob 限定搜索的文件(默认全部)。",
+    "在文件内容中按正则搜索，返回 path:line: 匹配行。可用 glob 限定搜索的文件(默认全部，包含以 . 开头的文件)。自动忽略 node_modules/.git/dist/.next。",
   kind: "search",
   needsPermission: false,
   parameters: {
@@ -230,7 +233,7 @@ const grepTool: Tool = {
     const files = await tinyglob(a.glob ? String(a.glob) : "**/*", {
       cwd: root,
       absolute: true,
-      dot: false,
+      dot: true, // SA-28: .github/, .sangxia/, .eslintrc… must be findable; IGNORE still drops .git
       ignore: IGNORE,
     });
 
