@@ -94,7 +94,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "models": [                           // 可选：在支持 ACP model selector 的 IDE 中显示
       // 每个模型可用 maxTokens / firstChunkTimeoutMs / streamIdleTimeoutMs /
       // streamTotalTimeoutMs / streamRetries / streamRetryBaseDelayMs
-      // 覆盖同名全局值（未设置则继承）
+      // 覆盖同名全局值（未设置则继承）；extraBody 与全局 extraBody 深度合并（模型级优先）
       { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型", "maxTokens": 32768 }
     ],
     "temperature": 0,
@@ -110,7 +110,11 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "streamRetryBaseDelayMs": 500,        // 重试退避基数（指数增长，上限 8s；尊重 Retry-After）
     "streamIncludeUsage": true,            // 请求 stream_options.include_usage；不支持的端点会忽略该字段
     "passBackReasoning": "all",            // "all"（默认）把捕获的 reasoning_content 回传给后端；"none" 为不支持该字段的端点提供退路
-    "extraHeaders": {}                     // 可选附加请求头
+    "extraHeaders": {},                    // 可选附加请求头
+    "extraBody": {}                        // 可选：深度合并进每次 /chat/completions 请求体的厂商参数，
+                                           // 如 { "reasoning_effort": "high", "top_p": 0.9 }；可覆盖 temperature /
+                                           // max_tokens / stream_options / tool_choice，但不能设置 model / messages /
+                                           // stream / tools / functions（加载时报错）。models[] 里的同名字段按模型覆盖
   },
   "agent": {
     "maxIterations": 120,                  // 单轮最多迭代次数
@@ -293,6 +297,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 - `bash` 按命令前缀记忆：对 `npm test` 选“总是允许”只放行之后以 `npm test` 开头的命令，`git push`、`rm …` 等仍会询问；含 `;`、`&&`、`|`、重定向、括号（`$()`、PowerShell 的 `()`、`@()`）的复合命令只按完整命令精确记忆。
 - 文件工具按目录记忆：在工作区内对 `src/a.ts` 选“总是允许”只覆盖 `src/` 目录子树；工作区外只记该精确路径。
 - `fetch_url` 按源站（协议 + 主机 + 端口）记忆；跨源重定向不会自动跟随，模型需用新地址重新调用（重新走权限）。
+- `fetch_url` 访问本机/内网地址（`localhost`、`127.0.0.0/8`、`10/8`、`172.16/12`、`192.168/16`、`169.254/16` 云元数据、`::1`、`fc00::/7`、`fe80::/10`、`*.local` / `*.internal`、单段主机名，以及解析到这些地址的域名）时**总是**弹窗确认：`auto` 模式下也问，且不认此前的“总是允许”。DNS 只在权限判断时解析一次，不防 DNS rebinding。
 
 **`ask_user` 的限制**：ACP 没有专门的提问请求，`ask_user` 复用权限弹窗展示选项，因此只能选择、不能输入自由文本；选项末尾固定有「以上都不是（我来补充说明）」，用户选它（TUI 中按 Esc 同效）或关闭弹窗时，模型会结束回合改用文字询问。等待回答的上限是 30 分钟，取消 turn 会立即停止等待。
 - 弹窗里的“总是允许/拒绝”选项会注明本次记忆的范围。
