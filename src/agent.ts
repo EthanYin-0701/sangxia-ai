@@ -165,9 +165,15 @@ export class SangxiaAgent implements Agent {
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
     const config = this.#requireConfig();
-    const saved = await loadPersistedSession(params.sessionId);
-    if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
     return logger.withSession(params.sessionId, async () => {
+      // SA-12: loading an id that is already live (editor reconnect, double
+      // load) replaces that Session. Retire the old one *before* reading the
+      // log, so its MCP connections are closed instead of leaked and its
+      // aborted turn has finished writing the history we are about to replay.
+      const previous = this.#sessions.get(params.sessionId);
+      if (previous) await this.retireSession(previous, "被 session/load 替换");
+      const saved = await loadPersistedSession(params.sessionId);
+      if (!saved) throw RequestError.invalidParams({ sessionId: `找不到已保存会话: ${params.sessionId}` });
       const session = new Session(
         params.sessionId,
         params.cwd || saved.cwd,
@@ -180,6 +186,7 @@ export class SangxiaAgent implements Agent {
       session.messages = saved.messages;
       session.startedToolCalls = saved.startedToolCalls ?? new Set();
       this.#sessions.set(session.id, session);
+      if (previous) this.pruneProviders();
       await this.runSessionStart(session, "resume");
       // M2: a restored session has no systemPrompt() call, so session_start
       // context goes into the restored system message and is persisted with a
@@ -231,6 +238,7 @@ export class SangxiaAgent implements Agent {
       throw RequestError.invalidParams({ modelId: `未知模型: ${params.modelId}` });
     }
     session.modelId = params.modelId;
+    this.pruneProviders();
     await persistSession(session);
     logger.info(`session ${session.id} model=${session.modelId}`);
     await this.#conn.sessionUpdate({
@@ -292,6 +300,59 @@ export class SangxiaAgent implements Agent {
 
   private modelState(currentModelId: string): SessionModelState {
     return { currentModelId, availableModels: this.availableModels() };
+  }
+
+  /**
+   * SA-13: drop cached providers that no live session has selected. A turn
+   * already running keeps its own reference, so this never pulls a provider
+   * out from under it; switching back simply creates a fresh one.
+   */
+  private pruneProviders(): void {
+    const inUse = new Set([...this.#sessions.values()].map((session) => session.modelId));
+    for (const modelId of this.#providers.keys()) {
+      if (!inUse.has(modelId)) {
+        this.#providers.delete(modelId);
+        logger.debug(`provider cache: 释放未被任何会话使用的模型 ${modelId}`);
+      }
+    }
+  }
+
+  /** The live Session for an id, if any (diagnostics and tests). */
+  getSession(sessionId: string): Session | undefined {
+    return this.#sessions.get(sessionId);
+  }
+
+  /** Model ids with a cached provider (diagnostics and tests). */
+  cachedProviderModels(): string[] {
+    return [...this.#providers.keys()];
+  }
+
+  /**
+   * Remove a session from the live map and release what it holds (SA-12):
+   * abort its turn, wait (bounded) for that turn to finish writing, then close
+   * its MCP connections. The caller prunes providers once the replacement
+   * (if any) is registered, so a provider it reuses isn't recreated.
+   */
+  private async retireSession(session: Session, reason: string): Promise<void> {
+    if (this.#sessions.get(session.id) === session) this.#sessions.delete(session.id);
+    const running = session.promptInFlight;
+    session.abort?.abort();
+    if (running) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        session.turnSettled,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            logger.warn(`session ${session.id}: 等待旧 turn 结束超时（${RETIRE_TURN_TIMEOUT_MS}ms），继续释放`);
+            resolve();
+          }, RETIRE_TURN_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    await session.dispose();
+    logger.info(`session ${session.id} 已释放（${reason}）mcpConnections 已关闭 runningTurn=${running}`);
   }
 
   private providerFor(modelId: string): LLMProvider {
@@ -444,6 +505,10 @@ export class SangxiaAgent implements Agent {
       throw RequestError.invalidParams({ sessionId: "该会话已有 prompt 在运行中，请先取消或等待其结束" });
     }
     session.promptInFlight = true; // synchronous claim — no await between check and set
+    let settle: () => void = () => {};
+    session.turnSettled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
     const abort = new AbortController();
     session.abort = abort;
     try {
@@ -523,6 +588,7 @@ export class SangxiaAgent implements Agent {
     } finally {
       if (session.abort === abort) session.abort = null; // only clear our own reference
       session.promptInFlight = false;
+      settle();
     }
   }
 
@@ -690,6 +756,8 @@ export class SangxiaAgent implements Agent {
 
 /** `session_end` 的硬上限：超时放弃，绝不拖住进程退出。 */
 const SESSION_END_TIMEOUT_MS = 2000;
+/** How long a replacing `session/load` waits for the old session's aborted turn (SA-12). */
+const RETIRE_TURN_TIMEOUT_MS = 5000;
 
 /** 把 hook 执行失败集中记一条日志（hook 失败绝不影响 turn 收敛）。 */
 function logHookErrors(event: string, sessionId: string, outcome: HookOutcome): void {

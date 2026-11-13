@@ -28,6 +28,8 @@ export class OpenAIProvider implements LLMProvider {
   readonly #temperature: number;
   readonly #maxTokens: number | undefined;
   readonly #requestTimeoutMs: number;
+  /** `provider.extraBody` with the per-model one merged over it (SA-8). */
+  readonly #extraBody: Record<string, unknown>;
   readonly #firstChunkTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #totalTimeoutMs: number;
@@ -43,6 +45,7 @@ export class OpenAIProvider implements LLMProvider {
     this.#temperature = cfg.temperature;
     const modelConfig = cfg.models?.find((m) => m.modelId === cfg.model);
     this.#maxTokens = modelConfig?.maxTokens ?? cfg.maxTokens;
+    this.#extraBody = mergeBody(mergeBody({}, cfg.extraBody ?? {}), modelConfig?.extraBody ?? {});
     this.#requestTimeoutMs = cfg.requestTimeoutMs;
     this.#firstChunkTimeoutMs = modelConfig?.firstChunkTimeoutMs ?? cfg.firstChunkTimeoutMs;
     this.#idleTimeoutMs = modelConfig?.streamIdleTimeoutMs ?? cfg.streamIdleTimeoutMs;
@@ -162,6 +165,10 @@ export class OpenAIProvider implements LLMProvider {
         }));
         request.tool_choice = "auto";
       }
+      // SA-8: vendor parameters from config, merged last so they can tune
+      // temperature / max_tokens / stream_options; the schema already refused
+      // the fields the harness depends on.
+      mergeBody(request, this.#extraBody);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stream = (await this.#client.chat.completions.create(request as any, {
@@ -427,4 +434,26 @@ function toOpenAIMessages(messages: ChatMessage[], passBackReasoning: boolean): 
     }
     return { role: m.role, content: m.content ?? "" };
   });
+}
+
+/**
+ * Deep-merge `extra` into `target` in place (SA-8): nested plain objects are
+ * merged key by key, anything else (arrays, scalars, null) replaces. Values
+ * are copied, so the configured object is never aliased into a request.
+ */
+export function mergeBody(target: Record<string, unknown>, extra: Record<string, unknown>): Record<string, unknown> {
+  for (const [key, value] of Object.entries(extra)) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+    const current = target[key];
+    if (isPlainRecord(value)) {
+      target[key] = mergeBody(isPlainRecord(current) ? current : {}, value);
+    } else {
+      target[key] = Array.isArray(value) ? structuredClone(value) : value;
+    }
+  }
+  return target;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
