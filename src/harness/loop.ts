@@ -1,4 +1,4 @@
-import type { AgentSideConnection, PromptResponse } from "@agentclientprotocol/sdk";
+import type { AgentSideConnection, PromptResponse, ToolKind } from "@agentclientprotocol/sdk";
 import type { AgentConfig } from "../config.js";
 import { hookPayload, type HookRegistry } from "../hooks/index.js";
 import type { HookOutcome } from "../hooks/types.js";
@@ -429,7 +429,109 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
   return "max_turn_requests";
 }
 
+/**
+ * Why a tool call did not produce a normal result (SA-9). Every value is one
+ * exit of {@link executeToolCall}; all of them go through {@link failToolCall}.
+ */
+export type ToolFailureKind =
+  | "invalid_arguments"
+  | "unknown_tool"
+  | "hook_denied"
+  | "hook_invalid_input"
+  | "permission_denied"
+  | "cancelled"
+  | "timeout"
+  | "error";
+
+/** Per-call bookkeeping shared by the success path and {@link failToolCall}. */
+interface ToolCallState {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  /** How the call is shown to the client if it fails before it was announced. */
+  title: string;
+  kind: ToolKind;
+  rawInput?: Record<string, unknown>;
+  /** A `tool_call` (in_progress) update was sent; later updates are `tool_call_update`. */
+  announced: boolean;
+  /** `tool_started` was persisted, so a `tool_finished` must follow. */
+  dispatched: boolean;
+  /** The `tool` message for this call is in the history. Guards against a second one. */
+  answered: boolean;
+}
+
+/**
+ * The single exit for a failed tool call (SA-9). It keeps the invariant that
+ * every `tool_call` gets exactly one `tool` message, in this order:
+ *
+ *  1. tell the client — a failed `tool_call` if nothing was announced yet,
+ *     otherwise a failed `tool_call_update` — via `safeSessionUpdate`, so a
+ *     broken connection can't skip step 2;
+ *  2. push the tool result (`output` is what the model receives);
+ *  3. persist `tool_finished` if `tool_started` was written.
+ *
+ * `clientText` overrides what the client shows (cancel shows nothing, since
+ * the turn is going away); by default the client shows the same text as the
+ * model (D13).
+ */
+async function failToolCall(
+  opts: RunTurnOptions,
+  state: ToolCallState,
+  kind: ToolFailureKind,
+  output: string,
+  clientText: string | null = output,
+): Promise<void> {
+  const { conn, session } = opts;
+  if (state.answered) {
+    logger.warn(`tool_call ${session.id} id=${state.toolCallId} 已有结果，忽略重复的失败 (${kind})`);
+    return;
+  }
+  const content = clientText === null ? {} : { content: [{ type: "content" as const, content: { type: "text" as const, text: clientText } }] };
+  await safeSessionUpdate(conn, {
+    sessionId: session.id,
+    update: state.announced
+      ? { sessionUpdate: "tool_call_update", toolCallId: state.toolCallId, status: "failed", ...content }
+      : {
+          sessionUpdate: "tool_call",
+          toolCallId: state.toolCallId,
+          title: state.title,
+          kind: state.kind,
+          status: "failed",
+          ...(state.rawInput ? { rawInput: state.rawInput } : {}),
+          ...content,
+        },
+  });
+  state.announced = true;
+  state.answered = true;
+  await pushToolResult(session, state.toolCallId, output);
+  if (state.dispatched) await persistToolEvent(session.id, { t: "tool_finished", toolCallId: state.toolCallId, status: "failed" });
+  logger.info(`tool_call ${session.id} id=${state.toolCallId} name=${state.toolName} status=failed reason=${kind}`);
+}
+
 async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Promise<void> {
+  const state: ToolCallState = {
+    toolCallId: call.id,
+    toolName: call.name,
+    title: call.name,
+    kind: "other",
+    announced: false,
+    dispatched: false,
+    answered: false,
+  };
+  try {
+    await executeToolCallInner(call, opts, state);
+  } catch (e) {
+    // Last line of defence for invariant 2: anything that escapes the normal
+    // paths (a hook runner or the client update throwing in an unexpected
+    // place) must still answer the tool_call instead of sinking the turn.
+    logger.error(`tool_call ${opts.session.id} id=${call.id} 处理异常:`, e);
+    if (!state.answered) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await failToolCall(opts, state, "error", `Error: ${msg}`);
+    }
+  }
+}
+
+async function executeToolCallInner(call: ToolCallRequest, opts: RunTurnOptions, state: ToolCallState): Promise<void> {
   const { conn, session, tools, config, signal, hooks } = opts;
   const toolCallId = call.id;
   const tool = tools.get(call.name);
@@ -447,23 +549,20 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   } catch {
     argumentError = "工具参数不是合法 JSON";
   }
+  if (tool) state.kind = tool.kind;
   if (argumentError) {
     logger.warn(`工具 ${call.name} 参数校验失败`);
-    await safeSessionUpdate(conn, { sessionId: session.id, update: {
-      sessionUpdate: "tool_call", toolCallId, title: call.name, kind: tool?.kind ?? "other", status: "failed",
-    } });
-    await pushToolResult(session, toolCallId, `Error: ${argumentError}`);
+    await failToolCall(opts, state, "invalid_arguments", `Error: ${argumentError}`);
     return;
   }
 
+  state.rawInput = args;
   if (!tool) {
-    await safeSessionUpdate(conn, {
-      sessionId: session.id,
-      update: { sessionUpdate: "tool_call", toolCallId, title: `未知工具 ${call.name}`, kind: "other", status: "failed", rawInput: args },
-    });
-    await pushToolResult(session, toolCallId, `Error: 未知工具 ${call.name}`);
+    state.title = `未知工具 ${call.name}`;
+    await failToolCall(opts, state, "unknown_tool", `Error: 未知工具 ${call.name}`);
     return;
   }
+  state.title = safeTitle(tool, args);
 
   // pre_tool_use runs **before** the announce and before the permission prompt
   // (plan §3 / D1, review M1): the title, locations, `rawInput` shown to the
@@ -487,20 +586,8 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
     if (outcome.decision === "deny") {
       const message = hookDenyMessage(hookLabel(outcome, call.name), outcome);
       logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} 被 hook 拒绝: ${outcome.reason ?? ""}`);
-      await safeSessionUpdate(conn, {
-        sessionId: session.id,
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId,
-          title: safeTitle(tool, args),
-          kind: tool.kind,
-          status: "failed",
-          rawInput: args,
-          // D13: the client shows the same text the model receives.
-          content: [{ type: "content", content: { type: "text", text: `Error: ${message}` } }],
-        },
-      });
-      await pushToolResult(session, toolCallId, `Error: ${message}`);
+      // D13: the client shows the same text the model receives.
+      await failToolCall(opts, state, "hook_denied", `Error: ${message}`);
       return;
     }
     if (outcome.decision === "ask") {
@@ -513,21 +600,11 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       const rewrittenError = validateToolArguments(tool, outcome.updatedInput);
       if (rewrittenError) {
         logger.warn(`hook "${outcome.hookName ?? "?"}" 改写的 tool_input 非法 (${tool.name}): ${rewrittenError}`);
-        await safeSessionUpdate(conn, {
-          sessionId: session.id,
-          update: {
-            sessionUpdate: "tool_call",
-            toolCallId,
-            title: safeTitle(tool, args),
-            kind: tool.kind,
-            status: "failed",
-            rawInput: outcome.updatedInput,
-            content: [{ type: "content", content: { type: "text", text: `Error: hook 改写的参数不合法，未执行该工具: ${rewrittenError}` } }],
-          },
-        });
-        await pushToolResult(
-          session,
-          toolCallId,
+        state.rawInput = outcome.updatedInput;
+        await failToolCall(
+          opts,
+          state,
+          "hook_invalid_input",
           `Error: hook "${outcome.hookName ?? "?"}" 改写的参数不合法，未执行该工具: ${rewrittenError}`,
         );
         return;
@@ -539,6 +616,8 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
 
   const title = safeTitle(tool, args);
   const locations = safeLocations(tool, args, session);
+  state.title = title;
+  state.rawInput = args;
 
   // Announce the tool call (in progress). A failing update must never block
   // the tool result from reaching the history.
@@ -554,6 +633,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       ...(locations ? { locations } : {}),
     },
   });
+  state.announced = true;
 
   // Permission gate for mutating tools — plus the D14 `ask` branch, which
   // deliberately bypasses both conditions of the gate below:
@@ -590,8 +670,7 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       logger.error(`工具 ${tool.name} 权限确认失败，按拒绝处理: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (decision === "reject") {
-      await emitToolUpdate(conn, session, toolCallId, "failed", "用户拒绝了该操作");
-      await pushToolResult(session, toolCallId, "Error: 用户拒绝执行此工具");
+      await failToolCall(opts, state, "permission_denied", "Error: 用户拒绝执行此工具", "用户拒绝了该操作");
       return;
     }
   }
@@ -608,20 +687,16 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new ToolTimeoutError(effectiveTimeout)), effectiveTimeout);
   const toolSignal = linkSignals(signal, deadline.signal);
-  // H1②: evidence that this call really started. Written *before* tool.run —
-  // ordering matters, otherwise a crash during the tool would look identical to
-  // a crash before it and repair could only guess.
-  let dispatched = false;
-  const finishTool = async (toolCallId: string, status: "completed" | "failed") => {
-    if (dispatched) await persistToolEvent(session.id, { t: "tool_finished", toolCallId, status });
-  };
   try {
     signal.throwIfAborted();
     // Race the tool against its deadline: a tool that ignores the signal (or a
     // promise that simply never settles) must not pin the turn. The harness
     // stops waiting; it cannot force-kill an arbitrary tool, so a non-abortable
     // operation may keep running in the background.
-    dispatched = true;
+    // H1②: evidence that this call really started. Written *before* tool.run —
+    // ordering matters, otherwise a crash during the tool would look identical
+    // to a crash before it and repair could only guess.
+    state.dispatched = true;
     session.startedToolCalls.add(toolCallId);
     await persistToolEvent(session.id, { t: "tool_started", toolCallId, name: tool.name });
     const pending = tool.run(args, { conn, session, signal: toolSignal.signal, toolCallId });
@@ -661,14 +736,16 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       isError: Boolean(result.isError),
       elapsedMs,
     });
+    state.answered = true;
     await pushToolResult(session, toolCallId, finalOutput);
-    await finishTool(toolCallId, result.isError ? "failed" : "completed");
+    await persistToolEvent(session.id, { t: "tool_finished", toolCallId, status: result.isError ? "failed" : "completed" });
     logger.info(
       `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
         `status=${result.isError ? "failed" : "completed"} ` +
         `outputChars=${finalOutput.length} elapsedMs=${Date.now() - startedAt}`,
     );
   } catch (e) {
+    if (state.answered) throw e; // failed after the result was recorded; nothing left to answer
     // User cancellation wins over the deadline: the two must not be confused.
     if (signal.aborted) {
       // Still close the tool_call, or the assistant's tool_calls would be
@@ -676,41 +753,31 @@ async function executeToolCall(call: ToolCallRequest, opts: RunTurnOptions): Pro
       // SA-29: `dispatched` is true here unless `throwIfAborted` fired before
       // tool.run, so the side effect may already have happened.
       logger.info(`turn ${session.id} cancelled during tool ${tool.name}`);
-      await pushToolResult(
-        session,
-        toolCallId,
-        dispatched ? UNKNOWN_RESULT_CANCELLED : "Error: 工具调用未执行（turn 被取消）",
+      await failToolCall(
+        opts,
+        state,
+        "cancelled",
+        state.dispatched ? UNKNOWN_RESULT_CANCELLED : "Error: 工具调用未执行（turn 被取消）",
+        null,
       );
-      await finishTool(toolCallId, "failed");
       return;
     }
-    if (deadline.signal.aborted) {
-      const msg = `工具执行超时（${effectiveTimeout}ms）已终止；可缩小任务范围或显式设置 timeout 后重试`;
+    const timedOut = deadline.signal.aborted;
+    let message: string;
+    if (timedOut) {
+      message = `Error: 工具执行超时（${effectiveTimeout}ms）已终止；可缩小任务范围或显式设置 timeout 后重试`;
       logger.warn(`tool_call ${session.id} id=${toolCallId} name=${tool.name} timeoutMs=${effectiveTimeout}`);
-      const output = await applyPostToolUse(opts, tool, toolCallId, args, {
-        output: `Error: ${msg}`,
-        isError: true,
-        elapsedMs: Date.now() - startedAt,
-      });
-      await emitToolUpdate(conn, session, toolCallId, "failed", output);
-      await pushToolResult(session, toolCallId, output);
-      await finishTool(toolCallId, "failed");
-      return;
+    } else {
+      message = `Error: ${e instanceof Error ? e.message : String(e)}`;
+      logger.error(`工具 ${tool.name} 执行异常:`, e);
     }
-    const msg = e instanceof Error ? e.message : String(e);
-    logger.error(`工具 ${tool.name} 执行异常:`, e);
+    // Executed calls are audited by post_tool_use on failure too.
     const output = await applyPostToolUse(opts, tool, toolCallId, args, {
-      output: `Error: ${msg}`,
+      output: message,
       isError: true,
       elapsedMs: Date.now() - startedAt,
     });
-    await emitToolUpdate(conn, session, toolCallId, "failed", output);
-    await pushToolResult(session, toolCallId, output);
-    await finishTool(toolCallId, "failed");
-    logger.info(
-      `tool_call ${session.id} id=${toolCallId} name=${tool.name} ` +
-        `status=failed elapsedMs=${Date.now() - startedAt}`,
-    );
+    await failToolCall(opts, state, timedOut ? "timeout" : "error", output);
   } finally {
     clearTimeout(timer);
     toolSignal.dispose();
@@ -804,24 +871,6 @@ function linkSignals(a: AbortSignal, b: AbortSignal): { signal: AbortSignal; dis
 async function pushToolResult(session: Session, toolCallId: string, content: string): Promise<void> {
   session.messages.push({ role: "tool", tool_call_id: toolCallId, content });
   await persistSession(session);
-}
-
-async function emitToolUpdate(
-  conn: AgentSideConnection,
-  session: Session,
-  toolCallId: string,
-  status: "completed" | "failed",
-  text: string,
-): Promise<void> {
-  await safeSessionUpdate(conn, {
-    sessionId: session.id,
-    update: {
-      sessionUpdate: "tool_call_update",
-      toolCallId,
-      status,
-      content: [{ type: "content", content: { type: "text", text } }],
-    },
-  });
 }
 
 function truncate(s: string): string {

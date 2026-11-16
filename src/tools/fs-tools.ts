@@ -1,4 +1,6 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { glob as tinyglob } from "tinyglobby";
 import type { Session } from "../session.js";
@@ -6,6 +8,14 @@ import type { Tool, ToolContext } from "../harness/tool.js";
 import { canonicalPath, isWithin, pathPermissionScope } from "./scope.js";
 
 const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**"];
+
+/**
+ * SA-5: files above this size are never loaded whole. `read_file` streams
+ * them line by line (returning at most this many bytes), `grep` skips them.
+ * The harness truncates any tool output to 100K chars anyway, so reading more
+ * only costs memory.
+ */
+export const MAX_READ_BYTES = 1_000_000;
 
 /** Resolve a possibly-relative path against the session cwd (ACP needs absolute paths). */
 function abs(session: Session, p: string): string {
@@ -18,6 +28,7 @@ async function readText(
   path: string,
   line?: number,
   limit?: number,
+  opts: { capLarge?: boolean } = {},
 ): Promise<string> {
   if (ctx.session.clientCaps.readTextFile) {
     const res = await ctx.conn.readTextFile({
@@ -28,6 +39,12 @@ async function readText(
     });
     return res.content;
   }
+  // Only read_file opts in: edit_file needs the whole file, or it would write
+  // back a truncated copy.
+  if (opts.capLarge) {
+    const size = (await stat(path)).size;
+    if (size > MAX_READ_BYTES) return readLargeText(path, size, line, limit);
+  }
   let content = await readFile(path, "utf8");
   if (line != null || limit != null) {
     const lines = content.split("\n");
@@ -36,6 +53,50 @@ async function readText(
     content = lines.slice(start, end).join("\n");
   }
   return content;
+}
+
+/**
+ * Stream the requested window of a file too large to load whole (SA-5): skip
+ * to `line`, then collect up to `limit` lines but never more than
+ * {@link MAX_READ_BYTES}. A note tells the model how to read on.
+ */
+async function readLargeText(path: string, size: number, line?: number, limit?: number): Promise<string> {
+  const start = Math.max(1, line ?? 1);
+  const stream = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  const out: string[] = [];
+  let bytes = 0;
+  let lineNo = 0;
+  let capped = false;
+  try {
+    for await (const text of lines) {
+      lineNo++;
+      if (lineNo < start) continue;
+      if (limit != null && out.length >= limit) break;
+      const cost = Buffer.byteLength(text, "utf8") + 1;
+      if (bytes + cost > MAX_READ_BYTES && out.length > 0) {
+        capped = true;
+        break;
+      }
+      if (cost > MAX_READ_BYTES) {
+        // One giant line (minified bundle): return its head and stop.
+        out.push(text.slice(0, MAX_READ_BYTES / 4));
+        capped = true;
+        break;
+      }
+      out.push(text);
+      bytes += cost;
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+  if (!capped) return out.join("\n");
+  const last = start + out.length - 1;
+  return (
+    `${out.join("\n")}\n\n…（文件 ${size} 字节，超过 read_file 单次上限 ${MAX_READ_BYTES} 字节；` +
+    `只返回了第 ${start}-${last} 行。请用 line=${last + 1} 和 limit 分段读取，或先用 grep 定位）`
+  );
 }
 
 /** Write text, preferring the client's file system. */
@@ -51,7 +112,8 @@ async function writeText(ctx: ToolContext, path: string, content: string): Promi
 const readFileTool: Tool = {
   name: "read_file",
   description:
-    "读取一个文本文件的内容。可选按起始行(line, 1-based)和行数(limit)截取。路径可相对当前工作目录。",
+    "读取一个文本文件的内容。可选按起始行(line, 1-based)和行数(limit)截取。路径可相对当前工作目录。" +
+    `超过 ${MAX_READ_BYTES} 字节的文件单次最多返回约 ${MAX_READ_BYTES} 字节，需用 line/limit 分段读取。`,
   kind: "read",
   needsPermission: false,
   parameters: {
@@ -68,7 +130,7 @@ const readFileTool: Tool = {
   permissionScope: (a, s) => pathPermissionScope("read_file", s, abs(s, String(a.path))),
   run: async (a, ctx) => {
     const path = abs(ctx.session, String(a.path));
-    const content = await readText(ctx, path, a.line, a.limit);
+    const content = await readText(ctx, path, a.line, a.limit, { capLarge: true });
     return { output: content };
   },
 };
@@ -203,7 +265,7 @@ const globTool: Tool = {
 const grepTool: Tool = {
   name: "grep",
   description:
-    "在文件内容中按正则搜索，返回 path:line: 匹配行。可用 glob 限定搜索的文件(默认全部，包含以 . 开头的文件)。自动忽略 node_modules/.git/dist/.next。",
+    "在文件内容中按正则搜索，返回 path:line: 匹配行。可用 glob 限定搜索的文件(默认全部，包含以 . 开头的文件)。自动忽略 node_modules/.git/dist/.next，跳过超过 1MB 的文件。",
   kind: "search",
   needsPermission: false,
   parameters: {
@@ -242,11 +304,18 @@ const grepTool: Tool = {
     const workspace = await canonicalPath(ctx.session.cwd);
     const confined = isWithin(workspace, await canonicalPath(root));
     const results: string[] = [];
+    const skippedLarge: string[] = [];
     const MAX = 200;
     outer: for (const file of files.slice(0, 5000)) {
       if (confined && !isWithin(workspace, await canonicalPath(file))) continue;
       let text: string;
       try {
+        // SA-5: check the size before loading; huge files (bundles, dumps,
+        // lockfiles) would otherwise be read whole just to be scanned.
+        if ((await stat(file)).size > MAX_READ_BYTES) {
+          skippedLarge.push(relative(root, file));
+          continue;
+        }
         text = await readFile(file, "utf8");
       } catch {
         continue; // unreadable
@@ -262,8 +331,12 @@ const grepTool: Tool = {
       }
     }
 
-    if (results.length === 0) return { output: "(无匹配)" };
-    return { output: results.join("\n"), raw: { matches: results.length } };
+    const note = skippedLarge.length > 0
+      ? `\n（跳过 ${skippedLarge.length} 个超过 ${MAX_READ_BYTES} 字节的文件：${skippedLarge.slice(0, 5).join(", ")}` +
+        `${skippedLarge.length > 5 ? " …" : ""}；需要时用 read_file 的 line/limit 分段查看）`
+      : "";
+    if (results.length === 0) return { output: `(无匹配)${note}`, ...(note ? { raw: { skippedLarge: skippedLarge.length } } : {}) };
+    return { output: results.join("\n") + note, raw: { matches: results.length, skippedLarge: skippedLarge.length } };
   },
 };
 

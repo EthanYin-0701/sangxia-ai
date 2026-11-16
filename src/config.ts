@@ -26,6 +26,22 @@ import { logger } from "./logger.js";
  * out of the file and live in the environment instead.
  */
 
+/**
+ * Request-body fields `extraBody` may not set: the harness owns the model
+ * choice, the conversation, streaming and the tool list.
+ */
+export const RESERVED_BODY_KEYS = ["model", "messages", "stream", "tools", "functions"] as const;
+
+const extraBodySchema = z.record(z.unknown()).superRefine((body, ctx) => {
+  for (const key of Object.keys(body)) {
+    if ((RESERVED_BODY_KEYS as readonly string[]).includes(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `extraBody 不能覆盖由 Sangxia 管理的字段 ${key}` });
+    } else if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `extraBody 字段名不合法: ${key}` });
+    }
+  }
+});
+
 const providerSchema = z
   .object({
     type: z.enum(["openai", "mock"]).default("openai"),
@@ -50,6 +66,8 @@ const providerSchema = z
            * larger budget than a plain chat model.
            */
           maxTokens: z.number().int().positive().optional(),
+          /** Per-model request-body fields, deep-merged over `provider.extraBody` (SA-8). */
+          extraBody: extraBodySchema.optional(),
         }),
       )
       .min(1)
@@ -103,6 +121,14 @@ const providerSchema = z
      */
     passBackReasoning: z.enum(["all", "none"]).default("all"),
     extraHeaders: z.record(z.string()).optional(),
+    /**
+     * Extra top-level `/chat/completions` body fields (SA-8), deep-merged into
+     * every request: vendor parameters such as `reasoning_effort`, `top_p`,
+     * `thinking`, `seed`. Fields set here win over Sangxia's own values
+     * (`temperature`, `max_tokens`, `stream_options`, `tool_choice`); the
+     * fields the harness depends on ({@link RESERVED_BODY_KEYS}) are rejected.
+     */
+    extraBody: extraBodySchema.optional(),
   })
   .superRefine((cfg, ctx) => {
     if (cfg.type === "openai") {

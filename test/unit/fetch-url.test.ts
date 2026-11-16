@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import type { ToolContext } from "../../src/harness/tool.js";
 import { validateToolArguments } from "../../src/harness/validation.js";
-import { fetchUrlTool } from "../../src/tools/fetch-url.js";
+import { fetchPermissionScope, fetchUrlTool, isInternalAddress } from "../../src/tools/fetch-url.js";
 
 function listen(handler: RequestListener): Promise<{ server: Server; origin: string }> {
   return new Promise((resolve) => {
@@ -148,7 +148,7 @@ describe("fetch_url", () => {
   });
 
   it("scopes 'always allow' to the origin", async () => {
-    const scope = await fetchUrlTool.permissionScope!({ url: "https://Docs.Example.com:443/a?q=1" }, {} as never);
+    const scope = await fetchPermissionScope("https://Docs.Example.com:443/a?q=1", async () => ["93.184.216.34"]);
     assert.deepEqual(scope, {
       lookup: ["fetch_url:origin:https://docs.example.com"],
       remember: "fetch_url:origin:https://docs.example.com",
@@ -161,5 +161,64 @@ describe("fetch_url", () => {
 
   it("needs permission", () => {
     assert.equal(fetchUrlTool.needsPermission, true);
+  });
+});
+
+describe("fetch_url internal targets (SA-27)", () => {
+  const publicDns = async () => ["93.184.216.34"];
+
+  it("classifies loopback, private, link-local and mapped addresses as internal", () => {
+    for (const ip of [
+      "127.0.0.1", "127.8.9.10", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254",
+      "100.64.0.1", "0.0.0.0", "::1", "::", "fe80::1", "fd00:ec2::254", "fc00::1", "::ffff:127.0.0.1", "::ffff:7f00:1",
+      "::ffff:a9fe:a9fe", "[::1]",
+    ]) {
+      assert.equal(isInternalAddress(ip), true, ip);
+    }
+    for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700::1111", "::ffff:808:808"]) {
+      assert.equal(isInternalAddress(ip), false, ip);
+    }
+  });
+
+  it("forces a prompt that ignores remembered decisions for internal targets", async () => {
+    for (const url of [
+      "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+      "http://localhost:11434/",
+      "http://127.0.0.1:8080/admin",
+      "http://2130706433/", // WHATWG URL normalizes this to 127.0.0.1
+      "http://0x7f.1/",
+      "http://[::1]:3000/",
+      "http://[::ffff:127.0.0.1]/",
+      "http://10.0.0.5/",
+      "http://192.168.1.1/",
+      "http://0.0.0.0:5000/",
+      "http://metadata.google.internal/computeMetadata/v1/",
+      "http://printer.local/",
+      "http://app.localhost/",
+      "http://intranet/",
+    ]) {
+      const scope = await fetchPermissionScope(url, publicDns);
+      assert.ok(scope.forceAsk, url);
+      assert.match(scope.forceAsk!, /本机\/内网/, url);
+      assert.equal(scope.ignoreRemembered, true, url);
+    }
+  });
+
+  it("catches public names that resolve to an internal address", async () => {
+    const scope = await fetchPermissionScope("https://metadata.attacker.example/", async () => ["2606:4700::1", "169.254.169.254"]);
+    assert.match(scope.forceAsk ?? "", /解析到本机\/内网地址 169\.254\.169\.254/);
+    assert.equal(scope.ignoreRemembered, true);
+  });
+
+  it("leaves public targets on the normal per-origin scope, also when DNS fails", async () => {
+    assert.deepEqual(await fetchPermissionScope("https://docs.example.com/a", publicDns), {
+      lookup: ["fetch_url:origin:https://docs.example.com"],
+      remember: "fetch_url:origin:https://docs.example.com",
+      label: "https://docs.example.com",
+    });
+    const failing = await fetchPermissionScope("https://docs.example.com/a", async () => {
+      throw new Error("ENOTFOUND");
+    });
+    assert.equal(failing.forceAsk, undefined);
   });
 });

@@ -61,6 +61,13 @@ export class Session {
    */
   promptInFlight = false;
 
+  /**
+   * Settles once the running prompt turn (if any) has fully finished,
+   * including its last history writes. Lets a replacing `session/load` wait
+   * for the old turn instead of racing it on the same JSONL file (SA-12).
+   */
+  turnSettled: Promise<void> = Promise.resolve();
+
   /** Tools for this session = built-ins + `use_skill` + MCP tools. Populated in `newSession`. */
   tools: ToolRegistry = new ToolRegistry([]);
 
