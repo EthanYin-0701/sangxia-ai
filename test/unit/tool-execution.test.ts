@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../../src/acp/client-channel.js";
 import type { AgentConfig } from "../../src/config.js";
 import { runTurn } from "../../src/harness/loop.js";
 import { ToolRegistry, type Tool } from "../../src/harness/tool.js";
@@ -35,7 +35,7 @@ class OneCallProvider implements LLMProvider {
 }
 
 const config: AgentConfig = { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, permissionMode: "auto", systemPrompt: null };
-const conn = { sessionUpdate: async () => {}, requestPermission: async () => ({ outcome: { outcome: "cancelled" } }) } as unknown as AgentSideConnection;
+const conn = { sessionUpdate: async () => {}, requestPermission: async () => ({ outcome: { outcome: "cancelled" } }) } as unknown as ClientChannel;
 
 async function run(tool: Tool, args: Record<string, unknown>, controller = new AbortController()) {
   const session = new Session(`unit-exec-${Math.random().toString(36).slice(2)}`, dir, [], { readTextFile: false, writeTextFile: false, terminal: false }, "auto", "scripted");

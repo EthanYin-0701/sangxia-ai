@@ -1,4 +1,5 @@
-import type { AgentSideConnection, PromptResponse, ToolKind } from "@agentclientprotocol/sdk";
+import type { PromptResponse, SessionNotification, ToolKind } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../acp/client-channel.js";
 import type { AgentConfig } from "../config.js";
 import { hookPayload, type HookRegistry } from "../hooks/index.js";
 import type { HookOutcome } from "../hooks/types.js";
@@ -125,8 +126,8 @@ export function sanitizeHistory(
  * abort the tool execution — the tool result must still reach the history.
  */
 async function safeSessionUpdate(
-  conn: AgentSideConnection,
-  update: Parameters<AgentSideConnection["sessionUpdate"]>[0],
+  conn: ClientChannel,
+  update: SessionNotification,
 ): Promise<void> {
   try {
     await conn.sessionUpdate(update);
@@ -136,7 +137,7 @@ async function safeSessionUpdate(
 }
 
 export interface RunTurnOptions {
-  conn: AgentSideConnection;
+  conn: ClientChannel;
   session: Session;
   provider: LLMProvider;
   tools: ToolRegistry;

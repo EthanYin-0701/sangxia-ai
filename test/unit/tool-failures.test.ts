@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../../src/acp/client-channel.js";
 import type { AgentConfig } from "../../src/config.js";
 import type { HookRegistry } from "../../src/hooks/index.js";
 import { emptyOutcome, type HookOutcome } from "../../src/hooks/types.js";
@@ -81,7 +82,7 @@ async function run(s: Scenario) {
       permissionRequests++;
       return s.permission ? s.permission() : { outcome: { outcome: "selected", optionId: "reject_once" } };
     },
-  } as unknown as AgentSideConnection;
+  } as unknown as ClientChannel;
   const tool = s.tool ?? echoTool();
   const session = new Session(`unit-fail-${Math.random().toString(36).slice(2)}`, dir, [], { readTextFile: false, writeTextFile: false, terminal: false }, s.mode ?? "auto", "scripted");
   session.messages.push({ role: "system", content: "s" }, { role: "user", content: "u" });

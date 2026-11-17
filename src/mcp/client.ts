@@ -35,7 +35,9 @@ function sanitize(name: string): string {
  * transports), list its tools, and wrap each as a harness {@link Tool}.
  *
  * The stdio variant of `McpServer` has no `type` discriminant, so we narrow on
- * `"command" in server` first, then on `type` for the network transports.
+ * `"command" in server` first, then on `type` for the network transports. Any
+ * other `type` (newer ACP schemas add e.g. `acp`) is rejected explicitly rather
+ * than guessed as HTTP; `prepareSession` warns and skips that one server.
  */
 export async function connectMcpServer(server: McpServer, timeoutMs: number): Promise<McpConnection> {
   let transport: Transport;
@@ -50,10 +52,13 @@ export async function connectMcpServer(server: McpServer, timeoutMs: number): Pr
     transport = new SSEClientTransport(new URL(server.url), {
       requestInit: { headers: toRecord(server.headers) },
     });
-  } else {
+  } else if (server.type === "http") {
     transport = new StreamableHTTPClientTransport(new URL(server.url), {
       requestInit: { headers: toRecord(server.headers) },
     });
+  } else {
+    const type = (server as { type?: unknown }).type;
+    throw new Error(`不支持的 MCP 传输类型: ${JSON.stringify(type)}（仅支持 stdio / http / sse）`);
   }
 
   const client = new Client({ name: "sangxia", version: "0.1.0" });

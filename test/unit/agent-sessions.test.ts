@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { PROTOCOL_VERSION, type AgentSideConnection } from "@agentclientprotocol/sdk";
+import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../../src/acp/client-channel.js";
 import { SangxiaAgent } from "../../src/agent.js";
 import type { Config } from "../../src/config.js";
 import type { Session } from "../../src/session.js";
@@ -33,7 +34,7 @@ const config = {
 const conn = {
   sessionUpdate: async () => {},
   requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-} as unknown as AgentSideConnection;
+} as unknown as ClientChannel;
 
 async function newAgent() {
   const agent = new SangxiaAgent(conn, config);

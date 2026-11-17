@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { AgentSideConnection, RequestPermissionRequest, SessionNotification } from "@agentclientprotocol/sdk";
+import type { RequestPermissionRequest, SessionNotification } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../../src/acp/client-channel.js";
 import type { AgentConfig } from "../../src/config.js";
 import { runTurn } from "../../src/harness/loop.js";
 import { ToolRegistry } from "../../src/harness/tool.js";
@@ -52,7 +53,7 @@ describe("ask_user inside a turn", () => {
         permissions.push(req);
         return { outcome: { outcome: "selected", optionId: "choice_0" } };
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as ClientChannel;
     const session = new Session("unit-ask-user", dir, [], { readTextFile: false, writeTextFile: false, terminal: false }, "confirm", "scripted");
     session.messages.push({ role: "system", content: "s" }, { role: "user", content: "u" });
     const provider = new ScriptedProvider();
