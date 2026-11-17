@@ -5,6 +5,7 @@
 //
 // Run: npm run build && node scripts/smoke-openai.mjs
 
+import { isolatedEnv } from "./lib/acp-process.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createFakeOpenAI } from "./lib/fake-openai.mjs";
@@ -42,7 +43,7 @@ writeFileSync(
 
 const child = spawn("node", [join(root, "dist/index.js"), "--config", cfgPath], {
   stdio: ["pipe", "pipe", "inherit"],
-  env: { ...process.env, HOME: home },
+  env: { ...isolatedEnv(), HOME: home },
 });
 
 const failTimer = setTimeout(() => {

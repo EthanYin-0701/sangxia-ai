@@ -1,4 +1,5 @@
 // Exercise the actual stdio wire so SDK schema stripping cannot hide regressions.
+import { isolatedEnv } from './lib/acp-process.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ function configure(list = models, permissionMode = 'auto') {
   writeFileSync(config, JSON.stringify({ provider: { type: 'mock', model: 'fast', ...(list ? { models: list } : {}) }, agent: { permissionMode }, skills: { enabled: false } }));
 }
 function start() {
-  const child = spawn(process.execPath, [root, '--config', config], { env: { ...process.env, HOME: join(dir, 'home'), SANGXIA_LOG_FILE: '', SANGXIA_LOG_DIR: '' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [root, '--config', config], { env: { ...isolatedEnv(), HOME: join(dir, 'home'), SANGXIA_LOG_FILE: '', SANGXIA_LOG_DIR: '' }, stdio: ['pipe', 'pipe', 'pipe'] });
   let id = 0;
   const pending = new Map();
   const updates = [];

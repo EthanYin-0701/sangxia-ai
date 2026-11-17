@@ -75,6 +75,17 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 解析顺序：`--config <path>` → `$SANGXIA_CONFIG` → `./sangxia.config.json` → `~/.config/sangxia/config.json`。
 字符串值支持 `${ENV_VAR}` 环境变量插值，密钥不必落盘。示例文件含 JSONC 注释，仅供参考；运行配置必须是严格 JSON，建议用 `sangxia setup` 生成。
 
+**用户级目录（下文写作 `~/.config/sangxia`）**：全局配置文件、会话目录、全局技能目录与用户级 `AGENTS.md` 都放在同一个目录，按平台解析：
+
+| 优先级 | 来源 | 路径 |
+| --- | --- | --- |
+| 1 | `$SANGXIA_HOME`（一次性整体迁移配置/会话/技能/记忆） | `$SANGXIA_HOME` |
+| 2 | Windows | `%APPDATA%\sangxia`（如 `C:\Users\<user>\AppData\Roaming\sangxia`） |
+| 2 | Linux / macOS 且设置了绝对路径的 `$XDG_CONFIG_HOME` | `$XDG_CONFIG_HOME/sangxia` |
+| 3 | 其余情况 | `~/.config/sangxia` |
+
+向后兼容：第 2 级目录还不存在、而旧的 `~/.config/sangxia`（Windows 上即 `C:\Users\<user>\.config\sangxia`）已存在时，继续使用旧目录，并在日志里提示一次迁移；把旧目录整体移到新位置即可完成迁移。`SANGXIA_SESSION_DIR` / `SANGXIA_CONFIG` 仍可分别覆盖会话目录与配置文件。
+
 **配置分层（D16）**：`~/.config/sangxia/config.json` 是**全局 base**，永远先加载，上面这份主配置作为 **overlay** 叠加（深合并，overlay 胜；只有 `hooks.events.*` 是**数组追加**，base 先、overlay 后）。于是：
 
 - 项目里只需要写"和全局不一样的东西"（例如只写 `provider`），全局的 `hooks` 照样生效；
@@ -256,6 +267,15 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 
 > 若不通过 Zed 提供的能力（`fs`/`terminal`），agent 会自动回退到本地 Node 的 `fs` 与 `child_process`。
 
+### 终端认证（Terminal setup）的已知限制
+
+没有可用凭据时，`initialize` 仍会成功并宣告两个 `type: "terminal"` 认证方法（`deepseek-setup` / `terminal-setup`，参数分别是 `setup --preset deepseek` 与 `setup`）。按 ACP 规范，客户端应当用**与 ACP 连接相同的程序和启动参数**再追加这些 `args`，例如 `node /绝对路径/sangxia-ai/dist/index.js setup`。
+
+- **JetBrains AIR 会丢掉启动参数**：IntelliJ IDEA 2026.3 在 macOS 上实测，`~/.jetbrains/acp.json` 配成 `command=node`、`args=[<repo>/dist/index.js]` 时，实际执行的是 `node setup`，结果报 `Cannot find module '.../setup'`，认证失败。这是客户端的缺陷，agent 侧无法在不破坏规范客户端的前提下绕过。兜底做法：
+  - 在 IDE 终端手动执行 setup（只写全局配置，与 cwd 无关）：macOS / Linux 用 `node <repo>/dist/index.js setup`，Windows 用 `node <repo>\dist\index.js setup`。如果是通过 `npx` 注册的 agent，可以直接运行 `npx sangxia-ai setup`；
+  - 仅限 macOS / Linux：把 AIR 的 acp.json 中的 `command` 指向一层 wrapper（`#!/bin/sh` + `exec node <repo>/dist/index.js "$@"`），`args` 留空。Windows 上不要用 `.cmd` / `.bat` 转发，因为 ACP 规范明确不建议对会重新解析参数的启动目标提供终端认证。
+- **认证方法无条件宣告**：规范要求只在客户端声明 `clientCapabilities.auth.terminal === true` 时才宣告 `terminal` 方法，但固定依赖的 `@agentclientprotocol/sdk@0.14.1` 的 `ClientCapabilities` 没有 `auth` 字段，校验时会把它剥掉，agent 无从判断。在 SDK 升级之前，请以 `-32000 Authentication required` 错误消息里的终端命令作为兜底。
+
 ## 能力总览
 
 | 能力 | 内容 | 备注 |
@@ -336,6 +356,7 @@ description: 一句话说明何时用它（会进 system prompt 清单）
 ```
 
 - **发现目录**：默认 `<cwd>/skills` 与 `~/.config/sangxia/skills`（同名时项目优先，即项目技能盖过全局同名技能）；也可以用 `config.skills.dirs` 显式指定目录列表（相对路径按会话 cwd 解析）——注意 `dirs` **非空即替换**默认列表，那时全局技能目录不会自动参与，需要自己把它一并列进去。
+- **技能目录**：`use_skill` 返回的第一行是 `技能目录: <该技能的绝对目录>`，`SKILL.md` 里引用随技能附带的脚本时写成 `<技能目录>/scripts/...`，不要在正文里用 shell 循环猜路径（Windows 上 `bash` 工具实际跑的是 PowerShell）。
 - **开关**：`config.skills.enabled`。
 
 ## Hook（生命周期钩子）

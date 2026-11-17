@@ -42,6 +42,8 @@ logger.configure({ dir: logDir, level: "info" });
 //   - HOME：分层加载（D16）会把 `~/.config/sangxia/config.json` 当 base，不能读开发机真实配置；
 //   - SANGXIA_SESSION_DIR：否则测试会话会写进用户真实的 `~/.config/sangxia/sessions`。
 process.env.HOME = mkdtempSync(join(tmpdir(), "sangxia-tui-home-"));
+// 这些变量会把 config home 移出假 HOME（src/config-home.ts），一并清掉才算隔离。
+for (const key of ["SANGXIA_HOME", "XDG_CONFIG_HOME", "APPDATA"]) delete process.env[key];
 process.env.SANGXIA_SESSION_DIR = join(workdir, "sessions");
 
 let passed = 0;

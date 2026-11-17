@@ -18,7 +18,7 @@
 
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 const USAGE = `deepseek-usage — DeepSeek 余额 / 本地 token 用量
@@ -115,6 +115,23 @@ function interpolate(value) {
   return String(value).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_all, name) => process.env[name] ?? "");
 }
 
+/**
+ * Sangxia 的用户级目录，与 src/config-home.ts 同一规则（本脚本零依赖，故复制一份）：
+ * $SANGXIA_HOME → Windows %APPDATA%\sangxia / 其他平台 $XDG_CONFIG_HOME/sangxia → ~/.config/sangxia；
+ * 新位置不存在而旧的 ~/.config/sangxia 存在时沿用旧位置。
+ */
+function sangxiaHome() {
+  if (process.env.SANGXIA_HOME) return resolve(process.env.SANGXIA_HOME);
+  const legacy = join(homedir(), ".config", "sangxia");
+  let preferred = legacy;
+  if (process.platform === "win32") {
+    if (process.env.APPDATA) preferred = join(process.env.APPDATA, "sangxia");
+  } else if (process.env.XDG_CONFIG_HOME && isAbsolute(process.env.XDG_CONFIG_HOME)) {
+    preferred = join(process.env.XDG_CONFIG_HOME, "sangxia");
+  }
+  return preferred !== legacy && !existsSync(preferred) && existsSync(legacy) ? legacy : preferred;
+}
+
 function firstExisting(paths) {
   return paths.find((p) => p && existsSync(p));
 }
@@ -123,7 +140,7 @@ function loadConfig(explicitPath) {
   const path =
     explicitPath ??
     process.env.SANGXIA_CONFIG ??
-    firstExisting([resolve("sangxia.config.json"), join(homedir(), ".config", "sangxia", "config.json")]);
+    firstExisting([resolve("sangxia.config.json"), join(sangxiaHome(), "config.json")]);
   if (!path) return { path: undefined, data: {} };
   if (!existsSync(path)) {
     if (explicitPath) fail(`配置文件不存在: ${path}`);
@@ -313,7 +330,7 @@ function collectLogFiles(opts, cfg) {
   const envFile = process.env.SANGXIA_LOG_FILE;
   if (envFile && existsSync(envFile)) files.push(envFile);
 
-  const defaultDir = join(homedir(), ".config", "sangxia", "logs");
+  const defaultDir = join(sangxiaHome(), "logs");
   if (files.length === 0 && dirs.length === 0 && existsSync(defaultDir)) dirs.push(defaultDir);
 
   for (const dir of dirs) {
@@ -452,17 +469,6 @@ function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function mergeBucket(target, from) {
-  target.requests += from.requests;
-  target.withUsage += from.withUsage;
-  target.prompt += from.prompt;
-  target.completion += from.completion;
-  target.reasoning += from.reasoning;
-  target.total += from.total;
-  target.cacheHit += from.cacheHit;
-  target.cacheMiss += from.cacheMiss;
-}
-
 async function cmdUsage(opts) {
   const cfg = loadConfig(opts.config);
   const { files, source, notes } = collectLogFiles(opts, cfg);
@@ -577,14 +583,9 @@ async function scanLogFile(file, opts, state) {
         state.withUsage++;
         addUsage(bucket, usage);
         addUsage(modelBucket, usage);
-        mergeBucket(state.total, {
-          requests: 1,
-          withUsage: 1,
-          prompt: num(usage.prompt_tokens),
-          completion: num(usage.completion_tokens),
-          reasoning: num(usage.reasoning_tokens),
-          total: usageTotal(usage),
-        });
+        // 合计走同一个 addUsage：手抄字段子集曾漏掉 cacheHit/cacheMiss（0 + undefined = NaN），
+        // 导致 totals 与 byDate/byModel 自相矛盾。
+        addUsage(state.total, usage);
       } else {
         state.noUsage++;
         bucket.requests++;
