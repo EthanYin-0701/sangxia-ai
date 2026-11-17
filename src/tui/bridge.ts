@@ -27,6 +27,7 @@ import {
   type RequestPermissionResponse,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
+import { withHandlerErrorLogging } from "../acp/handler-logging.js";
 import { SangxiaAgent } from "../agent.js";
 import type { Config } from "../config.js";
 
@@ -69,7 +70,7 @@ export class TuiBridge {
     this.#agentSide = new AgentSideConnection(
       (conn) => {
         this.#agent = new SangxiaAgent(conn, config);
-        return this.#agent;
+        return withHandlerErrorLogging(this.#agent);
       },
       agentStream,
     );

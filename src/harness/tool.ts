@@ -1,10 +1,11 @@
-import type { AgentSideConnection, ToolKind } from "@agentclientprotocol/sdk";
+import type { ToolKind } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../acp/client-channel.js";
 import type { ToolSchema } from "../llm/types.js";
 import type { Session } from "../session.js";
 
 /** Runtime context handed to a tool on each invocation. */
 export interface ToolContext {
-  conn: AgentSideConnection;
+  conn: ClientChannel;
   session: Session;
   signal: AbortSignal;
   /**

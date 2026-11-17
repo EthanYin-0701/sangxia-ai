@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import { TuiBridge } from "../dist/tui/bridge.js";
 import { ChatModel } from "../dist/tui/model.js";
+import { modelStateFromConfigOptions } from "../dist/tui/session-models.js";
 import { parseCommand, completeLine, helpLines } from "../dist/tui/commands.js";
 import { makeTheme } from "../dist/tui/theme.js";
 import { stringWidth, truncateWidth } from "../dist/tui/wcwidth.js";
@@ -367,6 +368,9 @@ const main = async () => {
 
   const session = await bridge.newSession(workdir);
   ok("newSession returns models/modes", !!session.sessionId && session.models?.availableModels.length === 2 && session.modes?.currentModeId === "confirm");
+  // SA-65: the TUI reads its model list from configOptions, not the legacy `models`.
+  const tuiModels = modelStateFromConfigOptions(session.configOptions);
+  ok("TUI model state from configOptions", tuiModels?.availableModels.length === 2 && tuiModels.currentModelId === session.models?.currentModelId);
 
   // First prompt: triggers the project-init permission (3 options) in the temp dir.
   const res = await bridge.prompt(session.sessionId, "创建 hello.txt 并确认内容");

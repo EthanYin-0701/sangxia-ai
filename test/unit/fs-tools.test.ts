@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../../src/acp/client-channel.js";
 import type { Tool, ToolContext } from "../../src/harness/tool.js";
 import { Session } from "../../src/session.js";
 import { fsTools, MAX_READ_BYTES } from "../../src/tools/fs-tools.js";
@@ -15,7 +15,7 @@ let ctx: ToolContext;
 before(() => {
   dir = mkdtempSync(join(tmpdir(), "sangxia-fs-"));
   const session = new Session("unit-fs", dir, [], { readTextFile: false, writeTextFile: false, terminal: false }, "auto", "m");
-  ctx = { conn: {} as AgentSideConnection, session, signal: new AbortController().signal, toolCallId: "t" };
+  ctx = { conn: {} as ClientChannel, session, signal: new AbortController().signal, toolCallId: "t" };
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
 

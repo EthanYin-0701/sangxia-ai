@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Readable, Writable } from "node:stream";
 import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
+import { withHandlerErrorLogging } from "./acp/handler-logging.js";
 import { SangxiaAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
@@ -63,7 +64,7 @@ Run sangxia setup --help for provider configuration options.
   let agent: SangxiaAgent | undefined;
   new AgentSideConnection((conn) => {
     agent = new SangxiaAgent(conn, config, configError);
-    return agent;
+    return withHandlerErrorLogging(agent);
   }, stream);
 
   logger.info(config

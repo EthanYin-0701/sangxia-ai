@@ -1,4 +1,4 @@
-import type { AgentSideConnection } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "../acp/client-channel.js";
 import { logger } from "../logger.js";
 import type { PermissionDecision, Session } from "../session.js";
 import type { PermissionScope, Tool } from "./tool.js";
@@ -51,7 +51,7 @@ export function rememberedDecision(session: Session, scope: PermissionScope): Pe
  * map (unless they chose `allow_once` / `reject_once`).
  */
 export async function ensurePermission(
-  conn: AgentSideConnection,
+  conn: ClientChannel,
   session: Session,
   tool: Tool,
   toolCallId: string,

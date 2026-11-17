@@ -6,7 +6,6 @@ import {
   type AuthMethod,
   type AuthenticateRequest,
   type AuthenticateResponse,
-  type AgentSideConnection,
   type CancelNotification,
   type InitializeRequest,
   type InitializeResponse,
@@ -26,6 +25,7 @@ import {
   type SessionModelState,
   type SetSessionModelRequest,
 } from "@agentclientprotocol/sdk";
+import type { ClientChannel } from "./acp/client-channel.js";
 import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
 import { runTurn } from "./harness/loop.js";
@@ -80,7 +80,7 @@ const AUTH_METHODS: RegistryAuthMethod[] = [{
  * prompt turn to the harness ({@link runTurn}).
  */
 export class SangxiaAgent implements Agent {
-  readonly #conn: AgentSideConnection;
+  readonly #conn: ClientChannel;
   readonly #loadedConfig: Config | null;
   readonly #configError: string | null;
   readonly #providers = new Map<string, LLMProvider>();
@@ -88,7 +88,7 @@ export class SangxiaAgent implements Agent {
   readonly #sessions = new Map<string, Session>();
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
 
-  constructor(conn: AgentSideConnection, config: Config | null, configError: string | null = null) {
+  constructor(conn: ClientChannel, config: Config | null, configError: string | null = null) {
     this.#conn = conn;
     this.#loadedConfig = config;
     this.#configError = configError;
@@ -255,6 +255,11 @@ export class SangxiaAgent implements Agent {
   async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
     if (!this.#sessions.has(params.sessionId)) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
+    }
+    // Only string values are defined for the select options we expose; newer
+    // SDKs widen `value` to `string | boolean`, so keep this a -32602 (SA-65).
+    if (typeof params.value !== "string") {
+      throw RequestError.invalidParams({ value: `配置值必须是字符串: ${JSON.stringify(params.value)}` });
     }
     if (params.configId === "model") {
       await this.setSessionModel({ sessionId: params.sessionId, modelId: params.value });
@@ -714,13 +719,19 @@ export class SangxiaAgent implements Agent {
    *
    * 保留旧客户端的 `_sangxia.set_model` 以及未加前缀的内部调用。
    * SDK 0.14 将完整方法名传入扩展入口；两种写法共用标准切换逻辑。
+   * `session/set_model` 在 0.14 由 SDK 自己分派到 `unstable_setSessionModel`，
+   * 但 1.9+ 的 legacy 层会把它原样落到这里（SA-65），提前接住。
+   *
+   * 这里拿到的 params 未经 SDK 的 zod 校验（可能是 null / 数组 / 缺字段），
+   * 必须先窄校验，否则读 `params.sessionId` 会把 -32602 变成 -32603。
    */
   async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (method === "sangxia.set_model" || method === "_sangxia.set_model") {
-      await this.setSessionModel(params as unknown as SetSessionModelRequest);
+    if (method === "sangxia.set_model" || method === "_sangxia.set_model" || method === "session/set_model") {
+      await this.setSessionModel(setModelParams(params));
       return {};
     }
-    throw RequestError.methodNotFound(`_${method}`);
+    // The SDK passes the full wire name (`_foo`), so report it as-is.
+    throw RequestError.methodNotFound(method);
   }
 
   /**
@@ -752,6 +763,17 @@ export class SangxiaAgent implements Agent {
       logger.warn(`sessionUpdate 发送失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+}
+
+/** Narrow the raw (unvalidated) params of an extension set_model request. */
+function setModelParams(params: unknown): SetSessionModelRequest {
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
+    throw RequestError.invalidParams({ params: "需要 { sessionId, modelId } 对象" });
+  }
+  const { sessionId, modelId } = params as Record<string, unknown>;
+  if (typeof sessionId !== "string") throw RequestError.invalidParams({ sessionId: "必须是字符串" });
+  if (typeof modelId !== "string") throw RequestError.invalidParams({ modelId: "必须是字符串" });
+  return { sessionId, modelId };
 }
 
 /** `session_end` 的硬上限：超时放弃，绝不拖住进程退出。 */

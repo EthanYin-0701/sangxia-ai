@@ -19,9 +19,9 @@ import { KeyReader, type Key } from "./keys.js";
 import { QUIT_ARM_MS, QuitGate } from "./quit-gate.js";
 import { makeTheme } from "./theme.js";
 import { renderFrame, invalidateFrame, type DialogFrame, type Frame } from "./ui.js";
+import { modelStateFromConfigOptions, type TuiModelInfo } from "./session-models.js";
 import { stringWidth } from "./wcwidth.js";
 import type {
-  ModelInfo,
   PermissionOption,
   RequestPermissionRequest,
   SessionNotification,
@@ -96,7 +96,7 @@ export async function runTui(argv: string[]): Promise<number> {
     sessionId: "" as string | null,
     cwd: process.cwd(),
     currentModelId: "",
-    availableModels: [] as ModelInfo[],
+    availableModels: [] as TuiModelInfo[],
     modeId: "confirm" as "confirm" | "auto",
     pendingModelSwitch: null as string | null,
     busy: false,
@@ -256,8 +256,9 @@ export async function runTui(argv: string[]): Promise<number> {
     const session = await bridge.newSession(state.cwd);
     state.sessionId = session.sessionId;
     state.modeId = (session.modes?.currentModeId as "confirm" | "auto") ?? "confirm";
-    state.currentModelId = session.models?.currentModelId ?? config.provider.model;
-    state.availableModels = session.models?.availableModels ?? [
+    const models = modelStateFromConfigOptions(session.configOptions);
+    state.currentModelId = models?.currentModelId ?? config.provider.model;
+    state.availableModels = models?.availableModels ?? [
       { modelId: config.provider.model, name: config.provider.model },
     ];
     model.addNotice(`已连接到本地 agent（${config.provider.type} / ${state.currentModelId}）。输入 /help 查看命令。`);
@@ -336,8 +337,9 @@ export async function runTui(argv: string[]): Promise<number> {
             const session = await bridge.newSession(state.cwd);
             state.sessionId = session.sessionId;
             state.modeId = (session.modes?.currentModeId as "confirm" | "auto") ?? "confirm";
-            state.currentModelId = session.models?.currentModelId ?? config.provider.model;
-            state.availableModels = session.models?.availableModels ?? state.availableModels;
+            const models = modelStateFromConfigOptions(session.configOptions);
+            state.currentModelId = models?.currentModelId ?? config.provider.model;
+            state.availableModels = models?.availableModels ?? state.availableModels;
             state.pendingModelSwitch = null;
             model.resetForNewSession();
             model.addNotice("已开始新会话（旧会话已持久化到 ~/.config/sangxia/sessions/）");
