@@ -13,6 +13,16 @@ export const registryInitialize = {
   },
 };
 
+/**
+ * `process.env` minus the vars that relocate Sangxia's config home (see
+ * `src/config-home.ts`), so a child spawned with a fake HOME is really isolated
+ * from the host's config / sessions / skills.
+ */
+export function isolatedEnv() {
+  const { SANGXIA_HOME: _home, XDG_CONFIG_HOME: _xdg, APPDATA: _appData, ...rest } = process.env;
+  return rest;
+}
+
 /** Raw JSON-RPC also verifies stdout contains only protocol messages. */
 export function startAgent({ cwd, env, args = [] }) {
   const child = spawn(process.execPath, [entry, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });

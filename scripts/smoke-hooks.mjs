@@ -1,4 +1,4 @@
-import { startAgent, registryInitialize } from "./lib/acp-process.mjs";
+import { isolatedEnv, startAgent, registryInitialize } from "./lib/acp-process.mjs";
 // Verifies the hook (生命周期钩子) layer end-to-end through the real ACP + harness
 // path, following plan/hooks_support.md §11:
 //   1  hooks.enabled:false ⇒ zero hook processes spawned
@@ -176,7 +176,7 @@ async function withAgent(name, opts, drive) {
       stdio: ["pipe", "pipe", "pipe"],
       cwd,
       env: {
-        ...process.env,
+        ...isolatedEnv(),
         HOME: home,
         SANGXIA_LOG_DIR: join(dir, "logs"),
         SANGXIA_LOG_FILE: "",

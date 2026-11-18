@@ -8,6 +8,7 @@
 //
 // Run: npm run build && node scripts/smoke-mcp.mjs
 
+import { isolatedEnv } from "./lib/acp-process.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -44,7 +45,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------- Part 1: ACP integration ----------------
 const child = spawn("node", [join(root, "dist/index.js"), "--config", cfgPath], {
   stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, HOME: home },
+  env: { ...isolatedEnv(), HOME: home },
 });
 let stderr = "";
 child.stderr.on("data", (d) => {

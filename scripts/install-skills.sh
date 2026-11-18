@@ -23,7 +23,16 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR="$REPO_ROOT/skills"
-TARGET_DIR="${SANGXIA_SKILLS_DIR:-$HOME/.config/sangxia/skills}"
+# 与 src/config-home.ts 同一规则：$SANGXIA_HOME → $XDG_CONFIG_HOME/sangxia（绝对路径才算）
+# → ~/.config/sangxia；新位置不存在而旧的 ~/.config/sangxia 存在时沿用旧位置。
+sangxia_home() {
+  if [ -n "${SANGXIA_HOME:-}" ]; then echo "${SANGXIA_HOME}"; return; fi
+  local legacy="$HOME/.config/sangxia" preferred="$HOME/.config/sangxia"
+  case "${XDG_CONFIG_HOME:-}" in /*) preferred="${XDG_CONFIG_HOME}/sangxia" ;; esac
+  if [ "$preferred" != "$legacy" ] && [ ! -d "$preferred" ] && [ -d "$legacy" ]; then preferred="$legacy"; fi
+  echo "$preferred"
+}
+TARGET_DIR="${SANGXIA_SKILLS_DIR:-$(sangxia_home)/skills}"
 DRY_RUN=0
 FORCE=0
 ONLY=""
