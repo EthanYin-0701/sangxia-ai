@@ -94,15 +94,14 @@ function createPrompter() {
   return {
     async ask(label: string, fallback = "", secret = false): Promise<string> {
       if (closed) throw new Error("配置已取消");
-      process.stderr.write(`${label}${fallback ? ` [${fallback}]` : ""}: `);
-      muted = secret;
       try {
         const answer = await new Promise<string>((resolve, reject) => {
           const cleanup = () => { rl.off("close", cancel); rl.off("SIGINT", cancel); };
           const cancel = () => { cleanup(); reject(new Error("配置已取消")); };
           rl.once("close", cancel);
           rl.once("SIGINT", cancel);
-          rl.question("", (value) => { cleanup(); resolve(value); });
+          rl.question(`${label}${fallback ? ` [${fallback}]` : ""}: `, (value) => { cleanup(); resolve(value); });
+          muted = secret;
         });
         return answer.trim() || fallback;
       } finally {
