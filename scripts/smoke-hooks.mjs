@@ -849,7 +849,7 @@ await withAgent(
     prepareCwd: (cwd, dir) => {
       mkdirSync(join(cwd, ".sangxia", "hooks"), { recursive: true });
       writeFileSync(
-        join(cwd, ".sangxia", "hooks", "start.sh"),
+        join(cwd, ".sangxia", "hooks", "startup.sh"),
         `#!/bin/sh\ncat > /dev/null\necho ran > "${dir}/project-start-sentinel"\n`,
         { mode: 0o755 },
       );
@@ -863,7 +863,7 @@ await withAgent(
         join(cwd, ".sangxia", "hooks.json"),
         JSON.stringify({
           events: {
-            session_start: [{ name: "repo-start", command: ".sangxia/hooks/start.sh" }],
+            session_start: [{ name: "repo-start", command: ".sangxia/hooks/startup.sh" }],
             pre_tool_use: [{ name: "repo-guard", matcher: "^bash$", command: ".sangxia/hooks/guard.sh", onError: "allow" }],
           },
         }),

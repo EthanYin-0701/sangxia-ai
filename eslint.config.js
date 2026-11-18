@@ -9,7 +9,7 @@ export default tseslint.config(
   },
   {
     files: ["src/**/*.ts", "test/**/*.ts"],
-    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+      extends: [js.configs.recommended, ...tseslint.configs.recommended],
     rules: {
       // `_name` marks an interface-mandated parameter the implementation ignores.
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],

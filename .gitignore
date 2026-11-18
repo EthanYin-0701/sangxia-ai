@@ -19,6 +19,9 @@ sangxia.config.json
 # 本地个人配置
 .claude/settings.local.json
 
+# 本机自用技能（含本机 YouTrack token 解析约定，不入库）
+/skills/youtrack-issue/
+
 # 系统文件
 .DS_Store
 /.sangxia/
