@@ -1,0 +1,86 @@
+name: Release
+
+# 发布流程：打 tag 并 push → 跑完整校验 → publish 到 npm。
+#
+#   npm version patch -m "chore: release %s"   # 改 package.json 并自动打 vX.Y.Z tag
+#   git push --follow-tags                     # 或 git push origin v0.6.19
+#
+# 约束与行为：
+#   - tag 必须是 `v*`，且去掉前导 v 后与 package.json 的 version 完全一致，否则不发布；
+#   - 正式版（vX.Y.Z）走 `latest`，预发布版（vX.Y.Z-rc.1）走 `next`；
+#   - 校验复用 ci.yml（同一份 typecheck/lint/test/check:docs/build/smoke，Node 22 + 24），
+#     避免两份流水线漂移；tag push 不会单独触发 ci.yml，所以每个 tag 只跑一遍；
+#   - 认证优先 npm Trusted Publishing（OIDC，无需 secret，需在 npmjs.com 上为该包配好
+#     trusted publisher: GitHub 仓库 EthanYin-0701/sangxia-ai + 工作流 release.yml）；
+#     若仓库 secret 里配了 NPM_TOKEN（granular "Automation" token，绕过 2FA），则改用它。
+
+on:
+  push:
+    tags: ['v*']
+
+# 同一 tag 重复推送 / 手动重跑时不要并发 publish（npm 会因版本已存在直接失败）。
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # 复用 CI 的校验 job（ci.yml 声明了 workflow_call）。
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance + Trusted Publishing 的 OIDC token
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing 需要 npm >= 11.5.1，而 Node 22 自带的是 npm 10。
+      - name: Upgrade npm
+        run: npm install -g npm@latest && npm -v
+
+      - name: Verify tag matches package.json
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          echo "tag=$GITHUB_REF_NAME package.json=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 package.json 的 version $version 不一致，先 npm version 再打 tag"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # 发布内容的可见化：先构建，再让 tarball 清单（含 dist/）打进日志。
+      - run: npm run build
+      - name: npm pack --dry-run
+        run: npm pack --dry-run
+
+      # NPM_TOKEN 是 OIDC 之外的兜底路径；不配 secret 时这一步跳过，走 Trusted Publishing。
+      - name: Use NPM_TOKEN when provided
+        if: env.NPM_TOKEN != ''
+        run: echo "NODE_AUTH_TOKEN=$NPM_TOKEN" >> "$GITHUB_ENV"
+
+      # prepublishOnly（typecheck + build）由 npm publish 自动执行，dist/ 一定是当前源码构建的。
+      - name: npm publish
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public
+          fi

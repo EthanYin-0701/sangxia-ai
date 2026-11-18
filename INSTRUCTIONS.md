@@ -574,6 +574,20 @@ npm run smoke:permissions # 细粒度权限记忆 + 工作区边界 + 高危命�
 npm run smoke:auth   # 未配置或凭据无效时的 ACP 握手、认证拒绝、环境变量启动与 CLI
 ```
 
+### 发布到 npm（维护者）
+
+发布只由 **tag push** 触发，见 `.github/workflows/release.yml`：推 `v*` tag → 复用 CI 的校验（typecheck / lint / test / check:docs / build / smoke，Node 22 + 24）→ `npm publish`。
+
+```bash
+npm version patch -m "chore: release %s"   # 改版本号并打 vX.Y.Z tag
+git push --follow-tags                     # 推送提交与 tag，CI 通过后自动发布
+```
+
+- tag 去掉前导 `v` 后必须等于 `package.json` 的 `version`，否则流水线在 publish 前失败；
+- 正式版进 `latest`，预发布版（如 `v0.7.0-rc.1`）进 `next`；
+- 认证优先 **npm Trusted Publishing**（OIDC，无需 secret；需在 npmjs.com 的包设置里添加 trusted publisher：GitHub 仓库 + 工作流文件名 `release.yml`）。也可在仓库 secret 里配置 `NPM_TOKEN`（granular **Automation** token，能绕过 2FA）作为兜底；
+- 发布内容带 provenance 证明；`prepublishOnly` 会先跑 typecheck + build，`dist/` 一定是当前源码的产物。
+
 ## 目前未覆盖（预留扩展点）
 
 - Anthropic 原生 provider（接口已就绪）。
