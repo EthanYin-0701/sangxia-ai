@@ -480,11 +480,11 @@ exit 0
 
 ```
 入口 A  stdio (JSON-RPC / ACP)     ← Zed 等 ACP 客户端驱动
-入口 B  sangxia tui (src/tui/)      ← 界面自带 ClientSideConnection，
+入口 B  sangxia tui (src/tui/)      ← 界面自带 SDK client() 应用，
         │                            经内存流 PassThrough 与下方 agent 配对；
         │                            两个入口走完全相同的协议路径
         ▼
-   AgentSideConnection            ← @zed-industries/agent-client-protocol
+   acp/agent-app.ts               ← @agentclientprotocol/sdk 2.x 的 agent() 路由薄层
         │
    SangxiaAgent (src/agent.ts)     ← initialize / newSession / prompt / cancel
         │                            newSession: 连接 MCP + 发现技能 → 组装本会话工具集

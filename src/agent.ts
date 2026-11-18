@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import {
-  type Agent,
   type AuthMethod,
   type AuthenticateRequest,
   type AuthenticateResponse,
@@ -22,8 +21,6 @@ import {
   type SessionConfigOption,
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
-  type SessionModelState,
-  type SetSessionModelRequest,
 } from "@agentclientprotocol/sdk";
 import type { ClientChannel } from "./acp/client-channel.js";
 import { promptToText } from "./acp/content.js";
@@ -76,10 +73,32 @@ const AUTH_METHODS: RegistryAuthMethod[] = [{
 }];
 
 /**
- * The ACP agent surface. It owns sessions and delegates the actual work of a
- * prompt turn to the harness ({@link runTurn}).
+ * Legacy model-selector shapes. SDK 2.x dropped `models` / `session/set_model`
+ * from the stable schema, but AIR's model dropdown still reads `models` from
+ * session/new|load and sends `session/set_model`, so we keep emitting and
+ * accepting them (outbound responses are not schema-checked) alongside the
+ * standard `configOptions` (SA-65).
  */
-export class SangxiaAgent implements Agent {
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string | null;
+}
+export interface SessionModelState {
+  currentModelId: string;
+  availableModels: ModelInfo[];
+}
+export interface SetSessionModelRequest {
+  sessionId: string;
+  modelId: string;
+}
+
+/**
+ * The ACP agent surface. It owns sessions and delegates the actual work of a
+ * prompt turn to the harness ({@link runTurn}). Transport-free: the wire
+ * routing lives in `acp/agent-app.ts`.
+ */
+export class SangxiaAgent {
   readonly #conn: ClientChannel;
   readonly #loadedConfig: Config | null;
   readonly #configError: string | null;
@@ -141,7 +160,7 @@ export class SangxiaAgent implements Agent {
     return response;
   }
 
-  async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
+  async newSession(params: NewSessionRequest): Promise<NewSessionResponse & { models: SessionModelState }> {
     const config = this.#requireConfig();
     const id = randomUUID();
     return logger.withSession(id, async () => {
@@ -163,7 +182,7 @@ export class SangxiaAgent implements Agent {
     });
   }
 
-  async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+  async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse & { models: SessionModelState }> {
     const config = this.#requireConfig();
     return logger.withSession(params.sessionId, async () => {
       // SA-12: loading an id that is already live (editor reconnect, double
@@ -245,11 +264,6 @@ export class SangxiaAgent implements Agent {
       sessionId: session.id,
       update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
-  }
-
-  // SDK 0.14 exposes the legacy wire method through this renamed handler.
-  async unstable_setSessionModel(params: SetSessionModelRequest): Promise<void> {
-    await this.setSessionModel(params);
   }
 
   async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
@@ -495,7 +509,14 @@ export class SangxiaAgent implements Agent {
     logHookErrors("session_end", session.id, outcome);
   }
 
-  async prompt(params: PromptRequest): Promise<PromptResponse> {
+  /**
+   * `signal` is the request's own cancellation (SDK `ctx.signal`: aborted by
+   * `$/cancel_request` or a dropped connection). It is folded into the turn's
+   * abort controller, so it stops the LLM stream and tools exactly like
+   * `session/cancel` does and the turn still converges to `cancelled` with
+   * every tool call answered and the history persisted.
+   */
+  async prompt(params: PromptRequest, signal?: AbortSignal): Promise<PromptResponse> {
     const config = this.#requireConfig();
     const session = this.#sessions.get(params.sessionId);
     if (!session) {
@@ -516,6 +537,12 @@ export class SangxiaAgent implements Agent {
     });
     const abort = new AbortController();
     session.abort = abort;
+    const onRequestAbort = () => {
+      logger.withSession(params.sessionId, () => logger.info(`prompt ${params.sessionId}: 请求被取消（$/cancel_request 或连接断开）`));
+      abort.abort();
+    };
+    if (signal?.aborted) onRequestAbort();
+    else signal?.addEventListener("abort", onRequestAbort, { once: true });
     try {
       // B3: one abort controller for the whole prompt turn — including the
       // project-initialization sub-turn. Previously that sub-turn used a fresh
@@ -591,6 +618,7 @@ export class SangxiaAgent implements Agent {
         return { stopReason };
       });
     } finally {
+      signal?.removeEventListener("abort", onRequestAbort);
       if (session.abort === abort) session.abort = null; // only clear our own reference
       session.promptInFlight = false;
       settle();
@@ -715,29 +743,28 @@ export class SangxiaAgent implements Agent {
   }
 
   /**
-   * Extension request handler. ACP 扩展点（客户端发 `_<method>` 请求）。
+   * Extension request handler. ACP 扩展点（客户端发 `_<method>` 请求），
+   * 由 `acp/agent-app.ts` 的 `"*"` 兜底路由传入完整的 wire 方法名。
    *
-   * 保留旧客户端的 `_sangxia.set_model` 以及未加前缀的内部调用。
-   * SDK 0.14 将完整方法名传入扩展入口；两种写法共用标准切换逻辑。
-   * `session/set_model` 在 0.14 由 SDK 自己分派到 `unstable_setSessionModel`，
-   * 但 1.9+ 的 legacy 层会把它原样落到这里（SA-65），提前接住。
+   * 保留旧客户端的 `_sangxia.set_model` 以及未加前缀的内部调用，与标准切换
+   * 逻辑共用。`session/set_model` 在 agent-app 中显式注册，不走这里。
    *
    * 这里拿到的 params 未经 SDK 的 zod 校验（可能是 null / 数组 / 缺字段），
    * 必须先窄校验，否则读 `params.sessionId` 会把 -32602 变成 -32603。
    */
-  async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (method === "sangxia.set_model" || method === "_sangxia.set_model" || method === "session/set_model") {
+  async extMethod(method: string, params: unknown): Promise<Record<string, unknown>> {
+    if (method === "sangxia.set_model" || method === "_sangxia.set_model") {
       await this.setSessionModel(setModelParams(params));
       return {};
     }
-    // The SDK passes the full wire name (`_foo`), so report it as-is.
+    // The router passes the full wire name (`_foo`), so report it as-is.
     throw RequestError.methodNotFound(method);
   }
 
   /**
    * Fire `session_end` (best-effort, ≤2s total) and close every session's MCP
-   * connections. ACP 0.4.5 has no session-end event, so this runs once on
-   * process exit (see index.ts) rather than per session.
+   * connections. Sangxia does not implement `session/close` yet, so this runs
+   * once on process exit (see index.ts) rather than per session.
    */
   async shutdown(): Promise<void> {
     const sessions = [...this.#sessions.values()];
@@ -765,8 +792,8 @@ export class SangxiaAgent implements Agent {
   }
 }
 
-/** Narrow the raw (unvalidated) params of an extension set_model request. */
-function setModelParams(params: unknown): SetSessionModelRequest {
+/** Narrow the raw (unvalidated) params of a legacy / extension set_model request. */
+export function setModelParams(params: unknown): SetSessionModelRequest {
   if (typeof params !== "object" || params === null || Array.isArray(params)) {
     throw RequestError.invalidParams({ params: "需要 { sessionId, modelId } 对象" });
   }

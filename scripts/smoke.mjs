@@ -12,10 +12,10 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
-  ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
 } from "@agentclientprotocol/sdk";
+import { connectClient } from "./lib/acp-client.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workdir = mkdtempSync(join(tmpdir(), "sangxia-smoke-"));
@@ -72,7 +72,7 @@ const client = {
   },
 };
 
-const conn = new ClientSideConnection(() => client, stream);
+const conn = connectClient(() => client, stream);
 
 try {
   const init = await conn.initialize({

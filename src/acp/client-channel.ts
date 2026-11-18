@@ -1,6 +1,6 @@
 import type {
   CreateTerminalRequest,
-  KillTerminalCommandResponse,
+  KillTerminalResponse,
   ReadTextFileRequest,
   ReadTextFileResponse,
   ReleaseTerminalResponse,
@@ -18,7 +18,7 @@ export interface ClientTerminal {
   readonly id: string;
   currentOutput(): Promise<TerminalOutputResponse>;
   waitForExit(): Promise<WaitForTerminalExitResponse>;
-  kill(): Promise<KillTerminalCommandResponse>;
+  kill(): Promise<KillTerminalResponse>;
   release(): Promise<ReleaseTerminalResponse | void>;
 }
 
@@ -26,8 +26,8 @@ export interface ClientTerminal {
  * Agent → client requests the harness, tools and agent actually make (SA-65).
  *
  * Only plain ACP schema types appear here, never the SDK's connection classes,
- * so the transport (today `AgentSideConnection`, which satisfies this
- * structurally) can change without touching the harness, tools or unit tests.
+ * so the transport (SDK 2.x `AgentContext`, adapted in `agent-app.ts`) can
+ * change without touching the harness, tools or unit tests.
  */
 export interface ClientChannel {
   sessionUpdate(params: SessionNotification): Promise<void>;

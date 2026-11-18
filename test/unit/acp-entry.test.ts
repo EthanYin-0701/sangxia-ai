@@ -3,16 +3,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { type Agent, type McpServer, PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk";
+import { type McpServer, PROTOCOL_VERSION, RequestError } from "@agentclientprotocol/sdk";
 import type { ClientChannel } from "../../src/acp/client-channel.js";
-import { withHandlerErrorLogging } from "../../src/acp/handler-logging.js";
 import { SangxiaAgent } from "../../src/agent.js";
 import type { Config } from "../../src/config.js";
 import { logger } from "../../src/logger.js";
 import { connectMcpServer } from "../../src/mcp/client.js";
 import { modelStateFromConfigOptions } from "../../src/tui/session-models.js";
 
-// SA-65 Step A: ACP entry-point hardening on SDK 0.14.1 (no protocol change).
+// SA-65 Step A: ACP entry-point hardening (wire-level routing and logging: agent-app.test.ts).
 
 let dir: string;
 let logFile: string;
@@ -74,7 +73,7 @@ describe("extMethod set_model (SA-65 #4)", () => {
   ] as const) {
     it(`answers -32602 for ${label}`, async () => {
       const { agent } = await newSession();
-      await rejectsWithCode(agent.extMethod("_sangxia.set_model", params as unknown as Record<string, unknown>), -32602);
+      await rejectsWithCode(agent.extMethod("_sangxia.set_model", params), -32602);
     });
   }
 
@@ -82,13 +81,6 @@ describe("extMethod set_model (SA-65 #4)", () => {
     const { agent, sessionId } = await newSession();
     assert.deepEqual(await agent.extMethod("_sangxia.set_model", { sessionId, modelId: "model-b" }), {});
     assert.equal(agent.getSession(sessionId)!.modelId, "model-b");
-  });
-
-  it("accepts `session/set_model` (where SDK 1.9+ routes it) and keeps -32602 for unknown models", async () => {
-    const { agent, sessionId } = await newSession();
-    await agent.extMethod("session/set_model", { sessionId, modelId: "model-b" });
-    assert.equal(agent.getSession(sessionId)!.modelId, "model-b");
-    await rejectsWithCode(agent.extMethod("session/set_model", { sessionId, modelId: "nope" }), -32602);
   });
 
   it("reports unknown methods with their wire name, not a doubled `_` prefix", async () => {
@@ -120,61 +112,6 @@ describe("MCP transport types (SA-65 #3)", () => {
     const { agent, sessionId } = await newSession([unknownTransport]);
     assert.equal(agent.getSession(sessionId)!.mcpConnections.length, 0);
     assert.match(readFileSync(logFile, "utf8"), /MCP 'ide' 连接失败: 不支持的 MCP 传输类型/);
-  });
-});
-
-describe("withHandlerErrorLogging (SA-65 #5)", () => {
-  it("logs an unexpected handler failure with its stack, then rethrows the same error", async () => {
-    const boom = new TypeError("boom");
-    const fake: Agent = {
-      initialize: async () => ({ protocolVersion: PROTOCOL_VERSION }),
-      newSession: async () => { throw boom; },
-      authenticate: async () => ({}),
-      prompt: async () => ({ stopReason: "end_turn" as const }),
-      cancel: async () => {},
-    };
-    const wrapped = withHandlerErrorLogging(fake);
-    await assert.rejects(wrapped.newSession({ cwd: dir, mcpServers: [] }), (e) => e === boom);
-    const log = readFileSync(logFile, "utf8");
-    assert.match(log, /\[ERROR\] ACP newSession 处理失败: TypeError: boom/);
-    assert.match(log, /at /, "stack trace is logged");
-  });
-
-  it("logs RequestErrors at warn level, routed to the request's session", async () => {
-    const { agent, sessionId } = await newSession();
-    const wrapped = withHandlerErrorLogging(agent);
-    writeFileSync(logFile, "");
-    await rejectsWithCode(wrapped.unstable_setSessionModel!({ sessionId, modelId: "nope" }), -32602);
-    const lines = readFileSync(logFile, "utf8").split("\n").filter((l) => l.includes("ACP "));
-    assert.equal(lines.length, 1, `exactly one entry-level log line, got:\n${lines.join("\n")}`);
-    assert.match(lines[0]!, new RegExp(`\\[WARN\\] \\[session=${sessionId}\\] ACP unstable_setSessionModel 返回错误 -32602`));
-  });
-
-  it("logs an internal setSessionConfigOption → setSessionModel failure only once", async () => {
-    const { agent, sessionId } = await newSession();
-    const wrapped = withHandlerErrorLogging(agent);
-    writeFileSync(logFile, "");
-    await rejectsWithCode(wrapped.setSessionConfigOption!({ sessionId, configId: "model", value: "nope" }), -32602);
-    const lines = readFileSync(logFile, "utf8").split("\n").filter((l) => l.includes("ACP "));
-    assert.equal(lines.length, 1);
-    assert.match(lines[0]!, /ACP setSessionConfigOption 返回错误 -32602/);
-  });
-
-  it("names the ext method in the log line", async () => {
-    const { agent } = await newSession();
-    await assert.rejects(withHandlerErrorLogging(agent).extMethod!("_custom.thing", {}));
-    assert.match(readFileSync(logFile, "utf8"), /ACP extMethod\(_custom\.thing\) 返回错误 -32601/);
-  });
-
-  it("passes results through and keeps non-handler methods working on the real instance", async () => {
-    const { agent, sessionId } = await newSession();
-    const wrapped = withHandlerErrorLogging(agent);
-    const res = await wrapped.setSessionConfigOption!({ sessionId, configId: "model", value: "model-b" });
-    assert.equal(res.configOptions.find((o) => o.id === "model")!.currentValue, "model-b");
-    // `getSession` / `shutdown` touch `#private` fields; through a bare proxy they would throw.
-    assert.equal(wrapped.getSession(sessionId)!.modelId, "model-b");
-    await wrapped.shutdown();
-    assert.equal(readFileSync(logFile, "utf8").includes("ACP "), false);
   });
 });
 

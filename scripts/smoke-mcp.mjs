@@ -15,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { connectClient } from "./lib/acp-client.mjs";
 
 import { connectMcpServer } from "../dist/mcp/client.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "../dist/skills/index.js";
@@ -64,7 +65,7 @@ const client = {
     return { outcome: { outcome: "selected", optionId: "allow_once" } };
   },
 };
-const conn = new ClientSideConnection(() => client, stream);
+const conn = connectClient(() => client, stream);
 
 try {
   const init = await conn.initialize({

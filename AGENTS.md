@@ -7,7 +7,7 @@ Sangxia（sangxia-ai）是 Node.js/TypeScript 写的 ACP（Agent Client Protocol
 ## 技术栈
 
 - TypeScript 5.6+、Node.js >= 20、ESM + `NodeNext`（相对导入带 `.js`），`strict` + `noUncheckedIndexedAccess`。
-- 依赖：`@agentclientprotocol/sdk@0.14.1`（固定版本）、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`。
+- 依赖：`@agentclientprotocol/sdk@2.7.0`（固定版本；只在 `src/acp/agent-app.ts` 用 `agent()` 路由，2.x 强制先 `initialize`）、`@modelcontextprotocol/sdk`、`openai`、`zod@4`、`tinyglobby`。
 - `src/config.ts` 用 `zod/v3`（依赖 v3 嵌套 `.default({})` 语义）；改用 v4 API 前须迁移 `.prefault({})` / `z.record(k, v)` 并对比解析结果。
 - 单元测试：`test/unit/*.test.ts`（`node:test`，经 tsx 直接导入 `src/`，无需 build）；冒烟：`scripts/smoke-*.mjs`（作为 ACP 客户端跑 `dist/`，先 build）。CI 见 `.github/workflows/ci.yml`。
 
@@ -58,4 +58,4 @@ scripts/           冒烟测试、check-docs.mjs、install-skills.sh；skills/ �
 
 ## 预留扩展点（勿破坏接口）
 
-Anthropic 原生 provider、图片/音频输入、子代理、按会话回收 MCP 连接（ACP SDK 0.14.1 仍无会话结束事件）、上下文压缩（`harness/context.ts` 已有估算，暂无溢出证据故未启用）。
+Anthropic 原生 provider、图片/音频输入、子代理、按会话回收 MCP 连接（尚未实现 `session/close`）、上下文压缩（`harness/context.ts` 已有估算，暂无溢出证据故未启用）。
