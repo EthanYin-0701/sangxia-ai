@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Readable, Writable } from "node:stream";
-import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
-import { withHandlerErrorLogging } from "./acp/handler-logging.js";
+import { ndJsonStream } from "@agentclientprotocol/sdk";
+import { serveAgent } from "./acp/agent-app.js";
 import { SangxiaAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
@@ -60,12 +60,8 @@ Run sangxia setup --help for provider configuration options.
   const output = Writable.toWeb(process.stdout) as unknown as WritableStream<Uint8Array>;
   const stream = ndJsonStream(output, input);
 
-  // The connection begins reading immediately and drives the Agent handlers.
-  let agent: SangxiaAgent | undefined;
-  new AgentSideConnection((conn) => {
-    agent = new SangxiaAgent(conn, config, configError);
-    return withHandlerErrorLogging(agent);
-  }, stream);
+  // The connection begins reading immediately and drives the agent's handlers.
+  const { agent } = serveAgent(stream, (client) => new SangxiaAgent(client, config, configError));
 
   logger.info(config
     ? `Sangxia ACP agent 就绪 · provider=${config.provider.type} · model=${config.provider.model}`
@@ -78,7 +74,7 @@ Run sangxia setup --help for provider configuration options.
     process.once("SIGINT", () => resolve());
     process.once("SIGTERM", () => resolve());
   });
-  await agent?.shutdown();
+  await agent.shutdown();
   process.stdin.destroy();
   logger.info("连接关闭，退出。");
 }

@@ -4,7 +4,8 @@ import { createServer } from "node:http";
 import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import { connectClient } from "./lib/acp-client.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -782,7 +783,7 @@ try {
       child.stderr.on("data", (d) => { stderr += d; });
       const exit = new Promise((resolve) => child.once("exit", resolve));
       const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
-      const conn = new ClientSideConnection(() => ({
+      const conn = connectClient(() => ({
         async sessionUpdate() {},
         async requestPermission() { return { outcome: { outcome: "cancelled" } }; },
       }), ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)));
@@ -835,7 +836,7 @@ try {
     });
     const exit = new Promise((r) => child.once("exit", r));
     const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
-    const conn = new ClientSideConnection(() => ({
+    const conn = connectClient(() => ({
       async sessionUpdate() {},
       async requestPermission() { return { outcome: { outcome: "selected", optionId: "allow_once" } }; },
     }), ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)));

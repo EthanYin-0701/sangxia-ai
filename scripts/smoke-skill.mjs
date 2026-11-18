@@ -16,10 +16,10 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
-  ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
 } from "@agentclientprotocol/sdk";
+import { connectClient } from "./lib/acp-client.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const workdir = mkdtempSync(join(tmpdir(), "sangxia-skill-"));
@@ -154,7 +154,7 @@ const client = {
 };
 
 try {
-  const conn = new ClientSideConnection(() => client, stream);
+  const conn = connectClient(() => client, stream);
   await conn.initialize({
     protocolVersion: PROTOCOL_VERSION,
     clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },

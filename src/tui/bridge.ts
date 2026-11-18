@@ -1,10 +1,14 @@
 /**
  * In-process ACP bridge (bridge.ts).
  *
- * Pairs a `SangxiaAgent` (agent side) with a `ClientSideConnection` (client
- * side) over two PassThrough byte streams, exactly like the stdio ACP server
+ * Pairs a `SangxiaAgent` (agent side, via `serveAgent`) with an SDK `client()`
+ * app over two PassThrough byte streams, exactly like the stdio ACP server
  * in src/index.ts but entirely in memory — so the TUI drives the *same*
  * agent/protocol path Zed uses (§2 of plan/tui_support.md).
+ *
+ * Keep the NDJSON byte streams: SDK 2.x can also `connect()` two apps directly,
+ * but that passes JS objects through unserialized and skips the frame-size
+ * limit, i.e. it would no longer be the editor's protocol path (SA-65).
  *
  * Wiring direction (design §2 C6): A = client→agent, B = agent→client.
  *   agent side:  ndJsonStream(write→B, read←A)
@@ -15,11 +19,11 @@
 import { PassThrough } from "node:stream";
 import { Readable, Writable } from "node:stream";
 import {
-  AgentSideConnection,
-  ClientSideConnection,
   PROTOCOL_VERSION,
+  client,
+  methods,
   ndJsonStream,
-  type Client,
+  type ClientContext,
   type InitializeResponse,
   type NewSessionResponse,
   type PromptResponse,
@@ -27,7 +31,7 @@ import {
   type RequestPermissionResponse,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
-import { withHandlerErrorLogging } from "../acp/handler-logging.js";
+import { serveAgent } from "../acp/agent-app.js";
 import { SangxiaAgent } from "../agent.js";
 import type { Config } from "../config.js";
 
@@ -50,10 +54,8 @@ export interface AgentHandle {
 
 export class TuiBridge {
   readonly #events: BridgeEvents;
-  readonly #clientConn: ClientSideConnection;
-  // eslint-disable-next-line no-unused-private-class-members -- keeps the agent side of the in-process connection referenced
-  readonly #agentSide: AgentSideConnection;
-  #agent: SangxiaAgent | null = null;
+  readonly #clientConn: ClientContext;
+  readonly #agent: SangxiaAgent;
   /** Settles the currently-pending permission request (if any). */
   #pendingPermission: ((r: RequestPermissionResponse) => void) | null = null;
   #permissionRequest: RequestPermissionRequest | null = null;
@@ -67,39 +69,31 @@ export class TuiBridge {
     const agentStream = ndJsonStream(Writable.toWeb(b), Readable.toWeb(a));
     const clientStream = ndJsonStream(Writable.toWeb(a), Readable.toWeb(b));
 
-    this.#agentSide = new AgentSideConnection(
-      (conn) => {
-        this.#agent = new SangxiaAgent(conn, config);
-        return withHandlerErrorLogging(this.#agent);
-      },
-      agentStream,
-    );
-
-    const client = this.#makeClient();
-    this.#clientConn = new ClientSideConnection(() => client, clientStream);
+    this.#agent = serveAgent(agentStream, (channel) => new SangxiaAgent(channel, config)).agent;
+    this.#clientConn = client({ name: "sangxia-tui" })
+      .onNotification(methods.client.session.update, ({ params }) => this.#onSessionUpdate(params))
+      .onRequest(methods.client.session.requestPermission, ({ params }) => this.#onPermissionRequest(params))
+      .connect(clientStream).agent;
   }
 
-  #makeClient(): Client {
-    return {
-      sessionUpdate: async (params: SessionNotification): Promise<void> => {
-        this.#events.onSessionUpdate(params);
-      },
-      requestPermission: async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
-        return new Promise<RequestPermissionResponse>((resolve) => {
-          this.#pendingPermission = resolve;
-          this.#permissionRequest = params;
-          this.#events.onPermissionRequest(params, (r) => {
-            this.#pendingPermission = null;
-            this.#permissionRequest = null;
-            resolve(r);
-          });
-        });
-      },
-    };
+  #onSessionUpdate(params: SessionNotification): void {
+    this.#events.onSessionUpdate(params);
+  }
+
+  #onPermissionRequest(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    return new Promise<RequestPermissionResponse>((resolve) => {
+      this.#pendingPermission = resolve;
+      this.#permissionRequest = params;
+      this.#events.onPermissionRequest(params, (r) => {
+        this.#pendingPermission = null;
+        this.#permissionRequest = null;
+        resolve(r);
+      });
+    });
   }
 
   get agent(): AgentHandle {
-    return this.#agent ?? { shutdown: async () => {} };
+    return this.#agent;
   }
 
   get pendingPermissionRequest(): RequestPermissionRequest | null {
@@ -133,7 +127,7 @@ export class TuiBridge {
   }
 
   async initialize(): Promise<InitializeResponse> {
-    return this.#clientConn.initialize({
+    return this.#clientConn.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       // TUI has no file/terminal capability to offer the agent: fs tools and
       // bash use the in-process Node fallbacks (design §3 B2). Bash output is
@@ -144,23 +138,23 @@ export class TuiBridge {
   }
 
   async newSession(cwd: string): Promise<NewSessionResponse> {
-    return this.#clientConn.newSession({ cwd, mcpServers: [] });
+    return this.#clientConn.request(methods.agent.session.new, { cwd, mcpServers: [] });
   }
 
   async setModel(sessionId: string, modelId: string): Promise<void> {
-    await this.#clientConn.setSessionConfigOption({ sessionId, configId: "model", value: modelId });
+    await this.#clientConn.request(methods.agent.session.setConfigOption, { sessionId, configId: "model", value: modelId });
   }
 
   async setMode(sessionId: string, modeId: "confirm" | "auto"): Promise<void> {
-    await this.#clientConn.setSessionMode({ sessionId, modeId });
+    await this.#clientConn.request(methods.agent.session.setMode, { sessionId, modeId });
   }
 
   async prompt(sessionId: string, text: string): Promise<PromptResponse> {
-    return this.#clientConn.prompt({ sessionId, prompt: [{ type: "text", text }] });
+    return this.#clientConn.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] });
   }
 
   async cancel(sessionId: string): Promise<void> {
-    await this.#clientConn.cancel({ sessionId });
+    await this.#clientConn.notify(methods.agent.session.cancel, { sessionId });
   }
 
   async shutdown(): Promise<void> {
