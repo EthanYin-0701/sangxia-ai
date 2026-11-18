@@ -94,7 +94,12 @@ function connect(permissionMode: "auto" | "confirm" = "auto") {
       onPermission = () => { onPermission = null; resolve(); };
     }),
     async initialize() {
-      return ctx.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} });
+      // Advertise terminal-auth support so the agent returns its terminal auth
+      // methods (SA-58 gates them on this capability).
+      return ctx.request(methods.agent.initialize, {
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: { auth: { terminal: true } },
+      });
     },
     async newSession() {
       await this.initialize();

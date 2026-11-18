@@ -45,6 +45,32 @@ const extraBodySchema = z.record(z.unknown()).superRefine((body, ctx) => {
   }
 });
 
+/**
+ * Reasoning-effort selector (`effort` in the ACP `configOptions`, sent as the
+ * vendor field `reasoning_effort`). Values are vendor-defined — DeepSeek takes
+ * `none/low/high/max` — so they are configured, not hardcoded; a model without
+ * an `efforts` block never advertises the selector (see `src/efforts.ts`).
+ */
+const effortsSchema = z
+  .object({
+    /** Allowed values, in the order the client should show them. */
+    values: z.array(z.string().min(1)).min(1),
+    /** Value used when the user hasn't picked one; defaults to "high", else `values[0]`. */
+    default: z.string().min(1).optional(),
+  })
+  .superRefine((cfg, ctx) => {
+    if (cfg.default !== undefined && !cfg.values.includes(cfg.default)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["default"],
+        message: `efforts.default 必须是 values 之一（${cfg.values.join(", ")}）`,
+      });
+    }
+    if (new Set(cfg.values).size !== cfg.values.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["values"], message: "efforts.values 不可重复" });
+    }
+  });
+
 const providerSchema = z
   .object({
     type: z.enum(["openai", "mock"]).default("openai"),
@@ -71,6 +97,12 @@ const providerSchema = z
           maxTokens: z.number().int().positive().optional(),
           /** Per-model request-body fields, deep-merged over `provider.extraBody` (SA-8). */
           extraBody: extraBodySchema.optional(),
+          /**
+           * Per-model effort selector. `null` opts this model out even when
+           * `provider.efforts` exists (e.g. a non-reasoning model in the same
+           * catalogue); omitted means "inherit `provider.efforts`".
+           */
+          efforts: effortsSchema.nullable().optional(),
         }),
       )
       .min(1)
@@ -125,11 +157,23 @@ const providerSchema = z
     passBackReasoning: z.enum(["all", "none"]).default("all"),
     extraHeaders: z.record(z.string()).optional(),
     /**
+     * Vendor-level reasoning-effort selector shared by every model in
+     * `provider.models` (a model may override or opt out with its own
+     * `efforts`). When it resolves to a value, ACP clients get an `effort`
+     * select in `configOptions` (`category: "thought_level"`) and the chosen
+     * value is sent as `reasoning_effort`. DeepSeek: `none/low/high/max`.
+     */
+    efforts: effortsSchema.optional(),
+    /**
      * Extra top-level `/chat/completions` body fields (SA-8), deep-merged into
      * every request: vendor parameters such as `reasoning_effort`, `top_p`,
      * `thinking`, `seed`. Fields set here win over Sangxia's own values
      * (`temperature`, `max_tokens`, `stream_options`, `tool_choice`); the
      * fields the harness depends on ({@link RESERVED_BODY_KEYS}) are rejected.
+     *
+     * Exception: when the current model exposes an `efforts` selector, the
+     * value the user picked in the client wins over `reasoning_effort` set
+     * here (an explicit per-session choice beats a static default).
      */
     extraBody: extraBodySchema.optional(),
   })

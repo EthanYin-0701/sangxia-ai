@@ -39,7 +39,7 @@ src/llm/           LLMProvider 接口 + openai/mock 实现 + factory.ts
 src/tools/         内置工具（fs-tools/bash/plan/ask-user/fetch-url）+ scope.ts（工作区边界、命令前缀、
                    高危命令、内网目标判定）
 src/mcp/ src/skills/ src/hooks/ src/tui/   MCP client、技能、生命周期钩子、终端 UI
-src/config.ts      配置加载与校验；src/setup.ts 配置向导；src/logger.ts 日志；src/version.ts 版本（agentInfo）
+src/config.ts      配置加载与校验；src/setup.ts 配置向导；src/efforts.ts 思考力度选择器；src/logger.ts 日志；src/version.ts 版本（agentInfo）
 src/project-memory.ts  加载 AGENTS.md / .sangxia/memory.md（+ ~/.config/sangxia/AGENTS.md）
 scripts/           冒烟测试、check-docs.mjs、install-skills.sh、prepare-registry.mjs；skills/ 本项目自有技能
 ```
@@ -56,7 +56,7 @@ scripts/           冒烟测试、check-docs.mjs、install-skills.sh、prepare-r
 8. **持久化**：`persistence.ts` 是唯一写入口，append-only JSONL，不要退回全量重写快照；`tool_started` 必须在 `tool.run` 之前落盘。来自客户端的 session ID 拼路径前必过 `/^[a-zA-Z0-9-]+$/`。
 9. **超时与重试**：工具 deadline 必须 race 工具 promise（只 abort 不够），用户取消优先于超时；deadline 只从声明了 `timeoutFromArgs` 的工具参数推导（MCP 的 `timeout` 语义不可假定），其余走 `timeoutMs`/`toolTimeoutMs` 静态默认。LLM 只重试首个 delta 之前的瞬时失败（网络/408/409/429/5xx，尊重 `Retry-After`），SDK `maxRetries` 保持 0。
 10. **Hooks**：`pre_tool_use` 在 `tool_call` 通知与权限弹窗之前运行，之后一律用改写后的参数（并重新校验）；`ask` 无条件弹窗（含 auto 模式与只读工具）；配置级 hook 命令路径以声明它的配置文件所在目录为基准，绝不用 session cwd；项目级 `.sangxia/hooks.json` 本身在会话建立时按 session cwd（项目根）查找，其内命令路径相对项目根；hook 失败不得影响 turn 收敛；全局配置是 base，`hooks.events.*` 追加合并，不要改成覆盖或去重；`hooks.enabled` 与 `projectFile.enabled` 默认关闭（打开仓库即执行任意命令 = 供应链风险），不要改成默认开启。
-11. **ACP SDK**：同时支持 `configOptions` 与旧式 `models`；各模型/模式切换入口共用校验、持久化与 `config_option_update` 通知。升级 SDK 前验证新旧方法实际经过 stdio，勿改 `node_modules`。
+11. **ACP SDK**：同时支持 `configOptions` 与旧式 `models`；各模型/模式/effort 切换入口共用校验、持久化与 `config_option_update` 通知。升级 SDK 前验证新旧方法实际经过 stdio，勿改 `node_modules`。
 12. **配置缺失**：ACP 进程仍完成握手，new/load/prompt 返回 `AUTH_REQUIRED`（-32000）并提示 `sangxia setup`；setup 只写全局配置、先验证后原子替换（0600）。
 13. **TUI**：`sangxia tui` 接管进程生命周期，日志只进文件；键盘解析用自研 `tui/keys.ts`，不要换回 readline；每帧把真光标放回输入 caret（IME 依赖它）。
 14. **新增 LLM 后端**：实现 `LLMProvider`，在 `llm/factory.ts` 注册，并扩展 `config.ts` 的 `provider.type`。

@@ -61,6 +61,13 @@ export interface StreamChatParams {
   messages: ChatMessage[];
   tools: ToolSchema[];
   signal: AbortSignal;
+  /**
+   * Reasoning effort the user picked for this session (`configOptions.effort`,
+   * e.g. DeepSeek's `none/low/high/max`). Providers that support the vendor
+   * knob map it to their own field and ignore it otherwise. `undefined` means
+   * "no selector / nothing picked" — send nothing and let the backend default.
+   */
+  reasoningEffort?: string;
 }
 
 /**

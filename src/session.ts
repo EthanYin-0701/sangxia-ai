@@ -30,6 +30,14 @@ export class Session {
   /** ACP-selectable LLM model for this conversation. */
   modelId: string;
 
+  /**
+   * Selected reasoning effort for {@link modelId} (`null` = this model exposes
+   * no effort selector, so no `reasoning_effort` is sent). Resolved from
+   * `provider.efforts` / `provider.models[].efforts` via `modelEfforts()` and
+   * re-resolved whenever the model switches.
+   */
+  effort: string | null = null;
+
   /** Full LLM conversation history (system + user + assistant + tool). */
   messages: ChatMessage[] = [];
 

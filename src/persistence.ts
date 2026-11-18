@@ -19,6 +19,7 @@ import type { PermissionMode, Session } from "./session.js";
  *   {"t":"tool_finished","toolCallId":...,"status":"completed"|"failed"}
  *   {"t":"reset","messages":[...]}         ← history was repaired/replaced
  *   {"t":"mode","permissionMode":...} / {"t":"model","modelId":...}
+ *   {"t":"effort","effort":"high"|null}
  *
  * The session id is validated against a whitelist before it is used in a path.
  */
@@ -29,6 +30,8 @@ export interface SessionMeta {
   cwd: string;
   permissionMode?: PermissionMode;
   modelId?: string;
+  /** Reasoning-effort selection; `null` = the model has no effort selector. */
+  effort?: string | null;
   createdAt: string;
 }
 
@@ -39,7 +42,8 @@ export type SessionEvent =
   | { t: "tool_started"; toolCallId: string; name: string; at: string }
   | { t: "tool_finished"; toolCallId: string; status: "completed" | "failed"; at: string }
   | { t: "mode"; permissionMode: PermissionMode }
-  | { t: "model"; modelId: string };
+  | { t: "model"; modelId: string }
+  | { t: "effort"; effort: string | null };
 
 /** A session as read back from disk. */
 export interface PersistedSession {
@@ -51,6 +55,8 @@ export interface PersistedSession {
   permissionMode?: PermissionMode;
   /** Optional for backward compatibility with sessions saved before model selection. */
   modelId?: string;
+  /** Optional for backward compatibility with sessions saved before effort selection. */
+  effort?: string | null;
   /**
    * Every tool call id that ever got a `tool_started` event. Used by
    * `sanitizeHistory` to tell "may have run" apart from "never ran".
@@ -89,6 +95,7 @@ interface TrackedState {
   metaWritten: boolean;
   permissionMode?: PermissionMode;
   modelId?: string;
+  effort?: string | null;
 }
 const tracked = new Map<string, TrackedState>();
 
@@ -100,7 +107,7 @@ const tracked = new Map<string, TrackedState>();
  * shape; the storage layer figures out the delta.
  */
 export async function persistSession(
-  session: Pick<Session, "id" | "cwd" | "messages" | "permissionMode" | "modelId">,
+  session: Pick<Session, "id" | "cwd" | "messages" | "permissionMode" | "modelId" | "effort">,
 ): Promise<void> {
   try {
     const state = await ensureTracked(session);
@@ -124,6 +131,10 @@ export async function persistSession(
       state.modelId = session.modelId;
       await appendEvent(session.id, { t: "model", modelId: session.modelId });
     }
+    if (state.effort !== session.effort) {
+      state.effort = session.effort;
+      await appendEvent(session.id, { t: "effort", effort: session.effort });
+    }
   } catch (e) {
     logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -134,7 +145,7 @@ export async function persistSession(
  * an interrupted turn). The loader applies it as a full history replacement.
  */
 export async function persistHistoryReset(
-  session: Pick<Session, "id" | "cwd" | "messages" | "permissionMode" | "modelId">,
+  session: Pick<Session, "id" | "cwd" | "messages" | "permissionMode" | "modelId" | "effort">,
 ): Promise<void> {
   try {
     const state = await ensureTracked(session);
@@ -148,7 +159,7 @@ export async function persistHistoryReset(
 
 /** Load (or adopt from disk) the per-session write bookkeeping. */
 async function ensureTracked(
-  session: Pick<Session, "id" | "messages" | "permissionMode" | "modelId">,
+  session: Pick<Session, "id" | "messages" | "permissionMode" | "modelId" | "effort">,
 ): Promise<TrackedState> {
   let state = tracked.get(session.id);
   if (state) return state;
@@ -160,13 +171,16 @@ async function ensureTracked(
     metaWritten: existing !== null,
     permissionMode: session.permissionMode,
     modelId: session.modelId,
+    // Adopt the in-memory value: the file may predate effort support, and a
+    // re-append of today's value would be noise either way.
+    effort: session.effort,
   };
   tracked.set(session.id, state);
   return state;
 }
 
 async function ensureMeta(
-  session: Pick<Session, "id" | "cwd" | "permissionMode" | "modelId">,
+  session: Pick<Session, "id" | "cwd" | "permissionMode" | "modelId" | "effort">,
   state: TrackedState,
 ): Promise<void> {
   if (state.metaWritten) return;
@@ -178,6 +192,7 @@ async function ensureMeta(
     cwd: session.cwd,
     permissionMode: session.permissionMode,
     modelId: session.modelId,
+    effort: session.effort,
     createdAt: new Date().toISOString(),
   });
 }
@@ -231,6 +246,7 @@ async function parseJsonl(sessionId: string, text: string): Promise<PersistedSes
   let meta: (SessionEvent & { t: "meta" }) | null = null;
   let permissionMode: PermissionMode | undefined;
   let modelId: string | undefined;
+  let effort: string | null | undefined;
   let updatedAt: string | undefined;
   const startedToolCalls = new Set<string>();
   let usable = 0;
@@ -258,6 +274,7 @@ async function parseJsonl(sessionId: string, text: string): Promise<PersistedSes
         meta = event;
         permissionMode = event.permissionMode ?? permissionMode;
         modelId = event.modelId ?? modelId;
+        effort = event.effort ?? effort;
         updatedAt = event.createdAt;
         break;
       case "message":
@@ -281,6 +298,9 @@ async function parseJsonl(sessionId: string, text: string): Promise<PersistedSes
       case "model":
         modelId = event.modelId;
         break;
+      case "effort":
+        effort = event.effort;
+        break;
     }
   }
 
@@ -292,6 +312,7 @@ async function parseJsonl(sessionId: string, text: string): Promise<PersistedSes
     messages,
     permissionMode,
     modelId,
+    effort,
     startedToolCalls,
     updatedAt: updatedAt ?? new Date().toISOString(),
   };

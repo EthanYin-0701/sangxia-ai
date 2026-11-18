@@ -78,7 +78,9 @@ const conn = connectClient(() => client, stream);
 try {
   const init = await conn.initialize({
     protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+    // auth.terminal advertises terminal-auth support so the agent returns its
+    // terminal auth methods (SA-58 gates them on this capability).
+    clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false, auth: { terminal: true } },
   });
   assert.equal(init.protocolVersion, PROTOCOL_VERSION, "protocolVersion 应为 1");
   assert.equal(init.authMethods?.[0]?.type, "terminal");

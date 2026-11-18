@@ -107,7 +107,12 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
       // streamTotalTimeoutMs / streamRetries / streamRetryBaseDelayMs
       // 覆盖同名全局值（未设置则继承）；extraBody 与全局 extraBody 深度合并（模型级优先）
       { "modelId": "gpt-4o", "name": "GPT-4o", "description": "默认模型", "maxTokens": 32768 }
+      // efforts 可在模型级覆盖全局 values/default，写 null 表示该模型不提供 effort 选择器：
+      // { "modelId": "gpt-4o-mini", "name": "GPT-4o mini", "efforts": null }
     ],
+    // 可选：思考力度（reasoning_effort）选择器。只有配了它，IDE 的会话设置里才会多出
+    // Effort 下拉；选中的值随每次请求以 reasoning_effort 发给后端（未选则用 default）
+    "efforts": { "values": ["none", "low", "high", "max"], "default": "high" },
     "temperature": 0,
     // "maxTokens": 8192,                 // 单次回复的输出上限（思考+正文+工具参数共用，见下）；
                                            // 不设置时不发送 max_tokens，交给后端自己的默认值
@@ -173,6 +178,8 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 > **权限模式覆盖**：`permissionMode` 也可用 CLI 参数 `--permission-mode auto|confirm` 或环境变量 `SANGXIA_PERMISSION_MODE=auto|confirm` 覆盖（优先级：CLI > 环境变量 > 配置文件），方便在 IDE 的 ACP agent 配置（args/env）里按 agent 各自选择。旧字段 `autoApprove: true` 等价于 `permissionMode: "auto"`。
 
 > **会话模型选择**：配置 `provider.models` 后，Sangxia 会在 `session/new` / `session/load` 返回 ACP model 列表，并处理 `session/set_model`。`provider.model` 是新会话默认值，且必须出现在 `models` 中；未配置 `models` 时只暴露默认模型。
+
+> **思考力度（Effort）选择**：配置 `provider.efforts`（或 `provider.models[].efforts`）后，`session/new` / `session/load` 的 `configOptions` 里会多出 `id: "effort"`（`category: "thought_level"`）的下拉，客户端按 `session/set_config_option { configId: "effort" }` 切换；选中的值以厂商字段 `reasoning_effort` 出现在每次 `/chat/completions` 请求里，切换后用 `config_option_update` 通知客户端。没配 `efforts` 的模型**不会**出现这个下拉，也不会往请求里塞 `reasoning_effort`——字段名和取值都是厂商特有的，Sangxia 不猜。DeepSeek 的取值是 `none` / `low` / `high` / `max`（默认 `high`；`none` 关闭思考模式，最快最省），`sangxia setup --preset deepseek` 会自动写入这一组。用户选的值优先于 `extraBody.reasoning_effort` 里的静态默认；切换模型时若新模型不支持当前值会自动回落到它的 `default`（切换后立即生效，不限于下一轮）。`efforts.default` 省略时取 `values` 里的 `high`，没有 `high` 则取第一个值。
 
 支持 ACP Session Modes 的客户端会在会话输入框下方显示权限下拉菜单：`Standard Access` 对应 `confirm`，`Full Access` 对应 `auto`。配置文件、CLI 或环境变量决定新会话的默认选项；在下拉菜单中的切换仅作用于当前会话，并随会话持久化。
 
@@ -274,7 +281,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 - **JetBrains AIR 会丢掉启动参数**：IntelliJ IDEA 2026.3 在 macOS 上实测，`~/.jetbrains/acp.json` 配成 `command=node`、`args=[<repo>/dist/index.js]` 时，实际执行的是 `node setup`，结果报 `Cannot find module '.../setup'`，认证失败。这是客户端的缺陷，agent 侧无法在不破坏规范客户端的前提下绕过。兜底做法：
   - 在 IDE 终端手动执行 setup（只写全局配置，与 cwd 无关）：macOS / Linux 用 `node <repo>/dist/index.js setup`，Windows 用 `node <repo>\dist\index.js setup`。如果是通过 `npx` 注册的 agent，可以直接运行 `npx sangxia-ai setup`；
   - 仅限 macOS / Linux：把 AIR 的 acp.json 中的 `command` 指向一层 wrapper（`#!/bin/sh` + `exec node <repo>/dist/index.js "$@"`），`args` 留空。Windows 上不要用 `.cmd` / `.bat` 转发，因为 ACP 规范明确不建议对会重新解析参数的启动目标提供终端认证。
-- **认证方法无条件宣告**：规范要求只在客户端声明 `clientCapabilities.auth.terminal === true` 时才宣告 `terminal` 方法，但固定依赖的 `@agentclientprotocol/sdk@0.14.1` 的 `ClientCapabilities` 没有 `auth` 字段，校验时会把它剥掉，agent 无从判断。在 SDK 升级之前，请以 `-32000 Authentication required` 错误消息里的终端命令作为兜底。
+- **按客户端能力宣告认证方法**（SA-58）：规范要求只在客户端支持终端认证时才宣告 `terminal` 方法。自 SDK 2.7.0 起 agent 会读取标准的 `clientCapabilities.auth.terminal === true`，并兼容旧客户端的 `_meta["terminal-auth"]` 约定——两者之一为真才宣告 `deepseek-setup` / `terminal-setup`。两者都未声明的客户端不会收到任何 `terminal` 方法，此时以 `-32000 Authentication required` 错误消息里的终端命令作为兜底。
 
 ## 能力总览
 
@@ -289,6 +296,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
 | MCP 工具 | 接入 `session/new` 传入的 MCP servers（stdio/http/sse），命名 `mcp__<server>__<tool>` | 默认需权限 |
 | 流式输出 | 正文 + 思考(reasoning) 增量流（`agent_message_chunk` / `agent_thought_chunk`） | — |
 | 权限控制 | 变更类工具执行前 `session/request_permission`（可"总是允许/拒绝"，按 bash 命令前缀 / 文件目录记忆）；工作区外路径与高危命令强制确认 | — |
+| 思考力度 | `configOptions` 里的 `effort` 下拉 → 请求体 `reasoning_effort`（需在 `provider.efforts` 声明取值，如 DeepSeek 的 `none/low/high/max`） | 未配置时不暴露 |
 | 生命周期钩子 | `hooks.events.*` 声明外部命令，在 session/prompt/工具/turn 点位拦截、改写参数、注入上下文、审计（见「Hook（生命周期钩子）」） | 默认关闭；`deny`/`ask` 在 auto 模式下同样生效 |
 | LLM 后端 | 任意 OpenAI 兼容 `/chat/completions`（`openai` / `mock` provider），JSON 配置 | 可换 baseURL/model |
 | 取消 | `session/cancel` 中断进行中的 turn | — |

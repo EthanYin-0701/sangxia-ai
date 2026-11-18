@@ -23,9 +23,14 @@
         // streamTotalTimeoutMs / streamRetries / streamRetryBaseDelayMs；
         // 未设置时用 provider 下的同名全局值
         // "maxTokens": 32768,
+        // 模型级 effort 覆盖；写 null 表示该模型不提供 Effort 下拉
+        // "efforts": { "values": ["low", "high"], "default": "high" },
         "description": "默认模型"
       }
     ],
+    // 思考力度下拉（reasoning_effort）：只有声明了取值，IDE 会话设置里才会出现 Effort 选项。
+    // DeepSeek 的取值是 none / low / high / max（none 关闭思考模式），默认 high。
+    // "efforts": { "values": ["none", "low", "high", "max"], "default": "high" },
     "temperature": 0,
     // 不设置时不发送 max_tokens，交给后端自己的默认值（DeepSeek 思考模式默认 64K）
     // "maxTokens": 32768,

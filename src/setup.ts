@@ -26,7 +26,23 @@ export const SETUP_HELP = `Usage: sangxia setup [options]
  * `sangxia setup --preset deepseek`, so this is the one place that decides what
  * "接入 DeepSeek" means: endpoint, default model, and how the key prompt reads.
  */
-const PRESETS: Record<string, { provider: "openai"; baseURL: string; model: string; keyLabel: string; models: Array<{ modelId: string; name: string; description: string }> }> = {
+interface EffortDefaults {
+  values: string[];
+  default: string;
+}
+const PRESETS: Record<string, {
+  provider: "openai";
+  baseURL: string;
+  model: string;
+  keyLabel: string;
+  models: Array<{ modelId: string; name: string; description: string }>;
+  /**
+   * Effort selector written as `provider.efforts`, so the editor's Effort
+   * dropdown works right after setup (see `src/efforts.ts`). DeepSeek's own
+   * scale is `none/low/high/max` with `high` as its server-side default.
+   */
+  efforts?: EffortDefaults;
+}> = {
   deepseek: {
     provider: "openai",
     baseURL: "https://api.deepseek.com",
@@ -39,6 +55,7 @@ const PRESETS: Record<string, { provider: "openai"; baseURL: string; model: stri
       { modelId: "deepseek-flash", name: "DeepSeek Flash", description: "默认：更快更省（1M 上下文）" },
       { modelId: "deepseek-v4-pro", name: "DeepSeek Pro", description: "更强推理，成本更高" },
     ],
+    efforts: { values: ["none", "low", "high", "max"], default: "high" },
   },
 };
 
@@ -198,7 +215,13 @@ export async function runSetup(argv: string[]): Promise<number> {
     // Offering a model catalogue lets the editor's model picker work right after
     // setup. Only when the model came from the preset: with an explicit --model
     // the catalogue would either omit it (invalid config) or guess wrong.
-    const modelCatalogue = preset && value("--model") === undefined ? { models: preset.models } : {};
+    // `efforts` rides along with the preset even for an explicit --model: the
+    // preset endpoint is the one whose scale we know.
+    const catalogueModels = preset && value("--model") === undefined ? preset.models : null;
+    const modelCatalogue = {
+      ...(catalogueModels ? { models: catalogueModels } : {}),
+      ...(preset?.efforts ? { efforts: preset.efforts } : {}),
+    };
     await writeConfig(path, {
       ...existing,
       provider: {
@@ -210,7 +233,8 @@ export async function runSetup(argv: string[]): Promise<number> {
     process.stderr.write(`配置已保存: ${path}（权限 0600）\n`);
     if (preset) {
       process.stderr.write(`已应用 preset ${presetName}: ${baseURL} · model=${model}。` +
-        `可在编辑器的模型选择器里切换${modelCatalogue.models ? `（${preset.models.map(m => m.modelId).join(" / ")}）` : "（修改 provider.model 或配置 provider.models）"}。\n`);
+        `可在编辑器的模型选择器里切换${catalogueModels ? `（${catalogueModels.map(m => m.modelId).join(" / ")}）` : "（修改 provider.model 或配置 provider.models）"}。` +
+        `${preset.efforts ? `Effort 下拉可选 ${preset.efforts.values.join(" / ")}（默认 ${preset.efforts.default}）。` : ""}\n`);
     }
     if (options.has("--skip-verify")) process.stderr.write("已按 --skip-verify 跳过连通性验证。\n");
     if (envName) process.stderr.write(`启动 agent 时仍需提供环境变量 ${envName}（可由 ACP 客户端 env 注入）。\n`);

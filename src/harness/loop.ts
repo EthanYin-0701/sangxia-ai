@@ -277,6 +277,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<StopReason> {
         messages: session.messages,
         tools: schemas,
         signal,
+        ...(session.effort ? { reasoningEffort: session.effort } : {}),
       })) {
         firstEventSeen = true;
         if (signal.aborted) return "cancelled";

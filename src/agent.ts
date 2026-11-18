@@ -25,6 +25,7 @@ import {
 import type { ClientChannel } from "./acp/client-channel.js";
 import { promptToText } from "./acp/content.js";
 import type { Config } from "./config.js";
+import { effortOption, isAllowedEffort, modelEfforts, type EffortChoices } from "./efforts.js";
 import { runTurn } from "./harness/loop.js";
 import { type Tool, ToolRegistry } from "./harness/tool.js";
 import { createHookRegistry, hookPayload } from "./hooks/index.js";
@@ -42,8 +43,22 @@ import { canonicalPath, dirPermissionKey } from "./tools/scope.js";
 import { resolveShell, shellSyntaxHint } from "./tools/shell.js";
 import { AGENT_INFO } from "./version.js";
 
-// Keep terminal auth advertised unconditionally for clients using legacy metadata.
 type RegistryAuthMethod = AuthMethod & { type: "terminal"; args: string[] };
+
+/**
+ * ACP v1 (protocol/v1/authentication): an agent may advertise a `terminal`
+ * auth method only when the client enabled terminal-auth support. SDK 2.7.0
+ * exposes the standard `clientCapabilities.auth.terminal` flag (SA-65); older
+ * clients (legacy Zed, the ACP Registry validator) opt in through the
+ * `_meta["terminal-auth"]` convention instead. Accept either so a spec client
+ * and a legacy one both get the methods, while a client that signals neither
+ * sees none (the `#requireConfig()` error message is the fallback there).
+ */
+function clientSupportsTerminalAuth(caps: InitializeRequest["clientCapabilities"]): boolean {
+  if (caps?.auth?.terminal === true) return true;
+  const meta = caps?._meta as { "terminal-auth"?: unknown } | undefined;
+  return meta?.["terminal-auth"] === true;
+}
 /**
  * There is no session to talk through before authentication, so `name` /
  * `description` here are the only guaranteed place a client renders guidance,
@@ -146,10 +161,16 @@ export class SangxiaAgent {
       terminal: Boolean(params.clientCapabilities?.terminal),
     };
     logger.info("initialize: client caps =", this.#clientCaps);
+    // Terminal auth methods are advertised only to clients that support them
+    // (SA-58). All current AUTH_METHODS are `type: "terminal"`, so this is
+    // all-or-nothing today; non-terminal methods would pass through unchanged.
+    const terminalAuth = clientSupportsTerminalAuth(params.clientCapabilities);
+    const authMethods = AUTH_METHODS.filter((m) => m.type !== "terminal" || terminalAuth);
+    logger.info(`initialize: terminal auth ${terminalAuth ? "advertised" : "withheld"} (${authMethods.length} method(s))`);
     const response = {
       agentInfo: AGENT_INFO,
       protocolVersion: PROTOCOL_VERSION,
-      authMethods: AUTH_METHODS,
+      authMethods,
       agentCapabilities: {
         loadSession: true,
         // stdio MCP is mandatory (no flag); advertise network transports too.
@@ -172,6 +193,7 @@ export class SangxiaAgent {
         config.agent.permissionMode,
         config.provider.model,
       );
+      session.effort = this.effortFor(session.modelId)?.default ?? null;
       await this.prepareSession(session);
       await this.runSessionStart(session, "startup");
       session.messages.push({ role: "system", content: await this.systemPrompt(session) });
@@ -201,6 +223,12 @@ export class SangxiaAgent {
         saved.permissionMode ?? config.agent.permissionMode,
         this.isAvailableModel(saved.modelId) ? saved.modelId : config.provider.model,
       );
+      // Effort is vendor-defined, so a saved value is only reused while the
+      // (possibly changed) model still offers it.
+      const efforts = this.effortFor(session.modelId);
+      session.effort = efforts
+        ? (saved.effort && isAllowedEffort(efforts, saved.effort) ? saved.effort : efforts.default)
+        : null;
       await this.prepareSession(session);
       session.messages = saved.messages;
       session.startedToolCalls = saved.startedToolCalls ?? new Set();
@@ -257,13 +285,52 @@ export class SangxiaAgent {
       throw RequestError.invalidParams({ modelId: `未知模型: ${params.modelId}` });
     }
     session.modelId = params.modelId;
+    this.resyncEffort(session);
     this.pruneProviders();
     await persistSession(session);
-    logger.info(`session ${session.id} model=${session.modelId}`);
+    logger.info(`session ${session.id} model=${session.modelId} effort=${session.effort ?? "n/a"}`);
     await this.#conn.sessionUpdate({
       sessionId: session.id,
       update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
+  }
+
+  /**
+   * Switch the reasoning effort (`reasoning_effort`) for this session. Only
+   * models that declare `efforts` in the config expose the option, so an
+   * unknown value here is a client bug and stays a -32602.
+   */
+  private async setSessionEffort(session: Session, effort: string): Promise<void> {
+    const efforts = this.effortFor(session.modelId);
+    if (!efforts) {
+      throw RequestError.invalidParams({ configId: `模型 ${session.modelId} 未配置 effort 选项` });
+    }
+    if (!isAllowedEffort(efforts, effort)) {
+      throw RequestError.invalidParams({ value: `未知 effort: ${effort}（可选: ${efforts.values.join(", ")}）` });
+    }
+    if (session.effort === effort) return;
+    session.effort = effort;
+    await persistSession(session);
+    logger.info(`session ${session.id} effort=${effort}`);
+    await this.#conn.sessionUpdate({
+      sessionId: session.id,
+      update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
+    });
+  }
+
+  /** Keep `session.effort` valid for the (possibly new) model. */
+  private resyncEffort(session: Session): void {
+    const efforts = this.effortFor(session.modelId);
+    if (!efforts) {
+      session.effort = null;
+    } else if (!session.effort || !isAllowedEffort(efforts, session.effort)) {
+      session.effort = efforts.default;
+    }
+  }
+
+  /** Effort selector for a model, or null when it has none (see `src/efforts.ts`). */
+  private effortFor(modelId: string): EffortChoices | null {
+    return modelEfforts(this.#config.provider, modelId);
   }
 
   async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
@@ -279,14 +346,22 @@ export class SangxiaAgent {
       await this.setSessionModel({ sessionId: params.sessionId, modelId: params.value });
     } else if (params.configId === "mode") {
       await this.setSessionMode({ sessionId: params.sessionId, modeId: params.value });
+    } else if (params.configId === "effort") {
+      await this.setSessionEffort(this.#sessions.get(params.sessionId)!, params.value);
     } else {
       throw RequestError.invalidParams({ configId: `未知配置选项: ${params.configId}` });
     }
     return { configOptions: this.configOptions(this.#sessions.get(params.sessionId)!) };
   }
 
+  /**
+   * Standard `configOptions`. `model` and `mode` come first (clients such as
+   * AIR key off those ids), and the `effort` selector is appended only when the
+   * current model declares `efforts` in the config — a backend that doesn't
+   * understand `reasoning_effort` never sees the option.
+   */
   private configOptions(session: Session): SessionConfigOption[] {
-    return [{
+    const options: SessionConfigOption[] = [{
       id: "model",
       name: "Model",
       category: "model",
@@ -305,6 +380,22 @@ export class SangxiaAgent {
         value: id, name, ...(description !== undefined ? { description } : {}),
       })),
     }];
+    const efforts = this.effortFor(session.modelId);
+    if (efforts) {
+      options.push({
+        id: "effort",
+        name: "Effort",
+        description: "思考力度（reasoning_effort）：越高越深入，也越慢越贵",
+        category: "thought_level",
+        type: "select",
+        currentValue: session.effort ?? efforts.default,
+        options: efforts.values.map((value) => {
+          const { name, description } = effortOption(value);
+          return { value, name, ...(description !== undefined ? { description } : {}) };
+        }),
+      });
+    }
+    return options;
   }
 
   private availableModels() {

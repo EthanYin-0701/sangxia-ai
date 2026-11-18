@@ -94,6 +94,8 @@ try {
       { modelId: "deepseek-flash", name: "DeepSeek Flash", description: "默认：更快更省（1M 上下文）" },
       { modelId: "deepseek-v4-pro", name: "DeepSeek Pro", description: "更强推理，成本更高" },
     ],
+    // DeepSeek's own reasoning_effort scale, so the editor's Effort dropdown works immediately.
+    efforts: { values: ["none", "low", "high", "max"], default: "high" },
   });
   assert.deepEqual(presetSaved.hooks, hooks, "preset must keep unrelated config");
   assert.equal(presetSaved.agent.maxIterations, 77);
@@ -105,6 +107,8 @@ try {
   assert.equal(overridden.model, "other-model");
   assert.equal(overridden.baseURL, "https://api.deepseek.com");
   assert.equal(overridden.models, undefined);
+  // The preset's endpoint is still DeepSeek, so its effort scale is kept.
+  assert.deepEqual(overridden.efforts, { values: ["none", "low", "high", "max"], default: "high" });
   // Headless preset without any key must fail instead of writing a keyless provider.
   await setup(["--preset", "deepseek", "--skip-verify"], 1);
   assert.equal(JSON.parse(readFileSync(path, "utf8")).provider.model, "other-model");

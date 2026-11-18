@@ -114,7 +114,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *#attemptStream(
-    { messages, tools, signal }: StreamChatParams,
+    { messages, tools, signal, reasoningEffort }: StreamChatParams,
     state: AttemptState,
     attempt: number,
   ): AsyncIterable<StreamEvent> {
@@ -146,7 +146,10 @@ export class OpenAIProvider implements LLMProvider {
     };
     try {
       controller.signal.throwIfAborted();
-      logger.info(`LLM request start model=${this.model} messages=${messages.length} tools=${tools.length}`);
+      logger.info(
+        `LLM request start model=${this.model} messages=${messages.length} tools=${tools.length} ` +
+          `effort=${reasoningEffort ?? "default"}`,
+      );
       const request: Record<string, unknown> = {
         model: this.model,
         messages: toOpenAIMessages(messages, this.#passBackReasoning),
@@ -169,6 +172,12 @@ export class OpenAIProvider implements LLMProvider {
       // temperature / max_tokens / stream_options; the schema already refused
       // the fields the harness depends on.
       mergeBody(request, this.#extraBody);
+      // The effort the user picked in the client is an explicit per-session
+      // choice, so it wins over a static `extraBody.reasoning_effort`. Omitted
+      // entirely when the model has no selector (nothing is sent that a backend
+      // might reject), and vendors that don't know the field ignore it per the
+      // OpenAI compatibility contract.
+      if (reasoningEffort) request.reasoning_effort = reasoningEffort;
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const stream = (await this.#client.chat.completions.create(request as any, {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,6 +15,11 @@ let dir: string;
 
 before(async () => {
   dir = mkdtempSync(join(tmpdir(), "sangxia-extra-"));
+  // Isolate from the developer's own ~/.config/sangxia/config.json: it is always
+  // layered in as the base config, so a real `provider.models` there would make
+  // these single-model fixtures invalid.
+  process.env.HOME = join(dir, "home");
+  mkdirSync(process.env.HOME, { recursive: true });
   server = createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
