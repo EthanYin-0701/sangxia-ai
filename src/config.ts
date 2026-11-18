@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 // zod 4 ships the zod 3 API under "zod/v3"; the schemas below rely on its
 // `.default({})` semantics (nested field defaults still apply), so stay on it.
 import { z } from "zod/v3";
 import { assertKnownHookEvents, assertValidHookEntries, resolveHookCommands } from "./hooks/paths.js";
 import { HOOK_EVENTS, type HookEntry } from "./hooks/types.js";
+import { configHome } from "./config-home.js";
 import { logger } from "./logger.js";
 
 /**
@@ -16,6 +16,9 @@ import { logger } from "./logger.js";
  *   2. `$SANGXIA_CONFIG` env var
  *   3. `./sangxia.config.json` (cwd)
  *   4. `~/.config/sangxia/config.json`
+ *
+ * (`~/.config/sangxia` here and below is the default of `configHome()` — see
+ * `config-home.ts` for `$SANGXIA_HOME` / `%APPDATA%` / `$XDG_CONFIG_HOME`.)
  *
  * Layering (D16): `~/.config/sangxia/config.json` is *always* loaded as the base and
  * the primary config is merged on top of it (deep merge, primary wins; `hooks.events.*`
@@ -309,7 +312,7 @@ export function resolveConfigPath(argv: string[]): string | null {
   const cwdPath = resolve(process.cwd(), "sangxia.config.json");
   if (existsSync(cwdPath)) return cwdPath;
 
-  const homePath = join(homedir(), ".config", "sangxia", "config.json");
+  const homePath = globalConfigPath();
   if (existsSync(homePath)) return homePath;
 
   return null;
@@ -350,9 +353,9 @@ interface HookSource {
 
 const hookEntriesSchema = z.array(hookEntrySchema);
 
-/** `~/.config/sangxia/config.json`：用户级全局配置，永远是分层加载的 base。 */
+/** `<configHome>/config.json`（默认 `~/.config/sangxia/config.json`）：用户级全局配置，永远是分层加载的 base。 */
 export function globalConfigPath(): string {
-  return join(homedir(), ".config", "sangxia", "config.json");
+  return join(configHome(), "config.json");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

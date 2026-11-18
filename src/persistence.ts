@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatMessage } from "./llm/types.js";
+import { configHome } from "./config-home.js";
 import { logger } from "./logger.js";
 import type { PermissionMode, Session } from "./session.js";
 
@@ -60,7 +60,7 @@ export interface PersistedSession {
 }
 
 function sessionDir(): string {
-  return process.env.SANGXIA_SESSION_DIR ?? join(homedir(), ".config", "sangxia", "sessions");
+  return process.env.SANGXIA_SESSION_DIR ?? join(configHome(), "sessions");
 }
 
 /** `<sessionDir>/<sessionId>.jsonl`。会话 ID 来自客户端时必须先过白名单。 */

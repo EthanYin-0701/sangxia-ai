@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { configHome } from "../config-home.js";
 import type { Tool } from "../harness/tool.js";
 
 /**
@@ -100,7 +100,7 @@ export async function discoverSkills(cwd: string, extraDirs: string[]): Promise<
   const dirs =
     extraDirs.length > 0
       ? extraDirs.map((d) => (isAbsolute(d) ? d : resolve(cwd, d)))
-      : [resolve(cwd, "skills"), join(homedir(), ".config", "sangxia", "skills")];
+      : [resolve(cwd, "skills"), join(configHome(), "skills")];
 
   const found = new Map<string, Skill>();
   for (const dir of dirs) {
@@ -146,7 +146,7 @@ export function skillCatalogPrompt(skills: Skill[]): string {
 export const useSkillTool: Tool = {
   name: "use_skill",
   description:
-    "加载一个技能(skill)的完整操作说明。可用技能见系统提示里的清单。传入技能名(name)，返回该技能的详细指南，随后严格按指南执行。",
+    "加载一个技能(skill)的完整操作说明。可用技能见系统提示里的清单。传入技能名(name)，返回该技能的绝对目录(首行「技能目录: ...」)和详细指南，随后严格按指南执行。",
   kind: "other",
   needsPermission: false,
   parameters: {
@@ -167,7 +167,10 @@ export const useSkillTool: Tool = {
     }
     try {
       const { body } = parseFrontmatter(await readFile(skill.path, "utf8"));
-      return { output: body.trim() || "(该技能 SKILL.md 正文为空)" };
+      // Lead with the skill's absolute directory so a SKILL.md can reference its
+      // bundled scripts as `<技能目录>/...` — no shell-specific path probing, and
+      // it stays correct for custom `skills.dirs` locations.
+      return { output: `技能目录: ${dirname(skill.path)}\n\n${body.trim() || "(该技能 SKILL.md 正文为空)"}` };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { output: `Error: 读取技能失败: ${msg}`, isError: true };

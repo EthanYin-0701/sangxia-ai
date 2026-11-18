@@ -1,4 +1,5 @@
 // Offline regression coverage for truncated/empty streams and unsafe tool calls.
+import { isolatedEnv } from "./lib/acp-process.mjs";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises";
@@ -777,7 +778,7 @@ try {
       const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
         // 隔离 HOME：分层加载（D16）会把 ~/.config/sangxia/config.json 当 base。
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, HOME: join(dir, "home"), SANGXIA_LOG_DIR: join(dir, "child-logs") },
+        env: { ...isolatedEnv(), HOME: join(dir, "home"), SANGXIA_LOG_DIR: join(dir, "child-logs") },
       });
       let stderr = "";
       child.stderr.on("data", (d) => { stderr += d; });
@@ -832,7 +833,7 @@ try {
     requests = [];
     const child = spawn(process.execPath, [new URL("../dist/index.js", import.meta.url).pathname, "--config", path], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, HOME: home, SANGXIA_LOG_DIR: join(dir, "memory-logs"), SANGXIA_SESSION_DIR: join(dir, "memory-sessions") },
+      env: { ...isolatedEnv(), HOME: home, SANGXIA_LOG_DIR: join(dir, "memory-logs"), SANGXIA_SESSION_DIR: join(dir, "memory-sessions") },
     });
     const exit = new Promise((r) => child.once("exit", r));
     const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);

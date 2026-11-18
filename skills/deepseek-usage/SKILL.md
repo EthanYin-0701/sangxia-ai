@@ -27,24 +27,24 @@ description: >-
 
 ## 步骤 1：定位脚本
 
-技能可能装在项目里（`<cwd>/skills`、`<cwd>/.claude/skills`）或全局（`~/.config/sangxia/skills`），
-所以先按候选路径定位，**不要假设脚本在 cwd 下**：
+技能可能装在项目里、全局（`~/.config/sangxia/skills`）或 `config.skills.dirs` 指定的任意目录，
+所以**不要假设脚本在 cwd 下**，也不要写 shell 循环去猜候选路径。`use_skill` 返回结果的第一行就是
+本技能的绝对目录（`技能目录: <DIR>`），脚本固定在：
 
-```bash
-for cand in \
-  "skills/deepseek-usage/scripts/deepseek-usage.mjs" \
-  ".claude/skills/deepseek-usage/scripts/deepseek-usage.mjs" \
-  "${SANGXIA_CONFIG:+$(dirname "$SANGXIA_CONFIG")/skills/deepseek-usage/scripts/deepseek-usage.mjs}" \
-  "$HOME/.config/sangxia/skills/deepseek-usage/scripts/deepseek-usage.mjs"; do
-  [ -n "$cand" ] && [ -f "$cand" ] && SCRIPT="$cand" && break
-done
-[ -f "${SCRIPT:-}" ] || { echo "找不到 deepseek-usage.mjs（技能未安装或被移动）"; exit 1; }
-echo "SCRIPT=$SCRIPT"
-node "$SCRIPT" --help | head -5
+```
+<DIR>/scripts/deepseek-usage.mjs
 ```
 
-拿到绝对/相对路径后，后续命令都用 `node "$SCRIPT"`。用绝对路径最省事：脚本本身与 cwd 无关，
-只有它的 **日志发现** 和 **配置发现** 会受 cwd 影响（见下文"跨项目使用"）。
+下文的 `$SCRIPT` 都指这个绝对路径——直接把它写进命令里（路径含空格时加引号），bash 和 PowerShell 通用：
+
+```bash
+node "<DIR>/scripts/deepseek-usage.mjs" --help
+```
+
+没拿到 `技能目录`（例如不是通过 `use_skill` 加载的本说明）时，用 `glob` 工具找
+`**/deepseek-usage/scripts/deepseek-usage.mjs`，同样与平台无关。
+
+脚本本身与 cwd 无关，只有它的 **日志发现** 和 **配置发现** 会受 cwd 影响（见下文"跨项目使用"）。
 
 ## 跨项目使用（重要）
 
@@ -57,8 +57,9 @@ node "$SCRIPT" --help | head -5
    跨项目时若需临时指定端点，可显式指定 base URL（API key 统一从已导出的环境变量或宿主环境获取，**绝不直接在命令里键入明文 key**）：
 
    ```bash
-   node "$SCRIPT" balance --base-url https://api.deepseek.com
-   # 或 DEEPSEEK_BASE_URL=https://api.deepseek.com node "$SCRIPT" balance
+   node "$SCRIPT" balance --base-url https://api.deepseek.com      # bash / PowerShell 通用
+   # bash:       DEEPSEEK_BASE_URL=https://api.deepseek.com node "$SCRIPT" balance
+   # PowerShell: $env:DEEPSEEK_BASE_URL = 'https://api.deepseek.com'; node "$SCRIPT" balance
    ```
 
    （`$DEEPSEEK_API_KEY` / `$DEEPSEEK_BASE_URL` 优先级高于配置文件，且不会把 key 留在历史记录中。）

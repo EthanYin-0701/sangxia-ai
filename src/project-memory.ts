@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { configHome } from "./config-home.js";
 
 const MEMORY_FILE_ALIASES = [["AGENTS.md", "AGENT.md"], [".sangxia/memory.md", "memory.md"]];
 
 /**
- * 用户级（全局）长期指令：`~/.config/sangxia/AGENTS.md`。
+ * 用户级（全局）长期指令：`<configHome>/AGENTS.md`（默认 `~/.config/sangxia/AGENTS.md`，见 `config-home.ts`）。
  *
  * 与项目记忆分开、**永远**加载（每个项目、每次 new/load session），用来放"无论打开
  * 哪个仓库都成立"的偏好 —— 例如某个 CLI 的用法约定、语义搜索优先于 grep 之类的
@@ -15,7 +15,7 @@ const MEMORY_FILE_ALIASES = [["AGENTS.md", "AGENT.md"], [".sangxia/memory.md", "
  * 路径在调用时求值（不是模块加载时），否则会冻住启动时的 HOME。
  */
 function userMemoryDir(): string {
-  return join(homedir(), ".config", "sangxia");
+  return configHome();
 }
 
 interface MemoryHit {
