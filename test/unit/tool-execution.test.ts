@@ -34,7 +34,7 @@ class OneCallProvider implements LLMProvider {
   }
 }
 
-const config: AgentConfig = { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, permissionMode: "auto", systemPrompt: null };
+const config: AgentConfig = { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, sessionIdleTimeoutMs: 0, permissionMode: "auto", systemPrompt: null };
 const conn = { sessionUpdate: async () => {}, requestPermission: async () => ({ outcome: { outcome: "cancelled" } }) } as unknown as ClientChannel;
 
 async function run(tool: Tool, args: Record<string, unknown>, controller = new AbortController()) {

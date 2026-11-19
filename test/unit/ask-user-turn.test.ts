@@ -57,7 +57,7 @@ describe("ask_user inside a turn", () => {
     const session = new Session("unit-ask-user", dir, [], { readTextFile: false, writeTextFile: false, terminal: false }, "confirm", "scripted");
     session.messages.push({ role: "system", content: "s" }, { role: "user", content: "u" });
     const provider = new ScriptedProvider();
-    const config: AgentConfig = { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, permissionMode: "confirm", systemPrompt: null };
+    const config: AgentConfig = { maxIterations: 5, historyWarningMessages: 400, toolTimeoutMs: 300_000, sessionIdleTimeoutMs: 0, permissionMode: "confirm", systemPrompt: null };
 
     const stop = await runTurn({ conn, session, provider, tools: new ToolRegistry([askUserTool]), config, signal: new AbortController().signal });
 

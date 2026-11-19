@@ -55,7 +55,7 @@ stdio JSON-RPC ─ index.ts ─ acp/agent-app.ts ─ SangxiaAgent (agent.ts) ─
 4. **Wrap new ACP handlers in `logger.withSession(id, ...)`** — session-scoped logging uses `AsyncLocalStorage`, and an unwrapped handler's logs fall into `global.log`.
 5. **ESM + `NodeNext`**: relative imports need the `.js` extension. `strict` and `noUncheckedIndexedAccess` are on, hence the `!` assertions in existing indexed access.
 6. `sangxia.config.json` (real secrets) and `dist/` are gitignored — don't commit or hand-edit them.
-7. MCP failures are isolated per server (warn and skip, never sink the session); remote tools are exposed as `mcp__<server>__<tool>` and default to `needsPermission: true`. `session/close` is not implemented yet (left at -32601 in `src/acp/agent-app.ts`), so connections close only at process exit (`SangxiaAgent.shutdown`).
+7. MCP failures are isolated per server (warn and skip, never sink the session); remote tools are exposed as `mcp__<server>__<tool>` and default to `needsPermission: true`. `session/close` is not implemented yet (left at -32601 in `src/acp/agent-app.ts`), so connections close when an idle session is evicted (`agent.sessionIdleTimeoutMs`, `SangxiaAgent.evictIdleSessions`; rebuilt from the JSONL log on the next request) or at process exit (`SangxiaAgent.shutdown`).
 
 ## Conventions
 

@@ -136,6 +136,7 @@ node dist/index.js tui  # 终端界面（见「终端界面（TUI）」）
     "maxIterations": 120,                  // 单轮最多迭代次数
     "historyWarningMessages": 400,         // 历史消息数告警阈值（不自动裁剪）
     "toolTimeoutMs": 300000,               // 单次工具执行的默认 deadline（工具自身 timeoutMs 与 bash 的 timeout 参数优先；MCP 工具的同名参数不参与）
+    "sessionIdleTimeoutMs": 1800000,       // 空闲会话回收：超过该时长没有请求、也没有运行中 turn 的会话释放内存与 MCP 连接，下次请求时从 JSONL 日志透明恢复；0 = 关闭
     "permissionMode": "confirm",           // "confirm" 每次确认（默认）| "auto" 跳过全部权限确认（危险）
     "systemPrompt": null                   // null 使用内置默认提示词
   },
@@ -347,7 +348,7 @@ ACP 客户端在 `session/new` 时传入的 `mcpServers` 会被逐个连接（`s
 - **隔离**：单个 server 连接失败只告警并跳过，不影响其余工具与会话。
 - **开关**：`config.mcp.enabled` / `config.mcp.connectTimeoutMs`。
 
-> ACP 0.4.5 无「会话结束」事件，故 MCP 连接在 agent 进程退出时统一关闭。
+> Sangxia 尚未实现 `session/close`。会话空闲超过 `agent.sessionIdleTimeoutMs`（默认 30 分钟，`0` 关闭）后，会被回收：MCP 连接（stdio 子进程）随之关闭，消息历史从内存释放。客户端无感知，下一次针对该会话的请求（`session/prompt`、切换模式/模型等）会从 JSONL 日志重建会话并重新连接 MCP。这次重建不会再次触发 `session_start`，「总是允许 / 拒绝」的记忆也会保留。其余连接在 agent 进程退出时统一关闭。
 
 ## 技能 (Skills)
 
@@ -592,7 +593,7 @@ git push --follow-tags                     # 推送提交与 tag，CI 通过后�
 
 - Anthropic 原生 provider（接口已就绪）。
 - 图片/音频输入（`initialize` 里 `promptCapabilities.image/audio` 均为 false）。
-- MCP 连接的按会话回收（当前在进程退出时统一关闭；ACP 0.4.5 无会话结束事件）。
+- 显式的按会话回收（`session/close`）。目前只有空闲回收（`agent.sessionIdleTimeoutMs`）和进程退出时的统一关闭。
 - TUI v2：`/resume`（`session/load` 续持久化会话）、权限弹窗内的实时 `bash` 输出（客户端 `createTerminal`）、多行输入。
 - Hook v2：**每个会话结束时的** `session_end`（目前只有 agent 进程退出时统一跑一次，因为 ACP 0.4.5 没有会话结束事件）、`pre_compact` / `subagent_*`、`turn_end` 的 `decision: "continue"`（要求模型再跑一轮）、结构化注入（图片/文件引用）、可选审计文件（`hooks.auditFile`）。
 

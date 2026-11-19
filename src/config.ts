@@ -211,6 +211,13 @@ const agentSchema = z
      * declares `timeoutMs` (or a call that sets `timeout`, e.g. bash) wins.
      */
     toolTimeoutMs: z.number().int().positive().default(300_000),
+    /**
+     * SA-7: a live session with no running turn that saw no ACP request for
+     * this long is evicted from memory (history dropped, MCP connections
+     * closed) and transparently rebuilt from its JSONL log on the next request.
+     * `0` disables eviction.
+     */
+    sessionIdleTimeoutMs: z.number().int().nonnegative().default(1_800_000),
     permissionMode: z.enum(["confirm", "auto"]).optional(),
     /** @deprecated 用 `permissionMode: "auto"` 替代；`true` 等价于 auto。 */
     autoApprove: z.boolean().optional(),
@@ -220,6 +227,7 @@ const agentSchema = z
     maxIterations: cfg.maxIterations,
     historyWarningMessages: cfg.historyWarningMessages,
     toolTimeoutMs: cfg.toolTimeoutMs,
+    sessionIdleTimeoutMs: cfg.sessionIdleTimeoutMs,
     permissionMode: cfg.permissionMode ?? (cfg.autoApprove === true ? "auto" : "confirm"),
     systemPrompt: cfg.systemPrompt,
   }));

@@ -381,6 +381,38 @@ async function migrateLegacySession(sessionId: string): Promise<PersistedSession
   return migrated;
 }
 
+/**
+ * Whether everything this session holds in memory is already on disk, i.e.
+ * dropping the in-memory copy and replaying the log loses nothing. False when
+ * no write ever happened in this process or the last append failed (the
+ * bookkeeping only advances after a successful write). Used by idle eviction
+ * (SA-7) so a disk error never turns eviction into history loss.
+ */
+export function isFullyPersisted(
+  session: Pick<Session, "id" | "messages" | "permissionMode" | "modelId" | "effort">,
+): boolean {
+  const state = tracked.get(session.id);
+  return state !== undefined &&
+    state.metaWritten &&
+    state.messagesWritten === session.messages.length &&
+    state.permissionMode === session.permissionMode &&
+    state.modelId === session.modelId &&
+    state.effort === session.effort;
+}
+
+/**
+ * Drop the write bookkeeping of a session that left memory (SA-7). A later
+ * write re-adopts the on-disk state, exactly like the first write of a process.
+ */
+export function forgetSessionTracking(sessionId: string): void {
+  tracked.delete(sessionId);
+}
+
+/** Number of sessions with write bookkeeping (diagnostics and tests). */
+export function trackedSessionCount(): number {
+  return tracked.size;
+}
+
 /** Test/diagnostic helper: forget per-process write bookkeeping. */
 export function resetPersistenceTracking(): void {
   tracked.clear();

@@ -102,6 +102,12 @@ export class Session {
    */
   hookContext: string[] = [];
 
+  /**
+   * Last time an ACP request touched this session or a turn ended (epoch ms).
+   * Drives idle eviction (SA-7, `agent.sessionIdleTimeoutMs`).
+   */
+  lastActivityAt = Date.now();
+
   /** Iterations of the most recent turn — reported to `turn_end` hooks. */
   turnIterations = 0;
 

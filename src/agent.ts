@@ -28,15 +28,21 @@ import type { Config } from "./config.js";
 import { effortOption, isAllowedEffort, modelEfforts, type EffortChoices } from "./efforts.js";
 import { runTurn } from "./harness/loop.js";
 import { type Tool, ToolRegistry } from "./harness/tool.js";
-import { createHookRegistry, hookPayload } from "./hooks/index.js";
+import { createHookRegistry, hookPayload, type HookRegistry } from "./hooks/index.js";
 import type { HookOutcome } from "./hooks/types.js";
 import { createProvider } from "./llm/factory.js";
 import type { LLMProvider } from "./llm/types.js";
 import { logger } from "./logger.js";
 import { connectMcpServer } from "./mcp/client.js";
 import { loadProjectMemory, loadUserMemory, missingProjectMemory } from "./project-memory.js";
-import { loadSession as loadPersistedSession, persistHistoryReset, persistSession } from "./persistence.js";
-import { type ClientCapabilities, Session } from "./session.js";
+import {
+  forgetSessionTracking,
+  isFullyPersisted,
+  loadSession as loadPersistedSession,
+  persistHistoryReset,
+  persistSession,
+} from "./persistence.js";
+import { type ClientCapabilities, type PermissionDecision, type PermissionMode, Session } from "./session.js";
 import { discoverSkills, skillCatalogPrompt, useSkillTool } from "./skills/index.js";
 import { buildTools } from "./tools/index.js";
 import { canonicalPath, dirPermissionKey } from "./tools/scope.js";
@@ -109,6 +115,29 @@ export interface SetSessionModelRequest {
 }
 
 /**
+ * What stays in memory for an idle-evicted session (SA-7): only what the JSONL
+ * log does not record and a few small fields, never the history or any MCP
+ * connection. The client is not told about eviction, so the next request for
+ * the id rebuilds a full {@link Session} from this plus the log.
+ */
+interface EvictedSession {
+  id: string;
+  cwd: string;
+  mcpServers: Session["mcpServers"];
+  clientCaps: ClientCapabilities;
+  permissionMode: PermissionMode;
+  modelId: string;
+  effort: string | null;
+  /** "Always allow/reject" memory is not persisted, so it survives eviction here. */
+  permissions: Map<string, PermissionDecision>;
+  historyWarned: boolean;
+  initializationChecked: boolean;
+  hookContext: string[];
+  /** Kept so `shutdown` can still fire `session_end` for this session. */
+  hooks: HookRegistry;
+}
+
+/**
  * The ACP agent surface. It owns sessions and delegates the actual work of a
  * prompt turn to the harness ({@link runTurn}). Transport-free: the wire
  * routing lives in `acp/agent-app.ts`.
@@ -120,6 +149,11 @@ export class SangxiaAgent {
   readonly #providers = new Map<string, LLMProvider>();
   readonly #builtinTools: Tool[];
   readonly #sessions = new Map<string, Session>();
+  /** Idle-evicted sessions, rebuilt on demand (SA-7). */
+  readonly #evicted = new Map<string, EvictedSession>();
+  /** In-flight rebuilds, so concurrent requests share one restored Session. */
+  readonly #restoring = new Map<string, Promise<Session | undefined>>();
+  #idleTimer: ReturnType<typeof setInterval> | null = null;
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
 
   constructor(conn: ClientChannel, config: Config | null, configError: string | null = null) {
@@ -197,7 +231,7 @@ export class SangxiaAgent {
       await this.prepareSession(session);
       await this.runSessionStart(session, "startup");
       session.messages.push({ role: "system", content: await this.systemPrompt(session) });
-      this.#sessions.set(id, session);
+      this.registerSession(session);
       await persistSession(session);
       logger.info(`newSession ${id} cwd=${params.cwd} mcpServers=${session.mcpServers.length}`);
       return { sessionId: id, modes: permissionModes(session.permissionMode), models: this.modelState(session.modelId), configOptions: this.configOptions(session) };
@@ -211,6 +245,10 @@ export class SangxiaAgent {
       // load) replaces that Session. Retire the old one *before* reading the
       // log, so its MCP connections are closed instead of leaked and its
       // aborted turn has finished writing the history we are about to replay.
+      // An explicit load supersedes an idle-evicted stub (SA-7): wait for a
+      // rebuild already running on it, then load from the log as usual.
+      await this.#restoring.get(params.sessionId)?.catch(() => undefined);
+      this.#evicted.delete(params.sessionId);
       const previous = this.#sessions.get(params.sessionId);
       if (previous) await this.retireSession(previous, "被 session/load 替换");
       const saved = await loadPersistedSession(params.sessionId);
@@ -232,7 +270,7 @@ export class SangxiaAgent {
       await this.prepareSession(session);
       session.messages = saved.messages;
       session.startedToolCalls = saved.startedToolCalls ?? new Set();
-      this.#sessions.set(session.id, session);
+      this.registerSession(session);
       if (previous) this.pruneProviders();
       await this.runSessionStart(session, "resume");
       // M2: a restored session has no systemPrompt() call, so session_start
@@ -256,7 +294,7 @@ export class SangxiaAgent {
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<void> {
-    const session = this.#sessions.get(params.sessionId);
+    const session = await this.liveSession(params.sessionId);
     if (!session) throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     if (params.modeId !== "confirm" && params.modeId !== "auto") {
       throw RequestError.invalidParams({ modeId: `未知权限模式: ${params.modeId}` });
@@ -279,7 +317,7 @@ export class SangxiaAgent {
   }
 
   async setSessionModel(params: SetSessionModelRequest): Promise<void> {
-    const session = this.#sessions.get(params.sessionId);
+    const session = await this.liveSession(params.sessionId);
     if (!session) throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     if (!this.isAvailableModel(params.modelId)) {
       throw RequestError.invalidParams({ modelId: `未知模型: ${params.modelId}` });
@@ -334,7 +372,7 @@ export class SangxiaAgent {
   }
 
   async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-    if (!this.#sessions.has(params.sessionId)) {
+    if (!(await this.liveSession(params.sessionId))) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     }
     // Only string values are defined for the select options we expose; newer
@@ -465,6 +503,133 @@ export class SangxiaAgent {
     logger.info(`session ${session.id} 已释放（${reason}）mcpConnections 已关闭 runningTurn=${running}`);
   }
 
+  /** Put a session in the live map and make sure the idle sweep runs (SA-7). */
+  private registerSession(session: Session): void {
+    session.lastActivityAt = Date.now();
+    this.#sessions.set(session.id, session);
+    const idleMs = this.#config.agent.sessionIdleTimeoutMs ?? 0;
+    if (idleMs > 0 && !this.#idleTimer) {
+      this.#idleTimer = setInterval(() => {
+        void this.evictIdleSessions().catch((e) => {
+          logger.warn(`空闲会话回收失败: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }, Math.min(idleMs, IDLE_SWEEP_MAX_INTERVAL_MS));
+      this.#idleTimer.unref?.();
+    }
+  }
+
+  /**
+   * The live Session for a client-supplied id, rebuilding an idle-evicted one
+   * from its JSONL log (SA-7). Undefined = unknown id. Every entry point that
+   * acts on a session goes through here, which also resets its idle clock.
+   */
+  private async liveSession(sessionId: string): Promise<Session | undefined> {
+    const live = this.#sessions.get(sessionId);
+    if (live) {
+      live.lastActivityAt = Date.now();
+      return live;
+    }
+    let pending = this.#restoring.get(sessionId);
+    if (!pending) {
+      const stub = this.#evicted.get(sessionId);
+      if (!stub) return undefined;
+      pending = logger.withSession(sessionId, () => this.restoreEvicted(stub))
+        .finally(() => this.#restoring.delete(sessionId));
+      this.#restoring.set(sessionId, pending);
+    }
+    const session = await pending;
+    if (session) session.lastActivityAt = Date.now();
+    return session;
+  }
+
+  /**
+   * Rebuild an evicted session: history from the log, everything else from the
+   * stub, tools/MCP/skills/hooks via `prepareSession` (MCP is thereby lazily
+   * reconnected). `session_start` is not re-fired: to the client this is the
+   * same session, and its earlier hook context is already in the system message.
+   */
+  private async restoreEvicted(stub: EvictedSession): Promise<Session | undefined> {
+    // A read error may be transient: keep the stub (a later request retries)
+    // and fail this request with an internal error rather than "unknown session".
+    const saved = await loadPersistedSession(stub.id);
+    if (this.#evicted.get(stub.id) !== stub) return this.#sessions.get(stub.id); // superseded by session/load
+    this.#evicted.delete(stub.id);
+    if (!saved) {
+      logger.warn(`session ${stub.id}: 已被空闲回收且会话日志不可用，视为未知会话`);
+      return undefined;
+    }
+    const session = new Session(stub.id, stub.cwd, stub.mcpServers, stub.clientCaps, stub.permissionMode, stub.modelId);
+    session.effort = stub.effort;
+    for (const [key, decision] of stub.permissions) session.permissions.set(key, decision);
+    session.historyWarned = stub.historyWarned;
+    session.initializationChecked = stub.initializationChecked;
+    session.hookContext = stub.hookContext;
+    try {
+      await this.prepareSession(session);
+    } catch (e) {
+      await session.dispose();
+      this.#evicted.set(stub.id, stub);
+      throw e;
+    }
+    session.messages = saved.messages;
+    session.startedToolCalls = saved.startedToolCalls ?? new Set();
+    this.registerSession(session);
+    logger.info(`session ${session.id} 已从空闲回收中恢复 messages=${session.messages.length} mcpConnections=${session.mcpConnections.length}`);
+    return session;
+  }
+
+  /**
+   * SA-7: evict every live session idle for at least `agent.sessionIdleTimeoutMs`
+   * that has no turn in flight and whose state is fully on disk. Its history and
+   * MCP connections are released and its persistence bookkeeping dropped; a
+   * small stub stays so the next request rebuilds it transparently. Runs from a
+   * periodic unref'd timer; public with an injectable clock for tests.
+   * Returns the evicted ids.
+   */
+  async evictIdleSessions(now = Date.now()): Promise<string[]> {
+    const idleMs = this.#loadedConfig?.agent.sessionIdleTimeoutMs ?? 0;
+    if (idleMs <= 0) return [];
+    const evicted: string[] = [];
+    for (const session of [...this.#sessions.values()]) {
+      if (session.promptInFlight || now - session.lastActivityAt < idleMs) continue;
+      await logger.withSession(session.id, async () => {
+        await persistSession(session); // retry a write that failed earlier
+        // Re-check after the await: a request may have arrived meanwhile.
+        if (this.#sessions.get(session.id) !== session || session.promptInFlight || now - session.lastActivityAt < idleMs) return;
+        if (!isFullyPersisted(session)) {
+          logger.warn(`session ${session.id}: 有未落盘的状态，暂不回收`);
+          return;
+        }
+        this.#evicted.set(session.id, {
+          id: session.id,
+          cwd: session.cwd,
+          mcpServers: session.mcpServers,
+          clientCaps: session.clientCaps,
+          permissionMode: session.permissionMode,
+          modelId: session.modelId,
+          effort: session.effort,
+          permissions: new Map(session.permissions),
+          historyWarned: session.historyWarned,
+          initializationChecked: session.initializationChecked,
+          hookContext: session.hookContext,
+          hooks: session.hooks,
+        });
+        this.#sessions.delete(session.id);
+        forgetSessionTracking(session.id);
+        await session.dispose();
+        evicted.push(session.id);
+        logger.info(`session ${session.id} 空闲超过 ${idleMs}ms，已回收（历史释放、MCP 连接已关闭，下次请求时从日志恢复）`);
+      });
+    }
+    if (evicted.length > 0) this.pruneProviders();
+    return evicted;
+  }
+
+  /** Ids of idle-evicted sessions (diagnostics and tests). */
+  evictedSessionIds(): string[] {
+    return [...this.#evicted.keys()];
+  }
+
   private providerFor(modelId: string): LLMProvider {
     let provider = this.#providers.get(modelId);
     if (!provider) {
@@ -591,7 +756,7 @@ export class SangxiaAgent {
   }
 
   /** Fire `session_end` for one session; caller bounds the total wait. */
-  private async runSessionEnd(session: Session): Promise<void> {
+  private async runSessionEnd(session: Pick<Session, "id" | "cwd" | "permissionMode" | "modelId" | "hooks">): Promise<void> {
     if (!session.hooks.has("session_end")) return;
     const outcome = await session.hooks.run(
       "session_end",
@@ -609,7 +774,7 @@ export class SangxiaAgent {
    */
   async prompt(params: PromptRequest, signal?: AbortSignal): Promise<PromptResponse> {
     const config = this.#requireConfig();
-    const session = this.#sessions.get(params.sessionId);
+    const session = await this.liveSession(params.sessionId);
     if (!session) {
       throw RequestError.invalidParams({ sessionId: `未知会话: ${params.sessionId}` });
     }
@@ -712,6 +877,7 @@ export class SangxiaAgent {
       signal?.removeEventListener("abort", onRequestAbort);
       if (session.abort === abort) session.abort = null; // only clear our own reference
       session.promptInFlight = false;
+      session.lastActivityAt = Date.now(); // the idle clock starts when the turn ends
       settle();
     }
   }
@@ -858,11 +1024,19 @@ export class SangxiaAgent {
    * once on process exit (see index.ts) rather than per session.
    */
   async shutdown(): Promise<void> {
+    if (this.#idleTimer) clearInterval(this.#idleTimer);
+    this.#idleTimer = null;
     const sessions = [...this.#sessions.values()];
     for (const session of sessions) session.abort?.abort();
+    // Evicted sessions are still open from the client's point of view, so
+    // they get their session_end too (their stub keeps the hook registry).
+    const ending: Array<Pick<Session, "id" | "cwd" | "permissionMode" | "modelId" | "hooks">> = [
+      ...sessions,
+      ...this.#evicted.values(),
+    ];
     // Hard cap: a hanging hook must never hold the process open (plan §3).
     await Promise.race([
-      Promise.all(sessions.map((session) => this.runSessionEnd(session))),
+      Promise.all(ending.map((session) => this.runSessionEnd(session))),
       new Promise<void>((resolve) => {
         setTimeout(resolve, SESSION_END_TIMEOUT_MS).unref?.();
       }),
@@ -896,6 +1070,8 @@ export function setModelParams(params: unknown): SetSessionModelRequest {
 
 /** `session_end` 的硬上限：超时放弃，绝不拖住进程退出。 */
 const SESSION_END_TIMEOUT_MS = 2000;
+/** Upper bound on the idle-eviction sweep period (shorter timeouts sweep at their own period). */
+const IDLE_SWEEP_MAX_INTERVAL_MS = 60_000;
 /** How long a replacing `session/load` waits for the old session's aborted turn (SA-12). */
 const RETIRE_TURN_TIMEOUT_MS = 5000;
 
