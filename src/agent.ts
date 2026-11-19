@@ -153,6 +153,8 @@ export class SangxiaAgent {
   readonly #evicted = new Map<string, EvictedSession>();
   /** In-flight rebuilds, so concurrent requests share one restored Session. */
   readonly #restoring = new Map<string, Promise<Session | undefined>>();
+  /** Sessions cancelled while being restored from an idle eviction (SA-7). */
+  readonly #cancelledWhileRestoring = new Set<string>();
   #idleTimer: ReturnType<typeof setInterval> | null = null;
   #clientCaps: ClientCapabilities = { readTextFile: false, writeTextFile: false, terminal: false };
 
@@ -249,6 +251,7 @@ export class SangxiaAgent {
       // rebuild already running on it, then load from the log as usual.
       await this.#restoring.get(params.sessionId)?.catch(() => undefined);
       this.#evicted.delete(params.sessionId);
+      this.#cancelledWhileRestoring.delete(params.sessionId);
       const previous = this.#sessions.get(params.sessionId);
       if (previous) await this.retireSession(previous, "被 session/load 替换");
       const saved = await loadPersistedSession(params.sessionId);
@@ -569,6 +572,7 @@ export class SangxiaAgent {
     } catch (e) {
       await session.dispose();
       this.#evicted.set(stub.id, stub);
+      this.#cancelledWhileRestoring.delete(stub.id);
       throw e;
     }
     session.messages = saved.messages;
@@ -799,6 +803,9 @@ export class SangxiaAgent {
     };
     if (signal?.aborted) onRequestAbort();
     else signal?.addEventListener("abort", onRequestAbort, { once: true });
+    if (this.#cancelledWhileRestoring.delete(params.sessionId)) {
+      abort.abort();
+    }
     try {
       // B3: one abort controller for the whole prompt turn — including the
       // project-initialization sub-turn. Previously that sub-turn used a fresh
@@ -876,6 +883,7 @@ export class SangxiaAgent {
     } finally {
       signal?.removeEventListener("abort", onRequestAbort);
       if (session.abort === abort) session.abort = null; // only clear our own reference
+      this.#cancelledWhileRestoring.delete(params.sessionId);
       session.promptInFlight = false;
       session.lastActivityAt = Date.now(); // the idle clock starts when the turn ends
       settle();
@@ -973,15 +981,21 @@ export class SangxiaAgent {
       }
     }
     const system = session.messages.find((message) => message.role === "system");
-    if (system) system.content = await this.systemPrompt(session, initRoot);
-    await persistSession(session);
+    if (system) {
+      system.content = await this.systemPrompt(session, initRoot);
+      await persistHistoryReset(session);
+    }
     logger.info(`项目记忆初始化完成 ${session.id}`);
   }
 
   async cancel(params: CancelNotification): Promise<void> {
     return logger.withSession(params.sessionId, () => {
       const session = this.#sessions.get(params.sessionId);
-      session?.abort?.abort();
+      if (session) {
+        session.abort?.abort();
+      } else if (this.#restoring.has(params.sessionId)) {
+        this.#cancelledWhileRestoring.add(params.sessionId);
+      }
       logger.info(`cancel ${params.sessionId}`);
     });
   }

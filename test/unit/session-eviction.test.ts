@@ -192,6 +192,61 @@ describe("idle session eviction (SA-7)", () => {
     await agent.shutdown();
   });
 
+  it("preserves updated system prompt after in-place mutation and eviction", async () => {
+    const agent = await newAgent();
+    const { sessionId } = await agent.newSession({ cwd: dir, mcpServers: [] });
+    const session = agent.getSession(sessionId)!;
+    const system = session.messages.find((m) => m.role === "system")!;
+    system.content = "mutated system prompt with project memory";
+    const { persistHistoryReset } = await import("../../src/persistence.js");
+    await persistHistoryReset(session);
+
+    await agent.evictIdleSessions(later());
+    assert.equal(agent.getSession(sessionId), undefined);
+
+    await agent.setSessionMode({ sessionId, modeId: "confirm" });
+    const restored = agent.getSession(sessionId)!;
+    assert.equal(
+      restored.messages.find((m) => m.role === "system")?.content,
+      "mutated system prompt with project memory",
+      "rebuilt session must reflect the in-place system prompt change",
+    );
+    await agent.shutdown();
+  });
+
+  it("cancels prompt received during slow rebuild when session/cancel arrives", async () => {
+    const agent = await newAgent();
+    const { sessionId } = await agent.newSession({ cwd: dir, mcpServers: [] });
+    await agent.evictIdleSessions(later());
+    assert.equal(agent.getSession(sessionId), undefined);
+
+    const origPrepare = (agent as unknown as { prepareSession(s: Session): Promise<void> }).prepareSession.bind(agent);
+    (agent as unknown as { prepareSession(s: Session): Promise<void> }).prepareSession = async (s: Session) => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return origPrepare(s);
+    };
+
+    const promptPromise = agent.prompt({
+      sessionId,
+      prompt: [{ type: "text", text: "hello while rebuilding" }],
+    });
+
+    // Send cancel while rebuild is still in flight
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await agent.cancel({ sessionId });
+
+    const result = await promptPromise;
+    assert.equal(result.stopReason, "cancelled");
+
+    (agent as unknown as { prepareSession(s: Session): Promise<void> }).prepareSession = origPrepare;
+    const second = await agent.prompt({
+      sessionId,
+      prompt: [{ type: "text", text: "next prompt after cancel" }],
+    });
+    assert.equal(second.stopReason, "end_turn");
+    await agent.shutdown();
+  });
+
   it("still rejects an id that was never a session", async () => {
     const agent = await newAgent();
     await assert.rejects(() => agent.setSessionMode({ sessionId: "nope", modeId: "auto" }), /Invalid params/);
