@@ -124,16 +124,16 @@ export async function persistSession(
       state.messagesWritten = session.messages.length;
     }
     if (state.permissionMode !== session.permissionMode) {
-      state.permissionMode = session.permissionMode;
       await appendEvent(session.id, { t: "mode", permissionMode: session.permissionMode });
+      state.permissionMode = session.permissionMode; // only after the line is on disk
     }
     if (state.modelId !== session.modelId) {
-      state.modelId = session.modelId;
       await appendEvent(session.id, { t: "model", modelId: session.modelId });
+      state.modelId = session.modelId; // only after the line is on disk
     }
     if (state.effort !== session.effort) {
-      state.effort = session.effort;
       await appendEvent(session.id, { t: "effort", effort: session.effort });
+      state.effort = session.effort; // only after the line is on disk
     }
   } catch (e) {
     logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -150,8 +150,8 @@ export async function persistHistoryReset(
   try {
     const state = await ensureTracked(session);
     await ensureMeta(session, state);
-    state.messagesWritten = session.messages.length;
     await appendEvent(session.id, { t: "reset", messages: session.messages });
+    state.messagesWritten = session.messages.length; // only after the line is on disk
   } catch (e) {
     logger.warn(`session ${session.id} 历史重置持久化失败: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -184,7 +184,6 @@ async function ensureMeta(
   state: TrackedState,
 ): Promise<void> {
   if (state.metaWritten) return;
-  state.metaWritten = true;
   await appendEvent(session.id, {
     t: "meta",
     version: 2,
@@ -195,6 +194,7 @@ async function ensureMeta(
     effort: session.effort,
     createdAt: new Date().toISOString(),
   });
+  state.metaWritten = true; // only after the line is on disk
 }
 
 /** Record that a tool call actually started (written before `tool.run`). */

@@ -317,6 +317,8 @@ export class SangxiaAgent {
       sessionId: session.id,
       update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
+    // Clear any cancel flag set during a non-prompt rebuild (e.g. setSessionMode triggered restore).
+    this.#cancelledWhileRestoring.delete(params.sessionId);
   }
 
   async setSessionModel(params: SetSessionModelRequest): Promise<void> {
@@ -334,6 +336,8 @@ export class SangxiaAgent {
       sessionId: session.id,
       update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
+    // Clear any cancel flag set during a non-prompt rebuild.
+    this.#cancelledWhileRestoring.delete(params.sessionId);
   }
 
   /**
@@ -357,6 +361,8 @@ export class SangxiaAgent {
       sessionId: session.id,
       update: { sessionUpdate: "config_option_update", configOptions: this.configOptions(session) },
     });
+    // Clear any cancel flag set during a non-prompt rebuild.
+    this.#cancelledWhileRestoring.delete(session.id);
   }
 
   /** Keep `session.effort` valid for the (possibly new) model. */
@@ -597,11 +603,10 @@ export class SangxiaAgent {
     for (const session of [...this.#sessions.values()]) {
       if (session.promptInFlight || now - session.lastActivityAt < idleMs) continue;
       await logger.withSession(session.id, async () => {
-        await persistSession(session); // retry a write that failed earlier
         // Re-check after the await: a request may have arrived meanwhile.
         if (this.#sessions.get(session.id) !== session || session.promptInFlight || now - session.lastActivityAt < idleMs) return;
         if (!isFullyPersisted(session)) {
-          logger.warn(`session ${session.id}: 有未落盘的状态，暂不回收`);
+          logger.warn(`session ${session.id}: 有未落盘的状态，暂不回收（最多晚一轮）`);
           return;
         }
         this.#evicted.set(session.id, {
