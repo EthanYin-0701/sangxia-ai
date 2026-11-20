@@ -63,4 +63,4 @@ scripts/           冒烟测试、check-docs.mjs、install-skills.sh、prepare-r
 
 ## 预留扩展点（勿破坏接口）
 
-Anthropic 原生 provider、图片/音频输入、子代理、按会话回收 MCP 连接（尚未实现 `session/close`）、上下文压缩（`harness/context.ts` 已有估算，暂无溢出证据故未启用）。
+Anthropic 原生 provider、图片/音频输入、子代理、空闲超时回收已实现（`session/close` 仍未实现，用于完全清理 stub + 真 `session_end`）、上下文压缩（`harness/context.ts` 已有估算，暂无溢出证据故未启用）。

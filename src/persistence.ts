@@ -124,16 +124,16 @@ export async function persistSession(
       state.messagesWritten = session.messages.length;
     }
     if (state.permissionMode !== session.permissionMode) {
-      state.permissionMode = session.permissionMode;
       await appendEvent(session.id, { t: "mode", permissionMode: session.permissionMode });
+      state.permissionMode = session.permissionMode; // only after the line is on disk
     }
     if (state.modelId !== session.modelId) {
-      state.modelId = session.modelId;
       await appendEvent(session.id, { t: "model", modelId: session.modelId });
+      state.modelId = session.modelId; // only after the line is on disk
     }
     if (state.effort !== session.effort) {
-      state.effort = session.effort;
       await appendEvent(session.id, { t: "effort", effort: session.effort });
+      state.effort = session.effort; // only after the line is on disk
     }
   } catch (e) {
     logger.warn(`session ${session.id} 持久化失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -150,8 +150,8 @@ export async function persistHistoryReset(
   try {
     const state = await ensureTracked(session);
     await ensureMeta(session, state);
-    state.messagesWritten = session.messages.length;
     await appendEvent(session.id, { t: "reset", messages: session.messages });
+    state.messagesWritten = session.messages.length; // only after the line is on disk
   } catch (e) {
     logger.warn(`session ${session.id} 历史重置持久化失败: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -184,7 +184,6 @@ async function ensureMeta(
   state: TrackedState,
 ): Promise<void> {
   if (state.metaWritten) return;
-  state.metaWritten = true;
   await appendEvent(session.id, {
     t: "meta",
     version: 2,
@@ -195,6 +194,7 @@ async function ensureMeta(
     effort: session.effort,
     createdAt: new Date().toISOString(),
   });
+  state.metaWritten = true; // only after the line is on disk
 }
 
 /** Record that a tool call actually started (written before `tool.run`). */
@@ -379,6 +379,38 @@ async function migrateLegacySession(sessionId: string): Promise<PersistedSession
     logger.warn(`session ${sessionId} 迁移失败，将使用内存状态继续: ${e instanceof Error ? e.message : String(e)}`);
   }
   return migrated;
+}
+
+/**
+ * Whether everything this session holds in memory is already on disk, i.e.
+ * dropping the in-memory copy and replaying the log loses nothing. False when
+ * no write ever happened in this process or the last append failed (the
+ * bookkeeping only advances after a successful write). Used by idle eviction
+ * (SA-7) so a disk error never turns eviction into history loss.
+ */
+export function isFullyPersisted(
+  session: Pick<Session, "id" | "messages" | "permissionMode" | "modelId" | "effort">,
+): boolean {
+  const state = tracked.get(session.id);
+  return state !== undefined &&
+    state.metaWritten &&
+    state.messagesWritten === session.messages.length &&
+    state.permissionMode === session.permissionMode &&
+    state.modelId === session.modelId &&
+    state.effort === session.effort;
+}
+
+/**
+ * Drop the write bookkeeping of a session that left memory (SA-7). A later
+ * write re-adopts the on-disk state, exactly like the first write of a process.
+ */
+export function forgetSessionTracking(sessionId: string): void {
+  tracked.delete(sessionId);
+}
+
+/** Number of sessions with write bookkeeping (diagnostics and tests). */
+export function trackedSessionCount(): number {
+  return tracked.size;
 }
 
 /** Test/diagnostic helper: forget per-process write bookkeeping. */
