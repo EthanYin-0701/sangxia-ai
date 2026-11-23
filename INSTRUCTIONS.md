@@ -1,6 +1,6 @@
 # Sangxia.ai · 基于 Node.js 的 ACP Coding AI Agent
 
-Sangxia.ai is a coding agent speaking ACP over stdio, with a built-in tool harness and JSON-configured OpenAI-compatible LLM backends. Requires Node.js 20 or newer.
+Sangxia.ai is a coding agent speaking ACP over stdio, with a built-in tool harness and JSON-configured OpenAI-compatible LLM backends. Requires Node.js 22 or newer.
 
 ### Install / Setup / Add to Zed
 

@@ -6,7 +6,7 @@ A coding agent for JetBrains IDEs and Zed, connected through [ACP](https://agent
 
 ## Quick start
 
-You need **Node.js 20+**, a [DeepSeek API key](https://platform.deepseek.com/api_keys), and either a JetBrains IDE with **AI Assistant** enabled or **Zed** with external-agent support. This guide uses **DeepSeek Flash** (`deepseek-flash`).
+You need **Node.js 22+**, a [DeepSeek API key](https://platform.deepseek.com/api_keys), and either a JetBrains IDE with **AI Assistant** enabled or **Zed** with external-agent support. This guide uses **DeepSeek Flash** (`deepseek-flash`).
 
 ### Shortest path: install from your editor
 
@@ -107,7 +107,7 @@ Sangxia.ai 是通过 [ACP](https://agentclientprotocol.com) 接入 JetBrains IDE
 
 ### 快速开始
 
-准备 **Node.js 20+**、一个 [DeepSeek API key](https://platform.deepseek.com/api_keys)，以及启用了 **AI Assistant** 的 JetBrains IDE，或支持外部 agent 的 **Zed**。本教程默认使用 **DeepSeek Flash**（`deepseek-flash`）。
+准备 **Node.js 22+**、一个 [DeepSeek API key](https://platform.deepseek.com/api_keys)，以及启用了 **AI Assistant** 的 JetBrains IDE，或支持外部 agent 的 **Zed**。本教程默认使用 **DeepSeek Flash**（`deepseek-flash`）。
 
 #### 最快捷的方式：从编辑器的 Agents 列表安装
 
